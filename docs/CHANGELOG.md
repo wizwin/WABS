@@ -1,6 +1,6 @@
 # WABS Changelog
 
-## v1.0.0
+## v1.0.0-beta
 - **Initial Release** of WABS (WiZarD's Archival and Backup Search System).
 - **100% Offline Capable**: Removed internet dependencies. Uses local Material UI icons, native fonts, and local SVG placeholders.
 - **Smart Indexer**: Categorizes photos, videos, documents, compressed files, installers, and binaries with EXIF extraction.

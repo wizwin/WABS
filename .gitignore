@@ -24,3 +24,5 @@ thumbnails/
 ._*
 Thumbs.db
 WABS-Windows.exe.spec
+/dist
+config.yaml

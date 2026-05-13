@@ -7,8 +7,10 @@ import re
 import subprocess
 import shutil
 import sys
+import threading
+import time
 
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import func, or_
@@ -582,6 +584,30 @@ def settings():
 def save(data:dict):
     save_config(data)
     return {"saved":True}
+
+@app.post("/shutdown")
+def shutdown(request: Request):
+    # To achieve a graceful shutdown, we access the server instance stored in the app state
+    # by run.py and set its `should_exit` flag. This is the production method.
+    if hasattr(request.app.state, 'server'):
+        server = request.app.state.server
+        # We run this in a thread to allow the HTTP response to be sent to the client first.
+        def graceful_shutdown():
+            time.sleep(0.5) # A small delay to ensure the response is sent.
+            server.should_exit = True
+        threading.Thread(target=graceful_shutdown).start()
+        return {"shutdown": True, "message": "Server is shutting down..."}
+    # Fallback for development mode (e.g., running with `uvicorn main:app --reload`)
+    else:
+        import os
+        import signal
+        def dev_shutdown():
+            time.sleep(0.5) # A small delay to ensure the response is sent.
+            # This sends a termination signal that Uvicorn's CLI runner will catch
+            # and use to perform a graceful shutdown.
+            os.kill(os.getpid(), signal.SIGTERM)
+        threading.Thread(target=dev_shutdown).start()
+        return {"shutdown": True, "message": "Server shutdown signal sent..."}
 
 # --- Serve React Frontend (Production) ---
 if hasattr(sys, '_MEIPASS'):

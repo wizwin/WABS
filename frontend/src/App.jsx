@@ -33,8 +33,10 @@ import GavelIcon from '@mui/icons-material/Gavel'
 import CloseIcon from '@mui/icons-material/Close'
 import HelpIcon from '@mui/icons-material/Help'
 import PlaceIcon from '@mui/icons-material/Place'
+import PowerSettingsNewIcon from '@mui/icons-material/PowerSettingsNew'
 
-const API='http://127.0.0.1:8000'
+// Use relative path in production to support network IPs, fallback to localhost for Vite dev server
+const API = window.location.port === '5173' ? 'http://127.0.0.1:8000' : ''
 
 function StatCard({ title, value, icon, color }) {
   return (
@@ -104,6 +106,7 @@ const [timelineWidth, setTimelineWidth] = useState(150)
 const [detailsWidth, setDetailsWidth] = useState(260)
 const [isResizing, setIsResizing] = useState(null)
 const [showSearchHelp, setShowSearchHelp] = useState(false)
+const [isShutdown, setIsShutdown] = useState(false)
 
 async function loadFiles(nextOffset = 0, append = false, cat = filterCategory){
   const r = await axios.get(`${API}/files?category=${cat}&offset=${nextOffset}&limit=50`)
@@ -353,6 +356,17 @@ async function moveSelected() {
   }
 }
 
+async function handleShutdown() {
+  if (window.confirm('Are you sure you want to shut down the WABS server?')) {
+    try {
+      await axios.post(`${API}/shutdown`)
+      setIsShutdown(true)
+    } catch (err) {
+      alert('Failed to send shutdown signal. Please close the application manually via Task Manager.');
+    }
+  }
+}
+
 const handleFilterChange = (e) => {
   const newCat = e.target.value;
   setFilterCategory(newCat);
@@ -572,39 +586,65 @@ function renderValue(value){
 
 return(
 <div className='layout'>
-
+{isShutdown ? (
+  <div style={{
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(15, 23, 42, 0.95)',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 9999,
+    color: '#f8fafc',
+    textAlign: 'center'
+  }}>
+    <PowerSettingsNewIcon style={{ fontSize: '80px', color: '#ef4444' }} />
+    <h1 style={{ marginTop: '24px', fontSize: '32px' }}>Server has been shut down.</h1>
+    <p style={{ color: '#94a3b8', fontSize: '18px', marginTop: '8px' }}>You can now safely close this browser tab.</p>
+  </div>
+) : (
+<>
 {showSidebar && (
 <>
-<div className='sidebar' style={{ width: sidebarWidth }}>
-
-<div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px', padding: '8px 0' }}>
-  <AppIcon size={40} />
+<div className='sidebar' style={{ width: sidebarWidth, display: 'flex', flexDirection: 'column' }}>
   <div>
-    <h2 style={{ margin: 0, fontSize: '20px', color: '#f8fafc' }}>WABS</h2>
-    <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0</div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px', padding: '8px 0' }}>
+      <AppIcon size={40} />
+      <div>
+        <h2 style={{ margin: 0, fontSize: '20px', color: '#f8fafc' }}>WABS</h2>
+        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta</div>
+      </div>
+    </div>
+
+    <button onClick={()=>{ setPage('dashboard'); setSelected(null); }}>
+    <DashboardIcon fontSize="small" /> Dashboard
+    </button>
+
+    <button onClick={()=>{ setQuery(''); setPage('explorer'); setSelected(null); loadFiles(0, false)}}>
+    <FolderIcon fontSize="small" /> Explorer
+    </button>
+
+    <button onClick={()=>goToSearch()}>
+    <SearchIcon fontSize="small" /> Search
+    </button>
+
+    <button onClick={()=>{ setPage('settings'); setSelected(null); }}>
+    <SettingsIcon fontSize="small" /> Settings
+    </button>
+
+    <button onClick={()=>{ setPage('about'); setSelected(null); }}>
+    <InfoIcon fontSize="small" /> About
+    </button>
   </div>
-</div>
-
-<button onClick={()=>{ setPage('dashboard'); setSelected(null); }}>
-<DashboardIcon fontSize="small" /> Dashboard
-</button>
-
-<button onClick={()=>{ setQuery(''); setPage('explorer'); setSelected(null); loadFiles(0, false)}}>
-<FolderIcon fontSize="small" /> Explorer
-</button>
-
-<button onClick={()=>goToSearch()}>
-<SearchIcon fontSize="small" /> Search
-</button>
-
-<button onClick={()=>{ setPage('settings'); setSelected(null); }}>
-<SettingsIcon fontSize="small" /> Settings
-</button>
-
-<button onClick={()=>{ setPage('about'); setSelected(null); }}>
-<InfoIcon fontSize="small" /> About
-</button>
-
+  <div style={{ marginTop: 'auto', paddingTop: '16px' }}>
+    <button onClick={handleShutdown} style={{ background: '#ef44442a', color: '#ef4444', width: '100%' }}>
+      <PowerSettingsNewIcon fontSize="small" /> Shutdown
+    </button>
+  </div>
 </div>
 <div className={`resizer ${isResizing === 'sidebar' ? 'active' : ''}`} onMouseDown={(e) => { e.preventDefault(); setIsResizing('sidebar'); }} />
 </>
@@ -1147,7 +1187,7 @@ page==='about' &&
     <div style={{background:'#8b5cf61a', padding:'10px', borderRadius:'10px', color:'#8b5cf6', display:'flex'}}><InfoIcon /></div>
     <div>
       <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Version Info</h3>
-      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0</strong></p>
+      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta</strong></p>
     </div>
   </div>
 
@@ -1188,7 +1228,7 @@ page==='about' &&
     <div style={{background:'#64748b1a', padding:'10px', borderRadius:'10px', color:'#64748b', display:'flex'}}><GitHubIcon /></div>
     <div>
       <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Source Code</h3>
-      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Available on <a href="https://github.com/dummy-repo/WABS" target="_blank" rel="noopener noreferrer" style={{color: '#3b82f6', textDecoration: 'none'}}>GitHub</a></p>
+      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Available on <a href="https://github.com/wizwin/WABS" target="_blank" rel="noopener noreferrer" style={{color: '#3b82f6', textDecoration: 'none'}}>GitHub</a></p>
     </div>
   </div>
 
@@ -1203,6 +1243,8 @@ page==='about' &&
 
 </div>
 
+</>
+)}
 </div>
 )
 }
