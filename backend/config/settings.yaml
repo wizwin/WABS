@@ -1,0 +1,4 @@
+backup_path: M:/Backup
+database_path: ./database/archive.db
+thumbnail_path: ./cache/thumbnails
+thumbnail_size: 256

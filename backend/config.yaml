@@ -1,0 +1,15 @@
+ai_enabled: false
+ai_model: gpt-4o-mini
+ai_provider: OpenAI
+backup_path: M:/Backup
+database_path: ./database/archive.db
+details_width: 345
+openai_api_key: ''
+original_backup_path: M:/Backup
+path_mapping_enabled: false
+show_details: true
+show_timeline: true
+sidebar_width: 226
+thumbnail_path: ./cache/thumbnails
+thumbnail_size: 256
+timeline_width: 146

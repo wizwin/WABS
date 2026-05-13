@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlalchemy
+pillow
+opencv-python-headless
+pymupdf
+mutagen
+pefile
+filetype
+pyinstaller
+pyyaml

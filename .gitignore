@@ -1,0 +1,26 @@
+# Frontend / Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+build/
+
+# Backend / Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.venv/
+
+# Database and Media (Do not upload your personal backups!)
+*.db
+*.sqlite
+*.sqlite3
+thumbnails/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+WABS-Windows.exe.spec
