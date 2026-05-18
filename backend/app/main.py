@@ -13,7 +13,7 @@ import time
 from fastapi import FastAPI, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, Integer
 from fastapi.staticfiles import StaticFiles
 
 try:
@@ -81,27 +81,42 @@ def _build_item(r):
 
 
 def _resolve_path(original_path: Path) -> Path:
-    if original_path.exists():
-        return original_path
-
     cfg = load_config()
-    if not cfg.get("path_mapping_enabled"):
-        return original_path
+    if cfg.get("path_mapping_enabled"):
+        source_root_str = cfg.get("original_backup_path")
+        target_root_str = cfg.get("mapped_backup_path")
 
-    source_root = Path(cfg.get("original_backup_path") or cfg.get("backup_path", ""))
-    target_root = Path(cfg.get("backup_path", ""))
-    if not source_root or not target_root:
-        return original_path
+        if source_root_str and target_root_str:
+            try:
+                # Pre-normalize slashes to ensure Windows network paths (\\) 
+                # parse correctly into .parts even if running on Linux/Mac (/)
+                normalized_orig = str(original_path).replace('\\', os.sep).replace('/', os.sep)
+                normalized_src = source_root_str.replace('\\', os.sep).replace('/', os.sep)
+                
+                src_path = Path(normalized_src)
+                tgt_path = Path(target_root_str)
+                
+                orig_parts = Path(normalized_orig).parts
+                src_parts = src_path.parts
+                
+                if len(orig_parts) >= len(src_parts):
+                    # Verify the components actually match before splicing
+                    match = True
+                    for i in range(len(src_parts)):
+                        orig_part = orig_parts[i]
+                        src_part = src_parts[i]
+                        if platform.system() == "Windows":
+                            orig_part = orig_part.lower()
+                            src_part = src_part.lower()
+                        if orig_part != src_part:
+                            match = False
+                            break
+                    if match:
+                        return tgt_path.joinpath(*orig_parts[len(src_parts):])
+            except Exception:
+                pass
 
-    try:
-        relative = original_path.relative_to(source_root)
-    except Exception:
-        return original_path
-
-    mapped = target_root / relative
-    if mapped.exists():
-        return mapped
-
+    # This part is reached if remapping is OFF, or if the path was not applicable for remapping.
     return original_path
 
 
@@ -228,6 +243,10 @@ def files(category:str="all", offset:int=0, limit:int=50):
             if category == "other":
                 standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
                 q = q.filter(~FileIndex.category.in_(standard))
+            elif category == "duplicates":
+                dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
+                q = q.filter(FileIndex.size.in_(dup_sizes))
+                q = q.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
             else:
                 q = q.filter(FileIndex.category == category)
         rows = q.offset(offset).limit(limit).all()
@@ -235,14 +254,24 @@ def files(category:str="all", offset:int=0, limit:int=50):
 
 @app.get("/search")
 def search(query:str="", category:str="all", offset:int=0, limit:int=50):
+    from sqlalchemy import text
     with SessionLocal() as s:
         q_base = s.query(FileIndex)
         if category != "all":
             if category == "other":
                 standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
                 q_base = q_base.filter(~FileIndex.category.in_(standard))
+            elif category == "duplicates":
+                dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
+                q_base = q_base.filter(FileIndex.size.in_(dup_sizes))
+                q_base = q_base.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
             else:
                 q_base = q_base.filter(FileIndex.category == category)
+
+        query = query.strip()
+        if not query:
+            rows = q_base.offset(offset).limit(limit).all()
+            return [_build_item(r) for r in rows]
 
         regex = _parse_regex_pattern(query)
         if regex:
@@ -259,9 +288,68 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50):
                         break
             return [_build_item(r) for r in filtered]
 
-        q = _build_search_query(query, s, q_base)
-        rows = q.offset(offset).limit(limit).all()
-        return [_build_item(r) for r in rows]
+        # Fallback to standard builder for custom search parameters (date:, size:, etc)
+        if any(query.lower().startswith(prefix) for prefix in ["date:", "tag:", "type:", "name:", "size:", "length:"]):
+            q = _build_search_query(query, s, q_base)
+            rows = q.offset(offset).limit(limit).all()
+            return [_build_item(r) for r in rows]
+            
+        # FTS5 Lightning-Fast Search Path
+        safe_query = query.replace('"', '""').replace("'", "''")
+        fts_terms = [f'"{word}" *' for word in safe_query.split() if word]
+        if not fts_terms:
+            return []
+            
+        fts_query = " AND ".join(fts_terms)
+        
+        matching_ids = s.execute(
+            text("SELECT rowid FROM files_fts WHERE files_fts MATCH :q ORDER BY rank LIMIT 1000"),
+            {"q": fts_query}
+        ).scalars().all()
+
+        if not matching_ids:
+            return []
+            
+        rows = q_base.filter(FileIndex.id.in_(matching_ids)).all()
+        id_to_row = {r.id: r for r in rows}
+        sorted_rows = [id_to_row[i] for i in matching_ids if i in id_to_row]
+        
+        return [_build_item(r) for r in sorted_rows[offset:offset+limit]]
+
+@app.get("/search/suggestions")
+def search_suggestions(q: str = "", limit: int = 5):
+    from sqlalchemy import text
+    import difflib
+    
+    q = q.strip().lower()
+    if not q:
+        return {"type": "none", "suggestions": [], "last_word": ""}
+        
+    words = q.split()
+    last_word = words[-1]
+    
+    with SessionLocal() as s:
+        # 1. Try Auto-complete (fast prefix match) using the FTS5 Vocab table
+        results = s.execute(
+            text("SELECT term FROM files_fts_vocab WHERE term LIKE :prefix ORDER BY doc DESC LIMIT :limit"),
+            {"prefix": f"{last_word}%", "limit": limit}
+        ).scalars().all()
+        
+        if results:
+            return {"type": "autocomplete", "suggestions": results, "last_word": last_word}
+            
+        # 2. Try "Did you mean?" (spell-check fuzzy match) if no exact prefixes exist
+        if len(last_word) >= 3:
+            all_terms = s.execute(
+                text("SELECT term FROM files_fts_vocab WHERE length(term) BETWEEN :min_l AND :max_l ORDER BY doc DESC LIMIT 1000"),
+                {"min_l": len(last_word)-2, "max_l": len(last_word)+2}
+            ).scalars().all()
+            
+            close_matches = difflib.get_close_matches(last_word, all_terms, n=limit, cutoff=0.7)
+            if close_matches:
+                return {"type": "did_you_mean", "suggestions": close_matches, "last_word": last_word}
+                
+    return {"type": "none", "suggestions": [], "last_word": last_word}
 
 @app.get("/preview/{item_id}")
 def preview(item_id:int):
@@ -407,6 +495,10 @@ def open_folder(path: str = Body(..., embed=True)):
 
 @app.post("/delete-files")
 def delete_files(paths: list[str] = Body(..., embed=True)):
+    cfg = load_config()
+    if cfg.get("read_only_mode", True):
+        raise HTTPException(status_code=403, detail="Read-Only Mode is enabled. Deletion is blocked.")
+
     deleted_count = 0
     with SessionLocal() as session:
         for path_str in paths:
@@ -440,6 +532,10 @@ def copy_files(paths: list[str] = Body(...), destination: str = Body(...)):
 
 @app.post("/move-files")
 def move_files(paths: list[str] = Body(...), destination: str = Body(...)):
+    cfg = load_config()
+    if cfg.get("read_only_mode", True):
+        raise HTTPException(status_code=403, detail="Read-Only Mode is enabled. Moving files is blocked.")
+
     dest_path = Path(destination)
     if not dest_path.exists() or not dest_path.is_dir():
         raise HTTPException(status_code=400, detail="Invalid destination directory")
@@ -470,7 +566,7 @@ def stats():
     with SessionLocal() as s:
         # Grouping drastically speeds up counting for millions of rows compared to 5 separate counts
         results = s.query(FileIndex.category, func.count(FileIndex.id)).group_by(FileIndex.category).all()
-        stats_dict = {"total": 0, "photos": 0, "videos": 0, "audio": 0, "documents": 0, "ebooks": 0, "code": 0, "fonts": 0, "databases": 0, "compressed": 0, "installers": 0, "binaries": 0, "others": 0}
+        stats_dict = {"total": 0, "duplicates": 0, "photos": 0, "videos": 0, "audio": 0, "documents": 0, "ebooks": 0, "code": 0, "fonts": 0, "databases": 0, "compressed": 0, "installers": 0, "binaries": 0, "others": 0}
         for cat, count in results:
             stats_dict["total"] += count
             if cat == "photo": stats_dict["photos"] += count
@@ -485,6 +581,10 @@ def stats():
             elif cat == "installer": stats_dict["installers"] += count
             elif cat == "binary": stats_dict["binaries"] += count
             else: stats_dict["others"] += count
+            
+        dup_subq = s.query(func.count(FileIndex.id).label('c')).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1).subquery()
+        dup_count = s.query(func.sum(dup_subq.c.c)).scalar() or 0
+        stats_dict["duplicates"] = int(dup_count)
         return stats_dict
 
 @app.get("/indexer/status")
@@ -608,6 +708,25 @@ def shutdown(request: Request):
             os.kill(os.getpid(), signal.SIGTERM)
         threading.Thread(target=dev_shutdown).start()
         return {"shutdown": True, "message": "Server shutdown signal sent..."}
+
+@app.post("/verify-duplicates")
+def verify_duplicates():
+    try:
+        from backend.app.indexer import background_lazy_hasher
+    except ModuleNotFoundError:
+        from indexer import background_lazy_hasher
+    import threading
+    threading.Thread(target=background_lazy_hasher, daemon=True).start()
+    return {"status": "started"}
+
+@app.post("/stop-verify-duplicates")
+def stop_verify_duplicates():
+    try:
+        from backend.app.state import STATE
+    except ModuleNotFoundError:
+        from state import STATE
+    STATE["hasher_stopped"] = True
+    return {"status": "stopping"}
 
 # --- Serve React Frontend (Production) ---
 if hasattr(sys, '_MEIPASS'):

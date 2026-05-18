@@ -1,4 +1,4 @@
-import {useEffect,useState,useMemo,useRef,createContext,useContext} from 'react'
+import {useEffect,useState,useMemo,useRef,createContext,useContext,Fragment} from 'react'
 import axios from 'axios'
 import DashboardIcon from '@mui/icons-material/Dashboard'
 import FolderIcon from '@mui/icons-material/Folder'
@@ -34,6 +34,9 @@ import CloseIcon from '@mui/icons-material/Close'
 import HelpIcon from '@mui/icons-material/Help'
 import PlaceIcon from '@mui/icons-material/Place'
 import PowerSettingsNewIcon from '@mui/icons-material/PowerSettingsNew'
+import FileCopyIcon from '@mui/icons-material/FileCopy'
+import CheckCircleIcon from '@mui/icons-material/CheckCircle'
+import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty'
 
 // Use relative path in production to support network IPs, fallback to localhost for Vite dev server
 const API = window.location.port === '5173' ? 'http://127.0.0.1:8000' : ''
@@ -106,7 +109,7 @@ function AppIcon({ size = 64 }) {
   );
 }
 
-function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContextMenu, onSelectAndOpen, renderThumb }) {
+function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContextMenu, onSelectAndOpen, renderThumb, isAltGroup, showVerified, showUnverified }) {
   const [isHovered, setIsHovered] = useState(false);
   const [isActive, setIsActive] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
@@ -129,7 +132,8 @@ function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContext
         transition: animationsEnabled ? 'all 0.3s ease' : 'none',
         opacity: animationsEnabled ? (isMounted ? 1 : 0) : 1,
         transform: animationsEnabled ? (isActive ? 'scale(0.97)' : isHovered ? 'translateY(-2px)' : isMounted ? 'none' : 'translateY(10px)') : 'none',
-        boxShadow: animationsEnabled && isActive ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none'
+        boxShadow: animationsEnabled && isActive ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none',
+        backgroundColor: isAltGroup ? '#1e293b' : undefined
       }}
     >
       {viewMode === 'grid' ? (
@@ -148,7 +152,11 @@ function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContext
             </div>
           )}
           <div className='info' style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
-            <span style={{ fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.filename}>{item.filename}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', overflow: 'hidden' }} title={item.filename}>
+              {showVerified && <CheckCircleIcon style={{ color: '#10b981', fontSize: '16px', flexShrink: 0 }} title="Verified Duplicate (SHA-256 Match)" />}
+              {showUnverified && <HourglassEmptyIcon style={{ color: '#f59e0b', fontSize: '16px', flexShrink: 0 }} title="Unverified Duplicate (Pending Hash)" />}
+              <span style={{ fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.filename}</span>
+            </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#94a3b8' }}>
               <span>{item.category}</span>
               <span>{item.size}</span>
@@ -166,7 +174,11 @@ function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContext
             onError={(e) => { e.target.src = renderThumb({ ...item, thumbnail: null }) }}
           />
           <div className="list-info">
-            <p className="list-title">{item.filename}</p>
+            <p className="list-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              {showVerified && <CheckCircleIcon style={{ color: '#10b981', fontSize: '18px', flexShrink: 0 }} title="Verified Duplicate (SHA-256 Match)" />}
+              {showUnverified && <HourglassEmptyIcon style={{ color: '#f59e0b', fontSize: '18px', flexShrink: 0 }} title="Unverified Duplicate (Pending Hash)" />}
+              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.filename}</span>
+            </p>
             <p className="list-meta">
               <span>{item.category}</span>
               <span>{item.size}</span>
@@ -245,6 +257,10 @@ const [showSearchHelp, setShowSearchHelp] = useState(false)
 const [isShutdown, setIsShutdown] = useState(false)
 const [toastMessage, setToastMessage] = useState('');
 const [showToast, setShowToast] = useState(false);
+const [suggestionsData, setSuggestionsData] = useState({ type: 'none', suggestions: [], lastWord: '' });
+const suggestionTimeout = useRef(null);
+const searchContainerRef = useRef(null);
+const [focusedSuggestionIndex, setFocusedSuggestionIndex] = useState(-1);
 
 async function loadFiles(nextOffset = 0, append = false, cat = filterCategory){
   const r = await axios.get(`${API}/files?category=${cat}&offset=${nextOffset}&limit=50`)
@@ -259,6 +275,56 @@ async function loadFiles(nextOffset = 0, append = false, cat = filterCategory){
     setSearchCache([])
   }
 }
+
+const handleSearchChange = (e) => {
+  const value = e.target.value;
+  doSearch(value);
+  setShowSearchHelp(false);
+  setFocusedSuggestionIndex(-1);
+
+  if (suggestionTimeout.current) clearTimeout(suggestionTimeout.current);
+  suggestionTimeout.current = setTimeout(async () => {
+    if (!value.trim()) {
+      setSuggestionsData({ type: 'none', suggestions: [], lastWord: '' });
+      return;
+    }
+    try {
+      const r = await axios.get(`${API}/search/suggestions?q=${encodeURIComponent(value)}&limit=5`);
+      setSuggestionsData(r.data);
+    } catch (err) {
+      console.warn('Suggestions failed', err);
+    }
+  }, 300);
+};
+
+const applySuggestion = (suggestion) => {
+  const words = query.trim().split(' ');
+  words.pop();
+  words.push(suggestion);
+  const newQuery = words.join(' ') + ' ';
+  setQuery(newQuery);
+  setSuggestionsData({ type: 'none', suggestions: [], lastWord: '' });
+  setFocusedSuggestionIndex(-1);
+  doSearch(newQuery);
+};
+
+const handleKeyDown = (e) => {
+  if (suggestionsData.suggestions.length > 0) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setFocusedSuggestionIndex(prev => prev < suggestionsData.suggestions.length - 1 ? prev + 1 : prev);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setFocusedSuggestionIndex(prev => prev > 0 ? prev - 1 : -1);
+    } else if (e.key === 'Enter' && focusedSuggestionIndex >= 0) {
+      e.preventDefault();
+      applySuggestion(suggestionsData.suggestions[focusedSuggestionIndex]);
+    } else if (e.key === 'Escape') {
+      setSuggestionsData({ type: 'none', suggestions: [], lastWord: '' });
+      setFocusedSuggestionIndex(-1);
+    }
+  }
+};
 
 function doSearch(value, cat = filterCategory){
   setQuery(value)
@@ -351,6 +417,7 @@ const showToastMessage = (message) => {
 async function saveSettings(){
  await axios.post(`${API}/settings`,settings)
  showToastMessage('Settings Saved');
+ await loadDashboard();
  // After saving settings, reload content if on explorer or search page
  if (page === 'explorer') {
    await loadFiles(0, false, filterCategory);
@@ -394,6 +461,7 @@ async function indexerAction(action){
    setCheckedFiles(new Set())
    setOffset(0)
    setHasMore(false)
+   setStats({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0})
  } else {
    await axios.post(`${API}/indexer/${action}`)
  }
@@ -467,6 +535,15 @@ const selectAll = () => {
 };
 
 async function deleteSelected() {
+  if (filterCategory === 'duplicates' && !settings.allow_unverified_deletion) {
+    const filesToDelete = files.filter(f => checkedFiles.has(f.path));
+    const hasUnverified = filesToDelete.some(f => !f.metadata?.sha256);
+    if (hasUnverified) {
+      alert('Deletion Blocked: One or more selected files lack a verified SHA-256 sum.\n\nBecause your cold storage backup might be offline, we cannot guarantee these are true duplicates yet. You can override this protection in the Settings menu.');
+      return;
+    }
+  }
+
   if(!window.confirm(`Are you sure you want to permanently delete ${checkedFiles.size} files from your disk and database? This action cannot be undone.`)) return;
   try {
     await axios.post(`${API}/delete-files`, { paths: Array.from(checkedFiles) });
@@ -520,9 +597,36 @@ async function handleShutdown() {
   }
 }
 
+async function stopVerifyDuplicates() {
+  try {
+    setIndexer(prev => ({ ...prev, hasher_running: false }));
+    await axios.post(`${API}/stop-verify-duplicates`)
+    showToastMessage('Stopping duplicate verification...')
+    await loadDashboard();
+  } catch(err) {
+    alert('Error stopping verification: ' + (err?.response?.data?.detail || err.message))
+  }
+}
+
+async function verifyDuplicates() {
+  try {
+    setIndexer(prev => ({ ...prev, hasher_running: true }));
+    await axios.post(`${API}/verify-duplicates`)
+    showToastMessage('Duplicate verification started in background...')
+    await loadDashboard();
+  } catch(err) {
+    setIndexer(prev => ({ ...prev, hasher_running: false }));
+    alert('Error starting verification: ' + (err?.response?.data?.detail || err.message))
+  }
+}
+
 const handleFilterChange = (e) => {
   const newCat = e.target.value;
   setFilterCategory(newCat);
+  if (newCat === 'duplicates') {
+    setSortBy('size');
+    setSortOrder('desc');
+  }
   setSelected(null);
   if (page === 'explorer') {
     loadFiles(0, false, newCat);
@@ -535,6 +639,10 @@ const handleCategoryClick = (category) => {
   setFilterCategory(category);
   setPage('explorer');
   setSelected(null);
+  if (category === 'duplicates') {
+    setSortBy('size');
+    setSortOrder('desc');
+  }
   loadFiles(0, false, category);
 };
 
@@ -569,6 +677,9 @@ const sortedFiles = useMemo(() => {
 }, [files, sortBy, sortOrder]);
 
 const groupedFiles = useMemo(() => {
+  if (filterCategory === 'duplicates') {
+    return { 'Duplicate Files': sortedFiles };
+  }
   const groups = {};
   sortedFiles.forEach(file => {
     let key = 'Unknown Date';
@@ -657,6 +768,17 @@ useEffect(() => {
   document.querySelectorAll('.date-header').forEach(h => observer.current?.observe(h));
 }, [groupedFiles, page]);
 
+useEffect(() => {
+  const handleClickOutside = (event) => {
+    if (searchContainerRef.current && !searchContainerRef.current.contains(event.target)) {
+      setSuggestionsData({ type: 'none', suggestions: [], lastWord: '' });
+      setFocusedSuggestionIndex(-1);
+    }
+  };
+  document.addEventListener('mousedown', handleClickOutside);
+  return () => document.removeEventListener('mousedown', handleClickOutside);
+}, []);
+
 useEffect(()=>{
  loadFiles()
  loadSettings()
@@ -665,13 +787,13 @@ useEffect(()=>{
 
 useEffect(() => {
   let interval;
-  if (indexer.running) {
+  if (indexer.running || indexer.hasher_running) {
     interval = setInterval(() => {
       loadDashboard();
-    }, 1000); // Poll every 1 second while the indexer is running
+    }, 1000); // Poll every 1 second while the indexer or hasher is running
   }
   return () => clearInterval(interval);
-}, [indexer.running]);
+}, [indexer.running, indexer.hasher_running]);
 
 function getOfflinePlaceholder(text, bgColor, textColor) {
   const safeText = String(text).replace(/[<>&'"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','\'':'&apos;','"':'&quot;'}[c]));
@@ -824,14 +946,35 @@ return(
   {showSidebar ? <MenuOpenIcon /> : <MenuIcon />}
 </ActionButton>
 
-<div style={{ display: 'flex', flex: 1, position: 'relative', alignItems: 'center' }}>
+<div ref={searchContainerRef} style={{ display: 'flex', flex: 1, position: 'relative', alignItems: 'center' }}>
   <input
     className='search'
     placeholder='Search files, tags, metadata...'
     value={query}
-    onChange={(e)=>{ doSearch(e.target.value); setShowSearchHelp(false); }}
+    onChange={handleSearchChange}
+    onKeyDown={handleKeyDown}
     style={{ flex: 1, margin: 0, paddingRight: '70px' }}
   />
+  {suggestionsData.type !== 'none' && suggestionsData.suggestions.length > 0 && (
+    <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: '70px', background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', padding: '12px', zIndex: 90, boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)' }}>
+      {suggestionsData.type === 'did_you_mean' && (
+        <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '8px' }}>Did you mean:</div>
+      )}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+        {suggestionsData.suggestions.map((s, i) => (
+          <button
+            key={i}
+            onClick={() => applySuggestion(s)}
+            style={{ background: i === focusedSuggestionIndex ? '#3b82f64a' : '#3b82f62a', border: '1px solid #3b82f6', color: '#38bdf8', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: '500', transition: 'all 0.2s ease' }}
+            onMouseEnter={() => setFocusedSuggestionIndex(i)}
+            onMouseLeave={() => setFocusedSuggestionIndex(-1)}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
+    </div>
+  )}
   <div style={{ position: 'absolute', right: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
     {query && (
       <ActionButton
@@ -936,6 +1079,7 @@ return(
     <option value='installer'>Installers</option>
     <option value='binary'>Binary Files</option>
     <option value='other'>Others</option>
+    <option value='duplicates'>Duplicates</option>
   </select>
 
   <label style={{marginLeft:'10px'}}>Sort by:</label>
@@ -947,6 +1091,20 @@ return(
   <ActionButton className="" style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }} onClick={()=>setSortOrder(sortOrder==='asc'?'desc':'asc')}>
     {sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />}
   </ActionButton>
+
+  {filterCategory === 'duplicates' && (
+    indexer.hasher_running ? (
+      <ActionButton className="btn btn-secondary" style={{ marginLeft: '10px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px', color: '#ef4444' }} onClick={stopVerifyDuplicates}>
+        <CloseIcon fontSize="small" />
+        Stop Verification
+      </ActionButton>
+    ) : (
+      <ActionButton className="btn btn-secondary" style={{ marginLeft: '10px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={verifyDuplicates}>
+        <CheckCircleIcon fontSize="small" style={{ color: '#10b981' }} />
+        Verify Hashes
+      </ActionButton>
+    )
+  )}
 
   <div style={{ flex: 1 }}></div>
 
@@ -973,8 +1131,12 @@ return(
     <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedFiles.size} files selected</span>
     <ActionButton className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={openSelected}>Open Selected</ActionButton>
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={copySelected}>Copy Selected</ActionButton>
-    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={moveSelected}>Move Selected</ActionButton>
-    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={deleteSelected}>Delete Selected</ActionButton>
+    {settings.read_only_mode === false && (
+      <>
+        <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={moveSelected}>Move Selected</ActionButton>
+        <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={deleteSelected}>Delete Selected</ActionButton>
+      </>
+    )}
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedFiles(new Set())}>Clear Selection</ActionButton>
   </div>
 )}
@@ -987,19 +1149,34 @@ Object.entries(groupedFiles).map(([dateKey, filesGroup]) => (
 <h2 className="date-header" data-date={dateKey}>{dateKey}</h2>
 <div className={viewMode === 'grid' ? 'grid' : 'list'}>
 {
-filesGroup.map((item)=>(
-<FileCard
-  key={item.path}
-  item={item}
-  viewMode={viewMode}
-  isChecked={checkedFiles.has(item.path)}
-  onToggleCheck={toggleCheck}
-  onClick={handleItemClick}
-  onContextMenu={openContainingFolder}
-  onSelectAndOpen={(i) => { setSelected(i); openFile(i.path); }}
-  renderThumb={renderThumb}
-/>
-))
+(() => {
+  let isAlternateGroup = false;
+  return filesGroup.map((item, index) => {
+    const prevItem = index > 0 ? filesGroup[index - 1] : null;
+    const isNewDuplicateGroup = filterCategory === 'duplicates' && prevItem && prevItem.size !== item.size;
+    if (isNewDuplicateGroup) isAlternateGroup = !isAlternateGroup;
+    return (
+      <Fragment key={item.path}>
+        {isNewDuplicateGroup && (
+          <div style={{ gridColumn: '1 / -1', width: '100%', height: '2px', background: '#3b82f6', margin: viewMode === 'grid' ? '8px 0' : '4px 0', opacity: 0.5, borderRadius: '2px' }} />
+        )}
+        <FileCard
+          item={item}
+          viewMode={viewMode}
+          isChecked={checkedFiles.has(item.path)}
+          onToggleCheck={toggleCheck}
+          onClick={handleItemClick}
+          onContextMenu={openContainingFolder}
+          onSelectAndOpen={(i) => { setSelected(i); openFile(i.path); }}
+          renderThumb={renderThumb}
+          isAltGroup={isAlternateGroup}
+          showVerified={filterCategory === 'duplicates' && !!item.metadata?.sha256}
+          showUnverified={filterCategory === 'duplicates' && !item.metadata?.sha256}
+        />
+      </Fragment>
+    );
+  });
+})()
 }
 </div>
 </div>
@@ -1096,6 +1273,12 @@ page==='dashboard' &&
 <StatCard title="Binaries" value={stats.binaries} icon={<MemoryIcon />} color="#64748b" onClick={() => handleCategoryClick('binary')} />
 <StatCard title="Others" value={stats.others} icon={<CategoryIcon />} color="#94a3b8" onClick={() => handleCategoryClick('other')} />
 </div>
+
+<h3 style={{ marginTop: '32px', marginBottom: '16px' }}>Maintenance & Analysis</h3>
+<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
+<StatCard title="Duplicates" value={stats.duplicates || 0} icon={<FileCopyIcon />} color="#f43f5e" onClick={() => handleCategoryClick('duplicates')} />
+</div>
+
 <div style={{display:'grid',gridTemplateColumns:'1.3fr 1fr',gap:'18px',marginTop:'24px'}}>
 <div style={{background:'#111827',padding:'18px',borderRadius:'16px',border:'1px solid #24324a'}}>
 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: 0 }}><AnalyticsIcon style={{ color: '#3b82f6' }} /> Indexing Status</h2>
@@ -1127,6 +1310,15 @@ Stop
 <ActionButton disabled={indexer.running} onClick={()=>indexerAction('reindex')}>
 Re-index
 </ActionButton>
+{indexer.hasher_running ? (
+<ActionButton onClick={stopVerifyDuplicates} style={{ color: '#ef4444' }}>
+Stop Hash Verification
+</ActionButton>
+) : (
+<ActionButton onClick={verifyDuplicates}>
+Verify Hashes
+</ActionButton>
+)}
 </div>
 </div>
 </div>
@@ -1154,21 +1346,30 @@ page==='settings' &&
 <input type='checkbox' checked={settings.animations_enabled !== false} onChange={(e)=>updateUIPreferences({ animations_enabled: e.target.checked })} /> Enable UI Animations
 </label>
 
+<h3>Data Safety</h3>
+
+<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px', color:'#38bdf8'}}>
+<input type='checkbox' checked={settings.read_only_mode !== false} onChange={(e)=>updateUIPreferences({ read_only_mode: e.target.checked })} /> Enable Read-Only Mode (Hide destructive Move/Delete options)
+</label>
+
+<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'24px', color:'#ef4444'}}>
+<input type='checkbox' checked={settings.allow_unverified_deletion || false} onChange={(e)=>updateUIPreferences({ allow_unverified_deletion: e.target.checked })} /> Allow deleting unverified duplicates (Danger)
+</label>
+
 <h3>Storage</h3>
 
 <p>Backup Path</p>
-
 <div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
-<input
-className='setting'
-style={{ marginBottom: 0 }}
-value={settings.backup_path || ''}
-onChange={(e)=>setSettings({
-...settings,
-backup_path:e.target.value
-})}
-/>
-<ActionButton className="btn btn-secondary" onClick={()=>choosePath('backup_path','directory')}>Select</ActionButton>
+  <input
+    className='setting'
+    style={{ marginBottom: 0 }}
+    value={settings.backup_path || ''}
+    onChange={(e)=>setSettings({
+      ...settings,
+      backup_path:e.target.value
+    })}
+  />
+  <ActionButton className="btn btn-secondary" onClick={()=>choosePath('backup_path','directory')}>Select</ActionButton>
 </div>
 
 <p>Database Path</p>
@@ -1203,7 +1404,7 @@ thumbnail_path:e.target.value
 
 <h3>Drive Mapping</h3>
 
-<label style={{display:'flex',alignItems:'center',gap:'10px'}}>
+<label style={{display:'flex',alignItems:'center',gap:'10px', marginBottom:'10px'}}>
 <input
  type='checkbox'
  checked={settings.path_mapping_enabled || false}
@@ -1212,35 +1413,41 @@ thumbnail_path:e.target.value
  path_mapping_enabled:e.target.checked
  })}
 />
- Enable portable drive path remapping
+ Enable drive path remapping
 </label>
+<p style={{color:'#94a3b8',fontSize:'13px',margin:'0 0 14px 0'}}>Use this when your backup drive's letter or mount point has changed.</p>
 
 {settings.path_mapping_enabled && (
   <>
-    <p style={{marginTop:'14px'}}>New Backup Base Path</p>
+    <p style={{marginTop:'14px'}}>Original Indexed Base Path</p>
     <div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
       <input
         className='setting'
         style={{ marginBottom: 0 }}
-        value={settings.backup_path || ''}
+        value={settings.original_backup_path || ''}
         onChange={(e)=>setSettings({
           ...settings,
-          backup_path:e.target.value
+          original_backup_path:e.target.value
         })}
       />
-      <ActionButton className="btn btn-secondary" onClick={()=>choosePath('backup_path','directory')}>Select</ActionButton>
+      <ActionButton className="btn btn-secondary" onClick={()=>choosePath('original_backup_path','directory')}>Select</ActionButton>
     </div>
 
-    <p style={{marginTop:'14px'}}>Original Indexed Base Path</p>
-    <div style={{padding:'12px',border:'1px solid #24324a',borderRadius:'10px',background:'#0f172a',color:'#d1d5db'}}>
-      {settings.original_backup_path || 'Not available yet'}
+    <p style={{marginTop:'14px'}}>Mapped Backup Path</p>
+    <div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
+      <input
+        className='setting'
+        style={{ marginBottom: 0 }}
+        value={settings.mapped_backup_path || ''}
+        onChange={(e)=>setSettings({
+          ...settings,
+          mapped_backup_path:e.target.value
+        })}
+      />
+      <ActionButton className="btn btn-secondary" onClick={()=>choosePath('mapped_backup_path','directory')}>Select</ActionButton>
     </div>
   </>
 )}
-
-<p style={{color:'#94a3b8',fontSize:'13px',marginTop:'10px'}}>
-When enabled, WABS will use the current Backup Path as the new base and resolve missing indexed files by preserving the relative path under the original indexed root.
-</p>
 
 <h3>AI / LLM</h3>
 

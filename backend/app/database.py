@@ -52,3 +52,36 @@ with engine.connect() as conn:
         conn.execute(text("ALTER TABLE files ADD COLUMN metadata_json TEXT"))
         if "metadata" in existing:
             conn.execute(text("UPDATE files SET metadata_json=metadata WHERE metadata_json IS NULL OR metadata_json=''"))
+
+with engine.begin() as conn:
+    conn.execute(text("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+            filename, tags, 
+            content='files', content_rowid='id'
+        );
+    """))
+    conn.execute(text("""
+        CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
+            INSERT INTO files_fts(rowid, filename, tags) 
+            VALUES (new.id, new.filename, new.tags);
+        END;
+    """))
+    conn.execute(text("""
+        CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
+            INSERT INTO files_fts(files_fts, rowid, filename, tags) 
+            VALUES ('delete', old.id, old.filename, old.tags);
+        END;
+    """))
+    conn.execute(text("""
+        CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
+            INSERT INTO files_fts(files_fts, rowid, filename, tags) 
+            VALUES ('delete', old.id, old.filename, old.tags);
+            
+            INSERT INTO files_fts(rowid, filename, tags) 
+            VALUES (new.id, new.filename, new.tags);
+        END;
+    """))
+    
+    conn.execute(text("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS files_fts_vocab USING fts5vocab('files_fts', 'row');
+    """))

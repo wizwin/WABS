@@ -1,7 +1,9 @@
 import json
+import os
 import re
 import time
 import traceback
+import hashlib
 from pathlib import Path
 from threading import Thread
 
@@ -9,10 +11,12 @@ try:
     from backend.app.database import SessionLocal, FileIndex
     from backend.app.config import load_config
     from backend.app.state import STATE
+    from sqlalchemy import func
 except ModuleNotFoundError:
     from database import SessionLocal, FileIndex
     from config import load_config
     from state import STATE
+    from sqlalchemy import func
 
 try:
     from PIL import Image, ExifTags
@@ -74,13 +78,24 @@ def classify(ext):
     return "other"
 
 
-def build_tags(metadata, category, ext):
+def build_tags(metadata, category, ext, path_obj=None):
     tags = [category or "other", ext.lower().lstrip('.')]
     if isinstance(metadata, dict):
         if "date" in metadata:
             tags.extend(metadata["date"] if isinstance(metadata["date"], list) else [metadata["date"]])
         if "camera" in metadata:
             tags.append(metadata["camera"].lower())
+            
+    if path_obj:
+        # 1. Tokenize parent directory names (e.g., "Summer_Vacation" -> "summer", "vacation")
+        for part in path_obj.parts[:-1]:
+            words = re.findall(r'[a-zA-Z0-9]+', part)
+            tags.extend([w.lower() for w in words if len(w) > 2])
+            
+        # 2. Tokenize the filename itself
+        words = re.findall(r'[a-zA-Z0-9]+', path_obj.stem)
+        tags.extend([w.lower() for w in words if len(w) > 2])
+        
     return ",".join(set(tags))
 
 
@@ -166,16 +181,18 @@ def extract_metadata_for_file(path, category):
                         pass
             elif path.suffix.lower() in [".txt", ".md", ".csv", ".log"]:
                 try:
-                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                        lines = sum(1 for _ in f)
-                    metadata["lines"] = lines
-                    metadata["pages"] = max(1, (lines + 49) // 50)  # Estimate ~50 lines per page
+                    if path.stat().st_size < 10 * 1024 * 1024:  # Skip line counting for text files > 10MB
+                        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                            lines = sum(1 for _ in f)
+                        metadata["lines"] = lines
+                        metadata["pages"] = max(1, (lines + 49) // 50)  # Estimate ~50 lines per page
                 except Exception:
                     pass
         elif category == "code":
             try:
-                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                    metadata["loc"] = sum(1 for _ in f)
+                if path.stat().st_size < 10 * 1024 * 1024:  # Skip line counting for code files > 10MB
+                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                        metadata["loc"] = sum(1 for _ in f)
             except Exception:
                 pass
         elif category == "video" and cv2 is not None:
@@ -321,10 +338,84 @@ def background_ai_categorize(cfg):
     finally:
         session.close()
 
+def background_lazy_hasher():
+    if STATE.get("hasher_running"):
+        return
+    STATE["hasher_running"] = True
+    STATE["hasher_stopped"] = False
+    session = SessionLocal()
+    try:
+        # 1. Identify all sizes that have duplicates
+        dup_sizes_query = session.query(FileIndex.size).filter(
+            FileIndex.size != '0', 
+            FileIndex.size.isnot(None)
+        ).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1).all()
+        
+        dup_sizes = [row[0] for row in dup_sizes_query]
+        if not dup_sizes:
+            return
+            
+        # 2. Fetch all files belonging to these duplicate size groups
+        files = session.query(FileIndex).filter(FileIndex.size.in_(dup_sizes)).all()
+        
+        updates = 0
+        for item in files:
+            if STATE.get("hasher_stopped") or STATE.get("stopped"):
+                break
+            try:
+                meta = json.loads(item.metadata_json or "{}")
+                if "sha256" in meta:
+                    continue
+                    
+                file_path = Path(item.path)
+                if file_path.exists() and file_path.is_file():
+                    hasher = hashlib.sha256()
+                    with open(file_path, 'rb') as f:
+                        for chunk in iter(lambda: f.read(4096 * 1024), b""): # Read in 4MB streaming chunks
+                            hasher.update(chunk)
+                    meta["sha256"] = hasher.hexdigest()
+                    item.metadata_json = json.dumps(meta)
+                    session.add(item)
+                    updates += 1
+                    
+                    if updates >= 10:
+                        session.commit()
+                        updates = 0
+            except Exception as e:
+                pass
+        if updates > 0:
+            session.commit()
+    except Exception as e:
+        print(f"Lazy hasher error: {e}")
+    finally:
+        STATE["hasher_running"] = False
+        session.close()
+
 def run():
 
     cfg = load_config()
     root = Path(cfg.get("backup_path", ""))
+
+    # --- Self-Healing: Re-evaluate 'other' files for newly added extensions ---
+    try:
+        with SessionLocal() as session:
+            others = session.query(FileIndex).filter(FileIndex.category == 'other').all()
+            updated_count = 0
+            for item in others:
+                new_cat = classify(item.extension or "")
+                if new_cat != "other":
+                    item.category = new_cat
+                    tags = set(item.tags.split(",")) if item.tags else set()
+                    tags.add(new_cat)
+                    if "other" in tags:
+                        tags.remove("other")
+                    item.tags = ",".join(filter(bool, tags))
+                    updated_count += 1
+            if updated_count > 0:
+                session.commit()
+                print(f"Self-healed {updated_count} files from 'other' to their new categories.")
+    except Exception as e:
+        print(f"Pre-scan reclassification error: {e}")
 
     BATCH_SIZE = 500
 
@@ -352,35 +443,46 @@ def run():
 
     try:
         with SessionLocal() as session:
-            files = sorted([f for f in root.rglob("*") if f.is_file()])
+            STATE["status"] = "Discovering files..."
+            
+            # Fast traversal using os.walk and pure strings to avoid Path object overhead
+            raw_files = []
+            for dirpath, _, filenames in os.walk(str(root)):
+                for f in filenames:
+                    raw_files.append(os.path.join(dirpath, f))
+            
+            raw_files.sort()
 
-            STATE["total"] = len(files)
+            STATE["total"] = len(raw_files)
             STATE["status"] = "Indexing"
 
             start_offset = 0
-            if STATE.get("update_only"):
+            is_update_only = STATE.get("update_only")
+            if is_update_only:
                 existing_paths = {r[0] for r in session.query(FileIndex.path).all()}
-                files_to_process = [f for f in files if str(f) not in existing_paths]
+                files_to_process = [f for f in raw_files if f not in existing_paths]
                 
-                processed_count = len(files) - len(files_to_process)
+                processed_count = len(raw_files) - len(files_to_process)
                 STATE["indexed"] = processed_count
-                STATE["total"] = len(files)
+                STATE["total"] = len(raw_files)
                 STATE["current"] = processed_count
                 start_offset = processed_count
-            elif resume_index > 0 and resume_index < len(files):
+            elif resume_index > 0 and resume_index < len(raw_files):
                 start_offset = resume_index
-                files_to_process = files[start_offset:]
-                STATE["total"] = len(files)
+                files_to_process = raw_files[start_offset:]
+                STATE["total"] = len(raw_files)
                 STATE["current"] = start_offset
-            elif resume_index >= len(files):
-                start_offset = len(files)
+            elif resume_index >= len(raw_files):
+                start_offset = len(raw_files)
                 files_to_process = []
-                STATE["total"] = len(files)
+                STATE["total"] = len(raw_files)
                 STATE["current"] = start_offset
             else:
-                files_to_process = files
+                files_to_process = raw_files
 
-            for idx, file in enumerate(files_to_process):
+            for idx, file_str in enumerate(files_to_process):
+
+                file = Path(file_str)
 
                 if STATE["stopped"]:
                     STATE["status"] = "Stopped"
@@ -422,13 +524,15 @@ def run():
                             pass
 
                     metadata, extra_tags = extract_metadata_for_file(file, category)
-                    tags = build_tags(metadata, category, file.suffix)
+                    tags = build_tags(metadata, category, file.suffix, file)
                     if extra_tags:
                         tags = ",".join(set(tags.split(",") + extra_tags))
 
-                    exists = session.query(FileIndex).filter_by(
-                        path=str(file)
-                    ).first()
+                    exists = None
+                    if not is_update_only:
+                        exists = session.query(FileIndex).filter_by(
+                            path=str(file)
+                        ).first()
 
                     if exists:
                         if exists.size != file_size or exists.modified != modified_time or exists.metadata_json != json.dumps(metadata) or exists.tags != tags:
