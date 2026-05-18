@@ -10,6 +10,16 @@ except ModuleNotFoundError:
 
 cfg = load_config()
 
+if not cfg.get("backup_configs"):
+    cfg["backup_configs"] = [{
+        "id": "default",
+        "name": "Default Backup Location",
+        "backup_path": cfg.get("backup_path", ""),
+        "mapped_backup_path": cfg.get("mapped_backup_path", ""),
+        "path_mapping_enabled": cfg.get("path_mapping_enabled", False),
+        "read_only_mode": cfg.get("read_only_mode", True)
+    }]
+
 db = Path(cfg["database_path"])
 
 if not db.is_absolute():

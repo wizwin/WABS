@@ -394,7 +394,12 @@ def background_lazy_hasher():
 def run():
 
     cfg = load_config()
-    root = Path(cfg.get("backup_path", ""))
+    backup_configs = cfg.get("backup_configs", [])
+    if not backup_configs:
+        backup_configs = [{"backup_path": cfg.get("backup_path", "")}]
+
+    roots = [Path(c.get("backup_path", "")) for c in backup_configs if c.get("backup_path")]
+    valid_roots = [r for r in roots if r.exists() and r.is_dir()]
 
     # --- Self-Healing: Re-evaluate 'other' files for newly added extensions ---
     try:
@@ -419,8 +424,10 @@ def run():
 
     BATCH_SIZE = 500
 
+    last_root_id = ",".join(str(r) for r in valid_roots)
+
     resume_index = 0
-    if STATE.get("last_root") == str(root) and STATE.get("indexed", 0) > 0:
+    if STATE.get("last_root") == last_root_id and STATE.get("indexed", 0) > 0:
         resume_index = STATE["indexed"]
     else:
         STATE["current"] = 0
@@ -430,15 +437,15 @@ def run():
     STATE["paused"] = False
     STATE["stopped"] = False
     STATE["status"] = "Scanning"
-    STATE["last_root"] = str(root)
+    STATE["last_root"] = last_root_id
     if resume_index == 0:
         STATE["current"] = 0
         STATE["total"] = 0
     STATE["current_file"] = ""
 
-    if not root.exists() or not root.is_dir():
+    if not valid_roots:
         STATE["running"] = False
-        STATE["status"] = f"Invalid backup path: {root}"
+        STATE["status"] = "No valid backup paths configured or found."
         return
 
     try:
@@ -447,9 +454,10 @@ def run():
             
             # Fast traversal using os.walk and pure strings to avoid Path object overhead
             raw_files = []
-            for dirpath, _, filenames in os.walk(str(root)):
-                for f in filenames:
-                    raw_files.append(os.path.join(dirpath, f))
+            for root_path in valid_roots:
+                for dirpath, _, filenames in os.walk(str(root_path)):
+                    for f in filenames:
+                        raw_files.append(os.path.join(dirpath, f))
             
             raw_files.sort()
 

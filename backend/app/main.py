@@ -82,39 +82,42 @@ def _build_item(r):
 
 def _resolve_path(original_path: Path) -> Path:
     cfg = load_config()
-    if cfg.get("path_mapping_enabled"):
-        source_root_str = cfg.get("original_backup_path")
-        target_root_str = cfg.get("mapped_backup_path")
+    backup_configs = cfg.get("backup_configs", [])
 
-        if source_root_str and target_root_str:
-            try:
-                # Pre-normalize slashes to ensure Windows network paths (\\) 
-                # parse correctly into .parts even if running on Linux/Mac (/)
-                normalized_orig = str(original_path).replace('\\', os.sep).replace('/', os.sep)
-                normalized_src = source_root_str.replace('\\', os.sep).replace('/', os.sep)
-                
-                src_path = Path(normalized_src)
-                tgt_path = Path(target_root_str)
-                
-                orig_parts = Path(normalized_orig).parts
-                src_parts = src_path.parts
-                
-                if len(orig_parts) >= len(src_parts):
-                    # Verify the components actually match before splicing
-                    match = True
-                    for i in range(len(src_parts)):
-                        orig_part = orig_parts[i]
-                        src_part = src_parts[i]
-                        if platform.system() == "Windows":
-                            orig_part = orig_part.lower()
-                            src_part = src_part.lower()
-                        if orig_part != src_part:
-                            match = False
-                            break
-                    if match:
-                        return tgt_path.joinpath(*orig_parts[len(src_parts):])
-            except Exception:
-                pass
+    for config in backup_configs:
+        if config.get("path_mapping_enabled"):
+            source_root_str = config.get("backup_path")
+            target_root_str = config.get("mapped_backup_path")
+
+            if source_root_str and target_root_str:
+                try:
+                    # Pre-normalize slashes to ensure Windows network paths (\\) 
+                    # parse correctly into .parts even if running on Linux/Mac (/)
+                    normalized_orig = str(original_path).replace('\\', os.sep).replace('/', os.sep)
+                    normalized_src = source_root_str.replace('\\', os.sep).replace('/', os.sep)
+                    
+                    src_path = Path(normalized_src)
+                    tgt_path = Path(target_root_str)
+                    
+                    orig_parts = Path(normalized_orig).parts
+                    src_parts = src_path.parts
+                    
+                    if len(orig_parts) >= len(src_parts):
+                        # Verify the components actually match before splicing
+                        match = True
+                        for i in range(len(src_parts)):
+                            orig_part = orig_parts[i]
+                            src_part = src_parts[i]
+                            if platform.system() == "Windows":
+                                orig_part = orig_part.lower()
+                                src_part = src_part.lower()
+                            if orig_part != src_part:
+                                match = False
+                                break
+                        if match:
+                            return tgt_path.joinpath(*orig_parts[len(src_parts):])
+                except Exception:
+                    pass
 
     # This part is reached if remapping is OFF, or if the path was not applicable for remapping.
     return original_path
@@ -499,6 +502,20 @@ def delete_files(paths: list[str] = Body(..., embed=True)):
     if cfg.get("read_only_mode", True):
         raise HTTPException(status_code=403, detail="Read-Only Mode is enabled. Deletion is blocked.")
 
+    backup_configs = cfg.get("backup_configs", [])
+    for path_str in paths:
+        for config in backup_configs:
+            bp = config.get("backup_path")
+            if bp and config.get("read_only_mode", True):
+                orig_norm = os.path.normpath(path_str)
+                bp_norm = os.path.normpath(bp)
+                if platform.system() == "Windows":
+                    if orig_norm.lower().startswith(bp_norm.lower()):
+                        raise HTTPException(status_code=403, detail=f"Read-Only Mode is enabled for backup '{config.get('name', 'location')}'. Deletion is blocked.")
+                else:
+                    if orig_norm.startswith(bp_norm):
+                        raise HTTPException(status_code=403, detail=f"Read-Only Mode is enabled for backup '{config.get('name', 'location')}'. Deletion is blocked.")
+
     deleted_count = 0
     with SessionLocal() as session:
         for path_str in paths:
@@ -535,6 +552,20 @@ def move_files(paths: list[str] = Body(...), destination: str = Body(...)):
     cfg = load_config()
     if cfg.get("read_only_mode", True):
         raise HTTPException(status_code=403, detail="Read-Only Mode is enabled. Moving files is blocked.")
+
+    backup_configs = cfg.get("backup_configs", [])
+    for path_str in paths:
+        for config in backup_configs:
+            bp = config.get("backup_path")
+            if bp and config.get("read_only_mode", True):
+                orig_norm = os.path.normpath(path_str)
+                bp_norm = os.path.normpath(bp)
+                if platform.system() == "Windows":
+                    if orig_norm.lower().startswith(bp_norm.lower()):
+                        raise HTTPException(status_code=403, detail=f"Read-Only Mode is enabled for backup '{config.get('name', 'location')}'. Moving files is blocked.")
+                else:
+                    if orig_norm.startswith(bp_norm):
+                        raise HTTPException(status_code=403, detail=f"Read-Only Mode is enabled for backup '{config.get('name', 'location')}'. Moving files is blocked.")
 
     dest_path = Path(destination)
     if not dest_path.exists() or not dest_path.is_dir():

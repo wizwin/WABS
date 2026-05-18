@@ -109,7 +109,7 @@ function AppIcon({ size = 64 }) {
   );
 }
 
-function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContextMenu, onSelectAndOpen, renderThumb, isAltGroup, showVerified, showUnverified }) {
+function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContextMenu, onSelectAndOpen, renderThumb, isAltGroup, showVerified, showUnverified, isReadOnly }) {
   const [isHovered, setIsHovered] = useState(false);
   const [isActive, setIsActive] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
@@ -156,6 +156,7 @@ function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContext
               {showVerified && <CheckCircleIcon style={{ color: '#10b981', fontSize: '16px', flexShrink: 0 }} title="Verified Duplicate (SHA-256 Match)" />}
               {showUnverified && <HourglassEmptyIcon style={{ color: '#f59e0b', fontSize: '16px', flexShrink: 0 }} title="Unverified Duplicate (Pending Hash)" />}
               <span style={{ fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.filename}</span>
+              {isReadOnly && <span style={{ fontSize: '10px', background: '#334155', color: '#94a3b8', padding: '2px 4px', borderRadius: '4px', flexShrink: 0, fontWeight: 'bold' }} title="Read-Only Location">RO</span>}
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#94a3b8' }}>
               <span>{item.category}</span>
@@ -178,6 +179,7 @@ function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContext
               {showVerified && <CheckCircleIcon style={{ color: '#10b981', fontSize: '18px', flexShrink: 0 }} title="Verified Duplicate (SHA-256 Match)" />}
               {showUnverified && <HourglassEmptyIcon style={{ color: '#f59e0b', fontSize: '18px', flexShrink: 0 }} title="Unverified Duplicate (Pending Hash)" />}
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.filename}</span>
+              {isReadOnly && <span style={{ fontSize: '10px', background: '#334155', color: '#94a3b8', padding: '2px 6px', borderRadius: '4px', flexShrink: 0, fontWeight: 'bold' }} title="Read-Only Location">Read-Only</span>}
             </p>
             <p className="list-meta">
               <span>{item.category}</span>
@@ -242,6 +244,7 @@ const [sortOrder,setSortOrder]=useState('desc')
 const [filterCategory, setFilterCategory] = useState('all')
 const [viewMode, setViewMode] = useState('grid')
 const [checkedFiles, setCheckedFiles] = useState(new Set())
+const [showSelectedOnly, setShowSelectedOnly] = useState(false)
 const lastCheckedPath = useRef(null)
 const [activeDate, setActiveDate] = useState('')
 const observer = useRef(null)
@@ -261,6 +264,27 @@ const [suggestionsData, setSuggestionsData] = useState({ type: 'none', suggestio
 const suggestionTimeout = useRef(null);
 const searchContainerRef = useRef(null);
 const [focusedSuggestionIndex, setFocusedSuggestionIndex] = useState(-1);
+
+useEffect(() => {
+  if (checkedFiles.size === 0 && showSelectedOnly) {
+    setShowSelectedOnly(false);
+  }
+}, [checkedFiles.size, showSelectedOnly]);
+
+const checkFileReadOnly = (filePath) => {
+  if (settings.read_only_mode !== false) return true;
+  if (!settings.backup_configs) return false;
+  
+  const normFile = String(filePath).replace(/\\/g, '/').toLowerCase();
+  const config = settings.backup_configs.find(c => {
+    return c.backup_path && normFile.startsWith(String(c.backup_path).replace(/\\/g, '/').toLowerCase());
+  });
+  return config ? config.read_only_mode !== false : false;
+};
+
+const isSelectionReadOnly = useMemo(() => {
+  return Array.from(checkedFiles).some(checkFileReadOnly);
+}, [checkedFiles, settings]);
 
 async function loadFiles(nextOffset = 0, append = false, cat = filterCategory){
   const r = await axios.get(`${API}/files?category=${cat}&offset=${nextOffset}&limit=50`)
@@ -396,8 +420,19 @@ function handleScroll(e){
 
 async function loadSettings(){
  const r=await axios.get(`${API}/settings`)
- setSettings(r.data)
- if(r.data.show_sidebar !== undefined) setShowSidebar(r.data.show_sidebar)
+ let data = r.data;
+ if (!data.backup_configs || data.backup_configs.length === 0) {
+   data.backup_configs = [{
+     id: 'default',
+     name: 'Default Backup Location',
+     backup_path: data.backup_path || '',
+     mapped_backup_path: data.mapped_backup_path || '',
+     path_mapping_enabled: data.path_mapping_enabled || false,
+     read_only_mode: data.read_only_mode !== false
+   }];
+ }
+ setSettings(data)
+ if(data.show_sidebar !== undefined) setShowSidebar(data.show_sidebar)
  if(r.data.show_timeline !== undefined) setShowTimeline(r.data.show_timeline)
  if(r.data.show_details !== undefined) setShowDetails(r.data.show_details)
  if(r.data.sidebar_width) setSidebarWidth(r.data.sidebar_width)
@@ -431,6 +466,21 @@ async function choosePath(field, mode){
    const r = await axios.get(`${API}/choose-path?mode=${mode}`)
    if(r.data && r.data.path){
      setSettings(prev => ({...prev,[field]:r.data.path}))
+   }
+ } catch(err){
+   console.warn('Path chooser failed', err)
+   alert('Unable to open native path chooser. Please enter the path manually.')
+ }
+}
+
+async function choosePathForConfig(configId, field, mode){
+ try {
+   const r = await axios.get(`${API}/choose-path?mode=${mode}`)
+   if(r.data && r.data.path){
+     setSettings(prev => ({
+       ...prev,
+       backup_configs: prev.backup_configs.map(c => c.id === configId ? { ...c, [field]: r.data.path } : c)
+     }))
    }
  } catch(err){
    console.warn('Path chooser failed', err)
@@ -647,7 +697,8 @@ const handleCategoryClick = (category) => {
 };
 
 const sortedFiles = useMemo(() => {
-  const sorted = [...files].sort((a,b) => {
+  const baseFiles = showSelectedOnly ? files.filter(f => checkedFiles.has(f.path)) : files;
+  const sorted = [...baseFiles].sort((a,b) => {
     let aVal, bVal;
     if(sortBy === 'date'){
       aVal = new Date(a.modified).getTime();
@@ -674,7 +725,7 @@ const sortedFiles = useMemo(() => {
     }
   });
   return sorted;
-}, [files, sortBy, sortOrder]);
+}, [files, sortBy, sortOrder, showSelectedOnly, checkedFiles]);
 
 const groupedFiles = useMemo(() => {
   if (filterCategory === 'duplicates') {
@@ -1129,9 +1180,10 @@ return(
 {checkedFiles.size > 0 && (
   <div style={{ padding: '10px 18px', background: '#1e293b', borderBottom: '1px solid #1f2937', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
     <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedFiles.size} files selected</span>
+    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', borderColor: showSelectedOnly ? '#3b82f6' : undefined, color: showSelectedOnly ? '#38bdf8' : undefined }} onClick={() => setShowSelectedOnly(!showSelectedOnly)}>{showSelectedOnly ? 'Show All Files' : 'Show Selected Only'}</ActionButton>
     <ActionButton className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={openSelected}>Open Selected</ActionButton>
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={copySelected}>Copy Selected</ActionButton>
-    {settings.read_only_mode === false && (
+    {!isSelectionReadOnly && (
       <>
         <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={moveSelected}>Move Selected</ActionButton>
         <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={deleteSelected}>Delete Selected</ActionButton>
@@ -1172,6 +1224,7 @@ Object.entries(groupedFiles).map(([dateKey, filesGroup]) => (
           isAltGroup={isAlternateGroup}
           showVerified={filterCategory === 'duplicates' && !!item.metadata?.sha256}
           showUnverified={filterCategory === 'duplicates' && !item.metadata?.sha256}
+          isReadOnly={checkFileReadOnly(item.path)}
         />
       </Fragment>
     );
@@ -1329,7 +1382,13 @@ Verify Hashes
 page==='settings' &&
 <div style={{padding:'20px', overflow:'auto', height:'100%'}}>
 
-<h1>Settings</h1>
+<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+  <h1 style={{ margin: 0 }}>Settings</h1>
+  <ActionButton className="btn btn-primary" style={{ padding: '10px 20px', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={saveSettings}>
+    <SettingsIcon fontSize="small" />
+    Save Settings
+  </ActionButton>
+</div>
 
 <h3>View Preferences</h3>
 
@@ -1349,29 +1408,72 @@ page==='settings' &&
 <h3>Data Safety</h3>
 
 <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px', color:'#38bdf8'}}>
-<input type='checkbox' checked={settings.read_only_mode !== false} onChange={(e)=>updateUIPreferences({ read_only_mode: e.target.checked })} /> Enable Read-Only Mode (Hide destructive Move/Delete options)
+<input type='checkbox' checked={settings.read_only_mode !== false} onChange={(e)=>updateUIPreferences({ read_only_mode: e.target.checked })} /> Enable Global Read-Only Mode (Overrides individual backup settings if enabled)
 </label>
 
 <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'24px', color:'#ef4444'}}>
 <input type='checkbox' checked={settings.allow_unverified_deletion || false} onChange={(e)=>updateUIPreferences({ allow_unverified_deletion: e.target.checked })} /> Allow deleting unverified duplicates (Danger)
 </label>
 
-<h3>Storage</h3>
-
-<p>Backup Path</p>
-<div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
-  <input
-    className='setting'
-    style={{ marginBottom: 0 }}
-    value={settings.backup_path || ''}
-    onChange={(e)=>setSettings({
-      ...settings,
-      backup_path:e.target.value
-    })}
-  />
-  <ActionButton className="btn btn-secondary" onClick={()=>choosePath('backup_path','directory')}>Select</ActionButton>
+<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '24px', marginBottom: '16px' }}>
+  <h3 style={{ margin: 0 }}>Storage & Backup Locations</h3>
+  <ActionButton className="btn btn-primary" onClick={() => {
+    const newId = `backup_${Date.now()}`;
+    setSettings(prev => ({
+      ...prev,
+      backup_configs: [...(prev.backup_configs || []), { id: newId, name: `Backup Location ${(prev.backup_configs?.length || 0) + 1}`, backup_path: '', mapped_backup_path: '', path_mapping_enabled: false, read_only_mode: true }]
+    }));
+  }}>+ Add Backup Location</ActionButton>
 </div>
 
+{(settings.backup_configs || []).map((config, index) => (
+  <div key={config.id} style={{ padding: '16px', background: '#1e293b', borderRadius: '10px', marginBottom: '16px', border: '1px solid #334155' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+      <input
+        className='setting'
+        style={{ margin: 0, fontWeight: 'bold', background: 'transparent', border: 'none', color: '#f8fafc', fontSize: '16px', padding: '0 4px', width: '100%', maxWidth: '300px' }}
+        value={config.name || `Backup Location ${index + 1}`}
+        onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, name: e.target.value } : c) }))}
+        placeholder="Name your backup location"
+      />
+      {(settings.backup_configs || []).length > 1 && (
+        <ActionButton className="btn btn-secondary" style={{ background: '#ef4444', borderColor: '#b91c1c', color: 'white', padding: '4px 8px' }} onClick={() => {
+          if (window.confirm(`Are you sure you want to remove "${config.name || `Backup Location ${index + 1}`}"?`)) {
+            setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.filter(c => c.id !== config.id) }));
+          }
+        }}>Remove Location</ActionButton>
+      )}
+    </div>
+    
+    <p>Backup Path (Indexed Location)</p>
+    <div style={{ display: 'flex', gap: '10px', marginBottom: '14px' }}>
+      <input className='setting' style={{ marginBottom: 0 }} value={config.backup_path || ''} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, backup_path: e.target.value } : c) }))} />
+      <ActionButton className="btn btn-secondary" onClick={()=>choosePathForConfig(config.id, 'backup_path', 'directory')}>Select</ActionButton>
+    </div>
+
+    <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', color: '#38bdf8' }}>
+      <input type='checkbox' checked={config.path_mapping_enabled || false} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, path_mapping_enabled: e.target.checked } : c) }))} />
+      Enable drive path remapping (Use if drive letter changed)
+    </label>
+
+    {config.path_mapping_enabled && (
+      <>
+        <p>Mapped Backup Path (New Location)</p>
+        <div style={{ display: 'flex', gap: '10px', marginBottom: '14px' }}>
+          <input className='setting' style={{ marginBottom: 0 }} value={config.mapped_backup_path || ''} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, mapped_backup_path: e.target.value } : c) }))} />
+          <ActionButton className="btn btn-secondary" onClick={()=>choosePathForConfig(config.id, 'mapped_backup_path', 'directory')}>Select</ActionButton>
+        </div>
+      </>
+    )}
+
+    <label style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#38bdf8' }}>
+      <input type='checkbox' checked={config.read_only_mode !== false} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, read_only_mode: e.target.checked } : c) }))} />
+      Enable Read-Only Mode (Hide destructive Move/Delete options for this backup)
+    </label>
+  </div>
+))}
+
+<h3>System Paths</h3>
 <p>Database Path</p>
 
 <div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
@@ -1401,53 +1503,6 @@ thumbnail_path:e.target.value
 />
 <ActionButton className="btn btn-secondary" onClick={()=>choosePath('thumbnail_path','directory')}>Select</ActionButton>
 </div>
-
-<h3>Drive Mapping</h3>
-
-<label style={{display:'flex',alignItems:'center',gap:'10px', marginBottom:'10px'}}>
-<input
- type='checkbox'
- checked={settings.path_mapping_enabled || false}
- onChange={(e)=>setSettings({
- ...settings,
- path_mapping_enabled:e.target.checked
- })}
-/>
- Enable drive path remapping
-</label>
-<p style={{color:'#94a3b8',fontSize:'13px',margin:'0 0 14px 0'}}>Use this when your backup drive's letter or mount point has changed.</p>
-
-{settings.path_mapping_enabled && (
-  <>
-    <p style={{marginTop:'14px'}}>Original Indexed Base Path</p>
-    <div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
-      <input
-        className='setting'
-        style={{ marginBottom: 0 }}
-        value={settings.original_backup_path || ''}
-        onChange={(e)=>setSettings({
-          ...settings,
-          original_backup_path:e.target.value
-        })}
-      />
-      <ActionButton className="btn btn-secondary" onClick={()=>choosePath('original_backup_path','directory')}>Select</ActionButton>
-    </div>
-
-    <p style={{marginTop:'14px'}}>Mapped Backup Path</p>
-    <div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
-      <input
-        className='setting'
-        style={{ marginBottom: 0 }}
-        value={settings.mapped_backup_path || ''}
-        onChange={(e)=>setSettings({
-          ...settings,
-          mapped_backup_path:e.target.value
-        })}
-      />
-      <ActionButton className="btn btn-secondary" onClick={()=>choosePath('mapped_backup_path','directory')}>Select</ActionButton>
-    </div>
-  </>
-)}
 
 <h3>AI / LLM</h3>
 
@@ -1497,10 +1552,12 @@ openai_api_key:e.target.value
 })}
 />
 
-<ActionButton className="btn btn-primary" style={{ marginTop: '20px', padding: '12px 24px', fontSize: '15px' }} onClick={saveSettings}>
-<SettingsIcon fontSize="small" />
-Save Settings
-</ActionButton>
+<div style={{ marginTop: '30px', borderTop: '1px solid #1f2937', paddingTop: '20px', display: 'flex' }}>
+  <ActionButton className="btn btn-primary" style={{ padding: '12px 24px', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={saveSettings}>
+    <SettingsIcon fontSize="small" />
+    Save Settings
+  </ActionButton>
+</div>
 
 </div>
 }
