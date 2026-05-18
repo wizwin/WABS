@@ -49,27 +49,27 @@ worker = None
 
 def classify(ext):
     ext = ext.lower()
-    if ext in [".jpg",".jpeg",".png",".webp",".gif",".bmp",".tiff",".raw",".svg",".ico"]:
+    if ext in [".jpg",".jpeg",".png",".webp",".gif",".bmp",".tiff",".raw",".svg",".ico",".xcf"]:
         return "photo"
     if ext in [".mp4",".mkv",".avi",".mov",".wmv",".flv",".webm",".m4v",".mpg",".mpeg"]:
         return "video"
     if ext in [".mp3",".wav",".flac",".aac",".ogg",".m4a",".wma",".alac"]:
         return "audio"
-    if ext in [".pdf",".doc",".docx",".txt",".rtf",".odt",".xls",".xlsx",".ppt",".pptx",".csv",".md"]:
+    if ext in [".pdf",".doc",".docx",".txt",".rtf",".odt",".xls",".xlsx",".ppt",".pptx",".csv",".md",".log"]:
         return "document"
-    if ext in [".epub",".mobi",".azw3",".cbz",".cbr"]:
+    if ext in [".epub",".mobi",".azw3",".cbz",".cbr",".chm"]:
         return "ebook"
-    if ext in [".py",".js",".jsx",".ts",".tsx",".html",".css",".json",".xml",".yaml",".yml",".c",".cpp",".h",".java",".cs",".go",".rs",".rb",".php",".sh",".bat",".ps1",".sql"]:
+    if ext in [".py",".js",".jsx",".ts",".tsx",".html",".css",".json",".xml",".yaml",".yml",".c",".cpp",".h",".java",".cs",".go",".rs",".rb",".php",".sh",".bat",".ps1",".sql",".ini"]:
         return "code"
     if ext in [".ttf",".otf",".woff",".woff2",".eot"]:
         return "font"
-    if ext in [".db",".sqlite",".sqlite3",".mdb",".accdb"]:
+    if ext in [".db",".sqlite",".sqlite3",".mdb",".accdb"] or re.match(r"^\.crypt\d{2,}$", ext):
         return "database"
     if ext in [".zip",".rar",".7z",".tar",".gz",".bz2",".xz"]:
         return "compressed"
     if ext in [".exe",".msi",".apk",".dmg",".deb",".rpm",".appimage"]:
         return "installer"
-    if ext in [".bin",".dat",".iso",".img",".vmdk",".vdi",".qcow2"]:
+    if ext in [".bin",".dat",".iso",".img",".vmdk",".vdi",".qcow2",".mpb"]:
         return "binary"
     return "other"
 
@@ -164,7 +164,7 @@ def extract_metadata_for_file(path, category):
                         doc.close()
                     except Exception:
                         pass
-            elif path.suffix.lower() in [".txt", ".md", ".csv"]:
+            elif path.suffix.lower() in [".txt", ".md", ".csv", ".log"]:
                 try:
                     with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                         lines = sum(1 for _ in f)

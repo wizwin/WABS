@@ -1,4 +1,4 @@
-import {useEffect,useState,useMemo,useRef} from 'react'
+import {useEffect,useState,useMemo,useRef,createContext,useContext} from 'react'
 import axios from 'axios'
 import DashboardIcon from '@mui/icons-material/Dashboard'
 import FolderIcon from '@mui/icons-material/Folder'
@@ -38,9 +38,14 @@ import PowerSettingsNewIcon from '@mui/icons-material/PowerSettingsNew'
 // Use relative path in production to support network IPs, fallback to localhost for Vite dev server
 const API = window.location.port === '5173' ? 'http://127.0.0.1:8000' : ''
 
-function StatCard({ title, value, icon, color }) {
+const SettingsContext = createContext({ animationsEnabled: true });
+
+function StatCard({ title, value, icon, color, onClick }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [isActive, setIsActive] = useState(false);
+  const { animationsEnabled } = useContext(SettingsContext);
   return (
-    <div style={{background:'#111827',padding:'16px',borderRadius:'16px',border:'1px solid #24324a', display:'flex', alignItems:'center', gap:'16px'}}>
+    <div onClick={onClick} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => { setIsHovered(false); setIsActive(false); }} onMouseDown={() => setIsActive(true)} onMouseUp={() => setIsActive(false)} style={{background: isHovered && onClick ? '#1e293b' : '#111827',padding:'16px',borderRadius:'16px',border:'1px solid #24324a', display:'flex', alignItems:'center', gap:'16px', cursor: onClick ? 'pointer' : 'default', transition: animationsEnabled ? 'all 0.2s ease' : 'none', transform: animationsEnabled && isActive && onClick ? 'scale(0.97)' : animationsEnabled && isHovered && onClick ? 'translateY(-2px)' : 'none', boxShadow: animationsEnabled && isActive && onClick ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered && onClick ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none'}}>
       <div style={{background:`${color}1a`, padding:'12px', borderRadius:'12px', display:'flex', color:color}}>
         {icon}
       </div>
@@ -50,6 +55,31 @@ function StatCard({ title, value, icon, color }) {
       </div>
     </div>
   )
+}
+
+function ActionButton({ disabled, onClick, children, className = "btn btn-secondary", style = {} }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [isActive, setIsActive] = useState(false);
+  const { animationsEnabled } = useContext(SettingsContext);
+  return (
+    <button 
+      className={className} 
+      disabled={disabled} 
+      onClick={onClick}
+      onMouseEnter={() => setIsHovered(true)} 
+      onMouseLeave={() => { setIsHovered(false); setIsActive(false); }}
+      onMouseDown={() => setIsActive(true)}
+      onMouseUp={() => setIsActive(false)}
+      style={{
+        ...style,
+        transition: animationsEnabled ? 'all 0.2s ease' : 'none', 
+        transform: animationsEnabled && isActive && !disabled ? 'scale(0.95)' : animationsEnabled && isHovered && !disabled ? 'translateY(-2px)' : 'none', 
+        boxShadow: animationsEnabled && isActive && !disabled ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered && !disabled ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none'
+      }}
+    >
+      {children}
+    </button>
+  );
 }
 
 function AppIcon({ size = 64 }) {
@@ -73,6 +103,112 @@ function AppIcon({ size = 64 }) {
         </linearGradient>
       </defs>
     </svg>
+  );
+}
+
+function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContextMenu, onSelectAndOpen, renderThumb }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [isActive, setIsActive] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
+  const { animationsEnabled } = useContext(SettingsContext);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  return (
+    <div
+      className={viewMode === 'grid' ? 'card' : 'list-item'}
+      onClick={(e) => onClick(e, item)}
+      onContextMenu={(e) => { e.preventDefault(); onContextMenu(item.path); }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => { setIsHovered(false); setIsActive(false); }}
+      onMouseDown={() => setIsActive(true)}
+      onMouseUp={() => setIsActive(false)}
+      style={{
+        transition: animationsEnabled ? 'all 0.3s ease' : 'none',
+        opacity: animationsEnabled ? (isMounted ? 1 : 0) : 1,
+        transform: animationsEnabled ? (isActive ? 'scale(0.97)' : isHovered ? 'translateY(-2px)' : isMounted ? 'none' : 'translateY(10px)') : 'none',
+        boxShadow: animationsEnabled && isActive ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none'
+      }}
+    >
+      {viewMode === 'grid' ? (
+        <>
+          <input type="checkbox" className="select-cb" checked={isChecked} onChange={(e) => onToggleCheck(e, item.path)} onClick={(e) => e.stopPropagation()} />
+          <img
+            src={renderThumb(item)}
+            className='thumb'
+            loading='lazy'
+            onClick={(e) => { e.stopPropagation(); onSelectAndOpen(item); }}
+            onError={(e) => { e.target.src = renderThumb({ ...item, thumbnail: null }) }}
+          />
+          {item.category === 'video' && (
+            <div className='overlay'>
+              <PlayCircleIcon style={{ fontSize: 'inherit' }} />
+            </div>
+          )}
+          <div className='info' style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
+            <span style={{ fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.filename}>{item.filename}</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#94a3b8' }}>
+              <span>{item.category}</span>
+              <span>{item.size}</span>
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <input type="checkbox" className="select-cb list-cb" checked={isChecked} onChange={(e) => onToggleCheck(e, item.path)} onClick={(e) => e.stopPropagation()} />
+          <img
+            src={renderThumb(item)}
+            className='list-thumb'
+            loading='lazy'
+            onClick={(e) => { e.stopPropagation(); onSelectAndOpen(item); }}
+            onError={(e) => { e.target.src = renderThumb({ ...item, thumbnail: null }) }}
+          />
+          <div className="list-info">
+            <p className="list-title">{item.filename}</p>
+            <p className="list-meta">
+              <span>{item.category}</span>
+              <span>{item.size}</span>
+              <span>{item.modified}</span>
+            </p>
+          </div>
+          {item.category === 'video' && (
+            <PlayCircleIcon style={{ color: '#94a3b8', marginRight: '12px' }} />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function TimelineItem({ dateKey, isActiveDate, onClick }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [isActive, setIsActive] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
+  const { animationsEnabled } = useContext(SettingsContext);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  return (
+    <div
+      className={`timeline-item ${isActiveDate ? 'active' : ''}`}
+      onClick={onClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => { setIsHovered(false); setIsActive(false); }}
+      onMouseDown={() => setIsActive(true)}
+      onMouseUp={() => setIsActive(false)}
+      style={{
+        transition: animationsEnabled ? 'all 0.3s ease' : 'none',
+        opacity: animationsEnabled ? (isMounted ? 1 : 0) : 1,
+        transform: animationsEnabled ? (isActive ? 'scale(0.95)' : isHovered ? 'translateY(-2px)' : isMounted ? 'none' : 'translateY(10px)') : 'none',
+        boxShadow: animationsEnabled && isActive ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none'
+      }}
+    >
+      {dateKey}
+    </div>
   );
 }
 
@@ -107,6 +243,8 @@ const [detailsWidth, setDetailsWidth] = useState(260)
 const [isResizing, setIsResizing] = useState(null)
 const [showSearchHelp, setShowSearchHelp] = useState(false)
 const [isShutdown, setIsShutdown] = useState(false)
+const [toastMessage, setToastMessage] = useState('');
+const [showToast, setShowToast] = useState(false);
 
 async function loadFiles(nextOffset = 0, append = false, cat = filterCategory){
   const r = await axios.get(`${API}/files?category=${cat}&offset=${nextOffset}&limit=50`)
@@ -201,9 +339,24 @@ async function loadSettings(){
  if(r.data.details_width) setDetailsWidth(r.data.details_width)
 }
 
+const showToastMessage = (message) => {
+  setToastMessage(message);
+  setShowToast(true);
+  setTimeout(() => {
+    setShowToast(false);
+    setToastMessage('');
+  }, 3000); // Hide after 3 seconds
+};
+
 async function saveSettings(){
  await axios.post(`${API}/settings`,settings)
- alert('Settings Saved')
+ showToastMessage('Settings Saved');
+ // After saving settings, reload content if on explorer or search page
+ if (page === 'explorer') {
+   await loadFiles(0, false, filterCategory);
+ } else if (page === 'search') {
+   await goToSearch(filterCategory);
+ }
 }
 
 async function choosePath(field, mode){
@@ -376,6 +529,13 @@ const handleFilterChange = (e) => {
   } else if (page === 'search') {
     doSearch(query, newCat);
   }
+};
+
+const handleCategoryClick = (category) => {
+  setFilterCategory(category);
+  setPage('explorer');
+  setSelected(null);
+  loadFiles(0, false, category);
 };
 
 const sortedFiles = useMemo(() => {
@@ -585,6 +745,7 @@ function renderValue(value){
 }
 
 return(
+<SettingsContext.Provider value={{ animationsEnabled: settings.animations_enabled !== false }}>
 <div className='layout'>
 {isShutdown ? (
   <div style={{
@@ -620,30 +781,30 @@ return(
       </div>
     </div>
 
-    <button onClick={()=>{ setPage('dashboard'); setSelected(null); }}>
+    <ActionButton className="" onClick={()=>{ setPage('dashboard'); setSelected(null); }}>
     <DashboardIcon fontSize="small" /> Dashboard
-    </button>
+    </ActionButton>
 
-    <button onClick={()=>{ setQuery(''); setPage('explorer'); setSelected(null); loadFiles(0, false)}}>
+    <ActionButton className="" onClick={()=>{ setQuery(''); setPage('explorer'); setSelected(null); loadFiles(0, false)}}>
     <FolderIcon fontSize="small" /> Explorer
-    </button>
+    </ActionButton>
 
-    <button onClick={()=>goToSearch()}>
+    <ActionButton className="" onClick={()=>goToSearch()}>
     <SearchIcon fontSize="small" /> Search
-    </button>
+    </ActionButton>
 
-    <button onClick={()=>{ setPage('settings'); setSelected(null); }}>
+    <ActionButton className="" onClick={()=>{ setPage('settings'); setSelected(null); }}>
     <SettingsIcon fontSize="small" /> Settings
-    </button>
+    </ActionButton>
 
-    <button onClick={()=>{ setPage('about'); setSelected(null); }}>
+    <ActionButton className="" onClick={()=>{ setPage('about'); setSelected(null); }}>
     <InfoIcon fontSize="small" /> About
-    </button>
+    </ActionButton>
   </div>
   <div style={{ marginTop: 'auto', paddingTop: '16px' }}>
-    <button onClick={handleShutdown} style={{ background: '#ef44442a', color: '#ef4444', width: '100%' }}>
+    <ActionButton className="" onClick={handleShutdown} style={{ background: '#ef44442a', color: '#ef4444', width: '100%' }}>
       <PowerSettingsNewIcon fontSize="small" /> Shutdown
-    </button>
+    </ActionButton>
   </div>
 </div>
 <div className={`resizer ${isResizing === 'sidebar' ? 'active' : ''}`} onMouseDown={(e) => { e.preventDefault(); setIsResizing('sidebar'); }} />
@@ -654,13 +815,14 @@ return(
 
 <div className='topbar' style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
 
-<button
+<ActionButton
+  className=""
   onClick={toggleSidebar}
   style={{ padding: '8px', background: '#172033', border: 'none', borderRadius: '8px', color: showSidebar ? '#3b82f6' : '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
   title="Toggle Sidebar"
 >
   {showSidebar ? <MenuOpenIcon /> : <MenuIcon />}
-</button>
+</ActionButton>
 
 <div style={{ display: 'flex', flex: 1, position: 'relative', alignItems: 'center' }}>
   <input
@@ -672,21 +834,23 @@ return(
   />
   <div style={{ position: 'absolute', right: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
     {query && (
-      <button
+      <ActionButton
+        className=""
         onClick={() => { doSearch(''); setShowSearchHelp(false); }}
         style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '4px' }}
         title="Clear search"
       >
         <CloseIcon fontSize="small" />
-      </button>
+      </ActionButton>
     )}
-    <button 
+    <ActionButton
+      className=""
       onClick={() => setShowSearchHelp(!showSearchHelp)}
       style={{ background: 'transparent', border: 'none', color: showSearchHelp ? '#3b82f6' : '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '4px' }}
       title="Search Help"
     >
       <HelpIcon fontSize="small" />
-    </button>
+    </ActionButton>
   </div>
   {showSearchHelp && (
     <div style={{ position: 'absolute', top: 'calc(100% + 8px)', right: '0', background: '#1e293b', border: '1px solid #334155', padding: '16px', zIndex: 100, borderRadius: '12px', width: '300px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)', color: '#cbd5e1', fontSize: '13px' }}>
@@ -706,20 +870,22 @@ return(
 
 {(page === 'explorer' || page === 'search') && (
   <div style={{ display: 'flex', gap: '8px' }}>
-    <button
+    <ActionButton
+      className=""
       onClick={toggleTimeline}
       style={{ padding: '8px', background: '#172033', border: 'none', borderRadius: '8px', color: showTimeline ? '#3b82f6' : '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
       title="Toggle Timeline"
     >
       <ViewTimelineIcon />
-    </button>
-    <button
+    </ActionButton>
+    <ActionButton
+      className=""
       onClick={toggleDetails}
       style={{ padding: '8px', background: '#172033', border: 'none', borderRadius: '8px', color: showDetails ? '#3b82f6' : '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
       title="Toggle Details"
     >
       <InfoIcon />
-    </button>
+    </ActionButton>
   </div>
 )}
 </div>
@@ -732,13 +898,12 @@ return(
 <>
 <div className='timeline' style={{ width: timelineWidth }}>
   {Object.keys(groupedFiles).map(dateKey => (
-    <div
+    <TimelineItem
       key={dateKey}
-      className={`timeline-item ${activeDate === dateKey ? 'active' : ''}`}
+      dateKey={dateKey}
+      isActiveDate={activeDate === dateKey}
       onClick={() => document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'smooth' })}
-    >
-      {dateKey}
-    </div>
+    />
   ))}
 </div>
 <div className={`resizer ${isResizing === 'timeline' ? 'active' : ''}`} onMouseDown={(e) => { e.preventDefault(); setIsResizing('timeline'); }} />
@@ -779,36 +944,38 @@ return(
     <option value='size'>Size</option>
     <option value='filename'>Filename</option>
   </select>
-  <button onClick={()=>setSortOrder(sortOrder==='asc'?'desc':'asc')}>
+  <ActionButton className="" style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }} onClick={()=>setSortOrder(sortOrder==='asc'?'desc':'asc')}>
     {sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />}
-  </button>
+  </ActionButton>
 
   <div style={{ flex: 1 }}></div>
 
   <div style={{ display: 'flex', gap: '4px', background: '#111827', padding: '4px', borderRadius: '8px' }}>
-    <button 
+    <ActionButton 
+      className=""
       onClick={() => setViewMode('grid')} 
       style={{ padding: '6px', background: viewMode === 'grid' ? '#3b82f6' : 'transparent', color: viewMode === 'grid' ? 'white' : '#94a3b8', borderRadius: '6px', border: 'none', cursor: 'pointer', display: 'flex' }}
     >
       <GridViewIcon fontSize="small" />
-    </button>
-    <button 
+    </ActionButton>
+    <ActionButton 
+      className=""
       onClick={() => setViewMode('list')} 
       style={{ padding: '6px', background: viewMode === 'list' ? '#3b82f6' : 'transparent', color: viewMode === 'list' ? 'white' : '#94a3b8', borderRadius: '6px', border: 'none', cursor: 'pointer', display: 'flex' }}
     >
       <ViewListIcon fontSize="small" />
-    </button>
+    </ActionButton>
   </div>
 </div>
 
 {checkedFiles.size > 0 && (
   <div style={{ padding: '10px 18px', background: '#1e293b', borderBottom: '1px solid #1f2937', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
     <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedFiles.size} files selected</span>
-    <button className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={openSelected}>Open Selected</button>
-    <button className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={copySelected}>Copy Selected</button>
-    <button className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={moveSelected}>Move Selected</button>
-    <button className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={deleteSelected}>Delete Selected</button>
-    <button className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedFiles(new Set())}>Clear Selection</button>
+    <ActionButton className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={openSelected}>Open Selected</ActionButton>
+    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={copySelected}>Copy Selected</ActionButton>
+    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={moveSelected}>Move Selected</ActionButton>
+    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={deleteSelected}>Delete Selected</ActionButton>
+    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedFiles(new Set())}>Clear Selection</ActionButton>
   </div>
 )}
 
@@ -821,61 +988,17 @@ Object.entries(groupedFiles).map(([dateKey, filesGroup]) => (
 <div className={viewMode === 'grid' ? 'grid' : 'list'}>
 {
 filesGroup.map((item)=>(
-<div
-className={viewMode === 'grid' ? 'card' : 'list-item'}
-key={item.path}
-onClick={(e)=>handleItemClick(e, item)}
-onContextMenu={(e)=>{ e.preventDefault(); openContainingFolder(item.path); }}
->
-
-{viewMode === 'grid' ? (
-  <>
-    <input type="checkbox" className="select-cb" checked={checkedFiles.has(item.path)} onChange={(e)=>toggleCheck(e, item.path)} onClick={(e)=>e.stopPropagation()} />
-    <img
-      src={renderThumb(item)}
-      className='thumb'
-      loading='lazy'
-      onClick={(e)=>{ e.stopPropagation(); setSelected(item); openFile(item.path); }}
-      onError={(e)=>{ e.target.src = renderThumb({...item, thumbnail: null}) }}
-    />
-    {item.category === 'video' && (
-      <div className='overlay'>
-        <PlayCircleIcon style={{ fontSize: 'inherit' }} />
-      </div>
-    )}
-    <div className='info' style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
-      <span style={{ fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.filename}>{item.filename}</span>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#94a3b8' }}>
-        <span>{item.category}</span>
-        <span>{item.size}</span>
-      </div>
-    </div>
-  </>
-) : (
-  <>
-    <input type="checkbox" className="select-cb list-cb" checked={checkedFiles.has(item.path)} onChange={(e)=>toggleCheck(e, item.path)} onClick={(e)=>e.stopPropagation()} />
-    <img
-      src={renderThumb(item)}
-      className='list-thumb'
-      loading='lazy'
-      onClick={(e)=>{ e.stopPropagation(); setSelected(item); openFile(item.path); }}
-      onError={(e)=>{ e.target.src = renderThumb({...item, thumbnail: null}) }}
-    />
-    <div className="list-info">
-      <p className="list-title">{item.filename}</p>
-      <p className="list-meta">
-        <span>{item.category}</span>
-        <span>{item.size}</span>
-        <span>{item.modified}</span>
-      </p>
-    </div>
-    {item.category === 'video' && (
-      <PlayCircleIcon style={{ color: '#94a3b8', marginRight: '12px' }} />
-    )}
-  </>
-)}
-
-</div>
+<FileCard
+  key={item.path}
+  item={item}
+  viewMode={viewMode}
+  isChecked={checkedFiles.has(item.path)}
+  onToggleCheck={toggleCheck}
+  onClick={handleItemClick}
+  onContextMenu={openContainingFolder}
+  onSelectAndOpen={(i) => { setSelected(i); openFile(i.path); }}
+  renderThumb={renderThumb}
+/>
 ))
 }
 </div>
@@ -922,13 +1045,13 @@ onClick={()=>openFile(selected.path)}
 {selected.metadata?.gps && (
   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
     <b>Location:</b>
-    <button 
+    <ActionButton 
       className="btn btn-secondary" 
       style={{ padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px', borderColor: '#3b82f6', color: '#3b82f6' }}
       onClick={() => window.open(`https://www.google.com/maps?q=${selected.metadata.gps.latitude},${selected.metadata.gps.longitude}`, '_blank')}
     >
       <PlaceIcon fontSize="small" /> View on Map
-    </button>
+    </ActionButton>
   </div>
 )}
 
@@ -936,8 +1059,8 @@ onClick={()=>openFile(selected.path)}
 
 <p><b>File ID:</b> {selected.id}</p>
 <div style={{display:'flex',gap:'10px',flexWrap:'wrap',marginBottom:'16px'}}>
- <button className="btn btn-secondary" onClick={()=>openFile(selected.path)}>Open File</button>
- <button className="btn btn-secondary" onClick={()=>openContainingFolder(selected.path)}>Open Containing Folder</button>
+ <ActionButton className="btn btn-secondary" onClick={()=>openFile(selected.path)}>Open File</ActionButton>
+ <ActionButton className="btn btn-secondary" onClick={()=>openContainingFolder(selected.path)}>Open Containing Folder</ActionButton>
 </div>
 {renderMetadata(selected.metadata)}
 
@@ -959,19 +1082,19 @@ page==='dashboard' &&
 <h1 style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: 0 }}><DashboardIcon fontSize="large" style={{ color: '#3b82f6' }} /> Dashboard</h1>
 <p>Archive overview, statistics, and indexing controls.</p>
 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px',marginTop:'20px'}}>
-<StatCard title="Total Files" value={stats.total} icon={<LibraryBooksIcon />} color="#3b82f6" />
-<StatCard title="Photos" value={stats.photos} icon={<ImageIcon />} color="#10b981" />
-<StatCard title="Videos" value={stats.videos} icon={<MovieIcon />} color="#ef4444" />
-<StatCard title="Audio" value={stats.audio} icon={<AudiotrackIcon />} color="#f59e0b" />
-<StatCard title="Documents" value={stats.documents} icon={<DescriptionIcon />} color="#8b5cf6" />
-<StatCard title="eBooks" value={stats.ebooks} icon={<MenuBookIcon />} color="#ec4899" />
-<StatCard title="Code" value={stats.code} icon={<CodeIcon />} color="#06b6d4" />
-<StatCard title="Fonts" value={stats.fonts} icon={<FontDownloadIcon />} color="#f43f5e" />
-<StatCard title="Databases" value={stats.databases} icon={<StorageIcon />} color="#eab308" />
-<StatCard title="Compressed" value={stats.compressed} icon={<ArchiveIcon />} color="#6366f1" />
-<StatCard title="Installers" value={stats.installers} icon={<SystemUpdateIcon />} color="#14b8a6" />
-<StatCard title="Binaries" value={stats.binaries} icon={<MemoryIcon />} color="#64748b" />
-<StatCard title="Others" value={stats.others} icon={<CategoryIcon />} color="#94a3b8" />
+<StatCard title="Total Files" value={stats.total} icon={<LibraryBooksIcon />} color="#3b82f6" onClick={() => handleCategoryClick('all')} />
+<StatCard title="Photos" value={stats.photos} icon={<ImageIcon />} color="#10b981" onClick={() => handleCategoryClick('photo')} />
+<StatCard title="Videos" value={stats.videos} icon={<MovieIcon />} color="#ef4444" onClick={() => handleCategoryClick('video')} />
+<StatCard title="Audio" value={stats.audio} icon={<AudiotrackIcon />} color="#f59e0b" onClick={() => handleCategoryClick('audio')} />
+<StatCard title="Documents" value={stats.documents} icon={<DescriptionIcon />} color="#8b5cf6" onClick={() => handleCategoryClick('document')} />
+<StatCard title="eBooks" value={stats.ebooks} icon={<MenuBookIcon />} color="#ec4899" onClick={() => handleCategoryClick('ebook')} />
+<StatCard title="Code" value={stats.code} icon={<CodeIcon />} color="#06b6d4" onClick={() => handleCategoryClick('code')} />
+<StatCard title="Fonts" value={stats.fonts} icon={<FontDownloadIcon />} color="#f43f5e" onClick={() => handleCategoryClick('font')} />
+<StatCard title="Databases" value={stats.databases} icon={<StorageIcon />} color="#eab308" onClick={() => handleCategoryClick('database')} />
+<StatCard title="Compressed" value={stats.compressed} icon={<ArchiveIcon />} color="#6366f1" onClick={() => handleCategoryClick('compressed')} />
+<StatCard title="Installers" value={stats.installers} icon={<SystemUpdateIcon />} color="#14b8a6" onClick={() => handleCategoryClick('installer')} />
+<StatCard title="Binaries" value={stats.binaries} icon={<MemoryIcon />} color="#64748b" onClick={() => handleCategoryClick('binary')} />
+<StatCard title="Others" value={stats.others} icon={<CategoryIcon />} color="#94a3b8" onClick={() => handleCategoryClick('other')} />
 </div>
 <div style={{display:'grid',gridTemplateColumns:'1.3fr 1fr',gap:'18px',marginTop:'24px'}}>
 <div style={{background:'#111827',padding:'18px',borderRadius:'16px',border:'1px solid #24324a'}}>
@@ -986,24 +1109,24 @@ page==='dashboard' &&
 <div style={{background:'#111827',padding:'18px',borderRadius:'16px',border:'1px solid #24324a'}}>
 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: 0 }}><SettingsApplicationsIcon style={{ color: '#3b82f6' }} /> Indexer Controls</h2>
 <div style={{display:'grid',gap:'10px',marginTop:'12px'}}>
-<button className="btn btn-secondary" disabled={indexer.running} onClick={()=>indexerAction('start')}>
+<ActionButton disabled={indexer.running} onClick={()=>indexerAction('start')}>
 Start
-</button>
-<button className="btn btn-secondary" disabled={indexer.running} onClick={()=>indexerAction('update')}>
+</ActionButton>
+<ActionButton disabled={indexer.running} onClick={()=>indexerAction('update')}>
 Update
-</button>
-<button className="btn btn-secondary" disabled={!indexer.running || indexer.paused || indexer.stopped} onClick={()=>indexerAction('pause')}>
+</ActionButton>
+<ActionButton disabled={!indexer.running || indexer.paused || indexer.stopped} onClick={()=>indexerAction('pause')}>
 Pause
-</button>
-<button className="btn btn-secondary" disabled={(indexer.running && !indexer.paused) || indexer.stopped} onClick={()=>indexerAction('resume')}>
+</ActionButton>
+<ActionButton disabled={(indexer.running && !indexer.paused) || indexer.stopped} onClick={()=>indexerAction('resume')}>
 Resume
-</button>
-<button className="btn btn-secondary" disabled={!indexer.running || indexer.stopped} onClick={()=>indexerAction('stop')}>
+</ActionButton>
+<ActionButton disabled={!indexer.running || indexer.stopped} onClick={()=>indexerAction('stop')}>
 Stop
-</button>
-<button className="btn btn-secondary" disabled={indexer.running} onClick={()=>indexerAction('reindex')}>
+</ActionButton>
+<ActionButton disabled={indexer.running} onClick={()=>indexerAction('reindex')}>
 Re-index
-</button>
+</ActionButton>
 </div>
 </div>
 </div>
@@ -1024,8 +1147,11 @@ page==='settings' &&
 <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
 <input type='checkbox' checked={showTimeline} onChange={toggleTimeline} /> Show Timeline
 </label>
-<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'24px'}}>
+<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
 <input type='checkbox' checked={showDetails} onChange={toggleDetails} /> Show Details
+</label>
+<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'24px'}}>
+<input type='checkbox' checked={settings.animations_enabled !== false} onChange={(e)=>updateUIPreferences({ animations_enabled: e.target.checked })} /> Enable UI Animations
 </label>
 
 <h3>Storage</h3>
@@ -1042,7 +1168,7 @@ onChange={(e)=>setSettings({
 backup_path:e.target.value
 })}
 />
-<button className="btn btn-secondary" onClick={()=>choosePath('backup_path','directory')}>Select</button>
+<ActionButton className="btn btn-secondary" onClick={()=>choosePath('backup_path','directory')}>Select</ActionButton>
 </div>
 
 <p>Database Path</p>
@@ -1057,7 +1183,7 @@ onChange={(e)=>setSettings({
 database_path:e.target.value
 })}
 />
-<button className="btn btn-secondary" onClick={()=>choosePath('database_path','file')}>Select</button>
+<ActionButton className="btn btn-secondary" onClick={()=>choosePath('database_path','file')}>Select</ActionButton>
 </div>
 
 <p>Thumbnail Path</p>
@@ -1072,7 +1198,7 @@ onChange={(e)=>setSettings({
 thumbnail_path:e.target.value
 })}
 />
-<button className="btn btn-secondary" onClick={()=>choosePath('thumbnail_path','directory')}>Select</button>
+<ActionButton className="btn btn-secondary" onClick={()=>choosePath('thumbnail_path','directory')}>Select</ActionButton>
 </div>
 
 <h3>Drive Mapping</h3>
@@ -1102,7 +1228,7 @@ thumbnail_path:e.target.value
           backup_path:e.target.value
         })}
       />
-      <button className="btn btn-secondary" onClick={()=>choosePath('backup_path','directory')}>Select</button>
+      <ActionButton className="btn btn-secondary" onClick={()=>choosePath('backup_path','directory')}>Select</ActionButton>
     </div>
 
     <p style={{marginTop:'14px'}}>Original Indexed Base Path</p>
@@ -1164,10 +1290,10 @@ openai_api_key:e.target.value
 })}
 />
 
-<button className="btn btn-primary" style={{ marginTop: '20px', padding: '12px 24px', fontSize: '15px' }} onClick={saveSettings}>
+<ActionButton className="btn btn-primary" style={{ marginTop: '20px', padding: '12px 24px', fontSize: '15px' }} onClick={saveSettings}>
 <SettingsIcon fontSize="small" />
 Save Settings
-</button>
+</ActionButton>
 
 </div>
 }
@@ -1245,6 +1371,28 @@ page==='about' &&
 
 </>
 )}
+{showToast && (
+  <div style={{
+    position: 'fixed',
+    bottom: '24px',
+    right: '24px',
+    background: '#10b981',
+    color: '#ffffff',
+    padding: '12px 24px',
+    borderRadius: '8px',
+    boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+    zIndex: 9999,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    fontSize: '14px',
+    fontWeight: '500',
+    transition: 'opacity 0.3s ease-in-out'
+  }}>
+    {toastMessage}
+  </div>
+)}
 </div>
+</SettingsContext.Provider>
 )
 }
