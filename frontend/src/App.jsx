@@ -950,7 +950,7 @@ return(
       <AppIcon size={40} />
       <div>
         <h2 style={{ margin: 0, fontSize: '20px', color: '#f8fafc' }}>WABS</h2>
-        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta</div>
+        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta2</div>
       </div>
     </div>
 
@@ -1577,7 +1577,7 @@ page==='about' &&
     <div style={{background:'#8b5cf61a', padding:'10px', borderRadius:'10px', color:'#8b5cf6', display:'flex'}}><InfoIcon /></div>
     <div>
       <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Version Info</h3>
-      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta</strong></p>
+      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta2</strong></p>
     </div>
   </div>
 

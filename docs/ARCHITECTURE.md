@@ -19,7 +19,8 @@ A highly optimized background worker that recursively scans target directories.
 ### 2. The API Server (`main.py`)
 A FastAPI server running on Uvicorn that serves both the REST API and the React frontend.
 * **Dynamic Previews:** Generates SVG representations of text/code files on-the-fly to ensure instant load times without heavy thumbnail caches.
-* **Path Remapping:** Seamlessly translates missing indexed paths if the user migrates their archive to a new drive letter.
+* **Multi-Archive Path Remapping:** Seamlessly translates missing indexed paths across multiple configured backup locations if the user migrates their archives to new drive letters or network shares.
+* **Data Safety:** Implements both global and per-location Read-Only modes to protect specific archives from accidental destructive operations (Move/Delete).
 * **OS Integration:** Triggers OS-level commands (e.g., `start`, `open`, `xdg-open`) to launch files directly from the browser into local desktop applications.
 
 ### 3. The Frontend (`App.jsx`)
@@ -38,3 +39,15 @@ For every save operation, a new, cryptographically secure 16-byte Initialization
 
 **3. File Storage & Portability**
 The final payload (IV + Ciphertext) is Base64 encoded and written to `config.yaml` as `openai_api_key_enc`, and the plain-text key is completely stripped from the disk. Because the encryption key is tied to the hardware environment dynamically at runtime, stolen or copied `config.yaml` files are mathematically unreadable on any other machine.
+
+### 5. Database & Full-Text Search (`database.py`)
+To achieve instant search results across hundreds of thousands of files, WABS leverages SQLite's **FTS5 (Full-Text Search)** extension.
+* **Virtual Tables:** A shadow FTS5 table is automatically synced with the main files table via SQLite triggers (`INSERT`, `UPDATE`, `DELETE`), ensuring the search index is always up-to-date without application-level overhead.
+* **Vocab & Autocomplete:** Uses the `fts5vocab` table to power lightning-fast prefix matching for real-time search suggestions directly from the search bar.
+* **Fuzzy Spell-Check:** Integrates Python's `difflib` against the FTS vocab table to efficiently offer "Did you mean?" suggestions for misspelled queries.
+
+### 6. Duplicate Verification (Lazy Hasher)
+To efficiently detect and verify duplicate files without bottlenecking the initial indexing process, WABS employs a background "Lazy Hasher" (`background_lazy_hasher`).
+* **Size-Based Pre-Filtering:** The system first queries the database to find files that share the exact same byte size. Only these potential duplicates are queued for hashing, preventing massive amounts of unnecessary disk read operations for unique files.
+* **Chunked SHA-256 Hashing:** The background worker reads the flagged files in streaming 4MB chunks, computing a cryptographic SHA-256 hash while maintaining a tiny memory footprint, even for massive ISOs or video files.
+* **Metadata Stamping:** Once computed, the hash is saved to the file's JSON metadata, allowing the frontend to confidently distinguish between unverified (size-match only) and verified (cryptographic match) duplicates.
