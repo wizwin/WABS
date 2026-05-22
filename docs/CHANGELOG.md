@@ -1,6 +1,65 @@
 # WABS Changelog
+## v1.0.0-beta.3
+**Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.3
+
+### 🚀 Major New Features
+*   **People (Face Recognition):** An entirely new feature utilizing local ML/AI models to detect faces, automatically group them by person, and allow you to browse all photos of a specific individual.
+*   **Tags (Object Classification):** An entirely new feature utilizing local ML/AI models to automatically classify objects and scenes in photos, enabling powerful keyword searches.
+*   **Smart Searches:** You can now save your most-used complex search queries (e.g., `type:video length:>1h`) as one-click shortcuts. These are configurable in Settings and appear in the Search view for quick access.
+*   **Advanced Search Operators:** The search bar is now significantly more powerful, supporting relational operators (`size:>1GB`, `length:<30s`) and date ranges (`date:2020-2022`).
+*   **Global Tag Management:** The new dedicated "Tags" page now includes tools to manage your metadata globally. You can delete a specific tag from every file in the archive or clear all AI-generated `object:` tags at once.
+*   **AI Detection Sensitivity:** New dropdowns in the Settings page allow you to fine-tune the accuracy of the AI models for Face Detection, Face Clustering, and Object/Scene Classification independently.
+
+### ✨ UI/UX Enhancements
+*   **Dashboard & Settings Redesign:** Updated the Dashboard with new feature tiles and modernized the Settings UI with a clean, card-based layout.
+*   **Dedicated Tags Page:** The "Detected Objects & Scenes" section has been migrated from the dashboard to its own dedicated, searchable, and paginated page, dramatically improving dashboard load times for large archives.
+*   **People Page Pagination:** The "Named Persons" and "Unknown Persons" sections are now paginated, preventing browser freezes when viewing thousands of profiles. Pagination controls are available at both the top and bottom of each section.
+*   **"Locate in Explorer" Feature:** A new button in the person photos view allows you to instantly find a specific photo within the main Explorer timeline, showing its context with other files from the same day.
+*   **Real-time Progress Indicators:** All background tasks (Hashing, Face Scanning, Object Scanning) now show detailed progress bars and display the name of the file currently being processed.
+*   **Intelligent Resuming:** The Object & Scene scanner now intelligently resumes where it left off, skipping previously tagged photos.
+*   **Manual Tagging Auto-Complete:** The "Manage Tags" input now provides auto-complete suggestions based on your existing tags.
+*   **Quality of Life:** Renaming a person now automatically selects the full name for faster editing.
+
+### 🐞 Bug Fixes & Performance
+*   **Major Performance Boost:** Drastically improved application startup time and background polling responsiveness by removing a heavy, unpaginated network request from the main dashboard loop.
+*   **UI Stability & Responsiveness:** Fixed unresponsive "Stop" buttons, blank Settings/Tags pages, and browser freezes on the People page.
+*   **Robust Polling & Caching:** Implemented exponential backoff for API polling and fixed browser caching issues that prevented real-time dashboard updates.
+*   **Search Engine Fixes:** Corrected the `date:` search filter and improved the `size:` filter logic.
+*   **Duplicate Sorting:** Fixed bugs in sorting updated duplicate files.
+*   **Configuration Resilience:** The backend now generates a complete default `config.yaml` on first run and gracefully handles legacy database file paths to prevent startup errors.
+
+---
+
+## v1.0.0-beta.2
+**Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.2
+### 🐞 Bug Fixes
+*   **Performance:** Fixed a major performance bottleneck that caused slow startup and UI lag during background tasks.
+*   **UI Stability:** Fixed unresponsive "Stop" buttons, blank Settings/Tags pages, and incorrect dashboard face counts.
+*   **Robustness:** Implemented exponential backoff for API polling to handle network drops and fixed browser caching issues.
+*   **Search:** Corrected the `date:` search filter to query modification dates properly.
+*   **Configuration:** The backend now generates a complete default `config.yaml` on first run to prevent startup errors.
+
+### ✨ New Features & Enhancements
+* **Lightning-Fast Full-Text Search (FTS5):** Re-engineered the database search architecture to leverage SQLite's FTS5 extension. WABS now uses a shadow virtual table to provide instant search results across hundreds of thousands of files.
+* **Search Autocomplete & Spell-Check:** Added real-time search suggestions powered by the `fts5vocab` table. The search bar now instantly provides prefix-matching auto-completions, as well as fuzzy "Did you mean?" suggestions for misspelled queries using Python's `difflib`.
+* **Multi-Archive Support:** You can now configure, index, and manage an unlimited number of parallel backup drives and network shares simultaneously from the Settings menu.
+* **Advanced Data Safety:** Introduced both Global and Per-Location Read-Only modes to protect specific archives from accidental destructive operations (Move/Delete).
+* **Multi-Archive Path Remapping:** The API server now seamlessly translates missing indexed paths across multiple configured backup locations if you migrate your archives to new drive letters.
+* **Selection Filtering (UI):** Added a "Show Selected Only" toggle to the selection action bar, allowing you to instantly isolate and review your checked files before performing bulk actions.
+* **Read-Only Badges (UI):** Added intuitive "Read-Only" (RO) badges directly to file cards in both Grid and List views to clearly indicate which files are protected.
+* **Settings Page Improvements (UI):** Added a highly visible "Save Settings" button to the top header of the Settings page so you no longer have to scroll to the bottom.
+
+### 🐛 Bug Fixes
+* **Path Matching:** Fixed an issue where per-location Read-Only protections would fail to hide the Delete/Move buttons due to operating system path separator inconsistencies (`\` vs `/`).
+
+### 📖 Documentation Updates
+* **Architecture:** Updated `ARCHITECTURE.md` to explicitly detail the **SQLite FTS5** integration (Virtual Tables & Autocomplete) and the **Lazy Hasher** (Chunked SHA-256 background duplicate verification process).
+
+---
 
 ## v1.0.0-beta
+**Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta
+
 - **Initial Release** of WABS (WiZarD's Archival and Backup Search System).
 - **100% Offline Capable**: Removed internet dependencies. Uses local Material UI icons, native fonts, and local SVG placeholders.
 - **Smart Indexer**: Categorizes photos, videos, documents, compressed files, installers, and binaries with EXIF extraction.

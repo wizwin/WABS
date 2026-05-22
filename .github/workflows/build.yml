@@ -51,7 +51,7 @@ jobs:
       - name: Package with PyInstaller
         shell: bash # Prevents Windows PowerShell from breaking the semicolon
         run: |
-          pyinstaller --name ${{ matrix.artifact_name }} --onefile --add-data "frontend/dist${{ matrix.path_sep }}frontend/dist" run.py
+          pyinstaller --name ${{ matrix.artifact_name }} --onefile --add-data "frontend/dist${{ matrix.path_sep }}frontend/dist" --add-data "backend/*.onnx${{ matrix.path_sep }}backend" --add-data "backend/*.txt${{ matrix.path_sep }}backend" run.py
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2

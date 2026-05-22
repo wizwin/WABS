@@ -6,10 +6,13 @@
 WABS is a modern, 100% offline archival management system designed to help you organize, search, and browse your digital backups. It provides a lightning-fast Explorer-style interface to manage hundreds of thousands of files across different drives.
 
 ## Features
-* **Lightning-Fast Search:** Find files instantly by name, path, tags, or metadata.
+* **Lightning-Fast Search:** Find files instantly by name, path, tags, or metadata using advanced operators (e.g., `size:>1GB`, `date:2020-2022`).
+* **Smart Searches:** Save your most-used and complex search queries as one-click shortcuts.
 * **Explorer-Style Browsing:** Navigate your archives with familiar grid and list views.
 * **Rich Previews:** Auto-generates thumbnails for photos, videos, PDFs, and code.
 * **Smart Categorization:** Automatically groups files into categories like Photos, Videos, Code, etc.
+* **Offline Face Recognition:** Scans photos using local AI to find and group people automatically.
+* **Object & Scene Tagging:** Classifies objects and scenes in photos completely offline, allowing you to easily search by content.
 * **Portable:** Move your backup drives around? WABS easily remaps your indexed files to new drive letters.
 
 ## Getting Started
@@ -29,6 +32,18 @@ Once the terminal window opens and the backend starts, open your web browser and
 1. **Set Up Paths:** Go to **Settings** and specify your `Backup Path`, `Database Path`, and `Thumbnail Path`.
 2. **Index Files:** Go to the **Dashboard** and click **Start** under Indexer Controls.
 3. **Explore:** Use the **Explorer** and **Search** tabs to navigate and manage your data.
+
+### Advanced Search Operators
+WABS supports powerful search operators to help you precisely filter your archive. You can combine multiple operators with spaces (e.g., `type:video length:>1h`).
+* **`name:`** Exact filename match (e.g., `name:vacation.mp4`)
+* **`type:`** Filter by category or extension (e.g., `type:audio`, `type:pdf`)
+* **`size:`** Filter by file size using relational operators (e.g., `size:>1GB`, `size:<500MB`)
+* **`length:`** Filter video/audio by duration (e.g., `length:>5m`, `length:<1h`, `length:300`)
+* **`date:`** Filter by modification date or range (e.g., `date:2020-2022`, `date:2023-10-25`)
+* **`object:`** Search for AI-detected objects or scenes (e.g., `object:car`, `object:beach`)
+* **`person:`** Search for specific people identified by the Face Scanner (e.g., `person:"john doe"`)
+* **`tag:`** Search for your custom manual tags (e.g., `tag:family_trip`)
+* **Wildcards:** Use `*` for partial matches (e.g., `*vacation*`, `*.mp3`)
 
 ### Configuring Local AI (Free & Offline)
 WABS supports using local LLMs (like LM Studio or Ollama) to automatically categorize unknown files securely on your own machine.

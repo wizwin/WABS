@@ -5,6 +5,7 @@ import os
 import platform
 import re
 import subprocess
+import sqlite3
 import shutil
 import sys
 import threading
@@ -30,6 +31,7 @@ try:
     from backend.app.database import SessionLocal, FileIndex
     from backend.app.config import load_config, save_config
     from backend.app.indexer import start as start_indexing, STATE as INDEXER_STATE
+    from backend.app.ai_database import init_ai_database
 except ModuleNotFoundError:
     from database import SessionLocal, FileIndex
     from config import load_config, save_config
@@ -37,13 +39,19 @@ except ModuleNotFoundError:
 
 app = FastAPI()
 
+# Removed heavy face recognition dependencies.
+# We will now use cv2 (OpenCV) exclusively for face detection and recognition.
+
+face_scanner_thread = None
+face_scanner_running = False
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"]
 )
-...
+from pydantic import BaseModel
 
 @app.on_event("startup")
 def startup_event():
@@ -64,7 +72,7 @@ def _parse_json(value):
         return {}
 
 
-def _build_item(r):
+def _build_item(r, cache_flag=""):
     v = str(r.modified).replace(" ", "_").replace(":", "") if r.modified else "0"
     return {
         "id": r.id,
@@ -76,9 +84,27 @@ def _build_item(r):
         "extension": r.extension,
         "tags": r.tags,
         "metadata": _parse_json(r.metadata_json),
-        "thumbnail": f"/preview/{r.id}?v={v}"
+        "thumbnail": f"/preview/{r.id}?v={v}{cache_flag}"
     }
 
+
+def get_ai_db_path() -> Path:
+    cfg = load_config()
+    db_path = cfg.get("database_path")
+    if not db_path:
+        p = Path("archive.db")
+    else:
+        p = Path(db_path)
+        
+    if not p.is_absolute():
+        if getattr(sys, 'frozen', False):
+            p = Path(sys.executable).parent / p
+        else:
+            p = Path(__file__).resolve().parent.parent.parent / p
+            
+    if p.parent.is_file():
+        return p.parent.parent / "ai_metadata.db"
+    return p.parent / "ai_metadata.db"
 
 def _resolve_path(original_path: Path) -> Path:
     cfg = load_config()
@@ -122,35 +148,12 @@ def _resolve_path(original_path: Path) -> Path:
     # This part is reached if remapping is OFF, or if the path was not applicable for remapping.
     return original_path
 
-
-def _normalize_date_tokens(token):
-    token = token.strip()
-    if m := re.match(r"^(\d{4})(?:[-/](\d{2})(?:[-/](\d{2}))?)?$", token):
-        year, month, day = m.groups()
-        tags = [f"date:{year}"]
-        if month:
-            tags.append(f"date:{year}-{month}")
-            if day:
-                tags.append(f"date:{year}-{month}-{day}")
-                tags.append(f"date:{month}/{day}/{year}")
-                tags.append(f"date:{day}/{month}/{year}")
-            else:
-                tags.append(f"date:{month}/{year}")
-        return tags
-    if m := re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", token):
-        p1, p2, year = m.groups()
-        p1 = p1.zfill(2)
-        p2 = p2.zfill(2)
-        return [
-            f"date:{year}",
-            f"date:{year}-{p1}",
-            f"date:{year}-{p2}",
-            f"date:{year}-{p1}-{p2}",
-            f"date:{year}-{p2}-{p1}",
-            f"date:{p1}/{p2}/{year}",
-            f"date:{p2}/{p1}/{year}"
-        ]
-    return [f"date:{token}"]
+def get_bundled_model_path(model_filename: str) -> str:
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller extracts bundled files to a temporary _MEIPASS folder
+        return str(Path(sys._MEIPASS) / "backend" / model_filename)
+    # Development mode: resolve relative to backend directory
+    return str(Path(__file__).parent.parent / model_filename)
 
 
 def _parse_regex_pattern(query):
@@ -189,7 +192,23 @@ def _build_search_query(query, s, q_base=None):
     for token in tokens:
         lower_token = token.lower()
         if lower_token.startswith("date:"):
-            tag_tokens.extend(_normalize_date_tokens(token[len("date:"):]))
+            val = lower_token[len("date:"):]
+            # Date range like YYYY-YYYY
+            if m_range := re.match(r"^(\d{4})-(\d{4})$", val):
+                start_year, end_year = m_range.groups()
+                if int(start_year) <= int(end_year):
+                    specific_filters.append(FileIndex.modified >= f"{start_year}-01-01")
+                    specific_filters.append(FileIndex.modified < f"{int(end_year) + 1}-01-01")
+            # Intelligently parse mm/dd/yyyy or dd/mm/yyyy
+            elif m := re.match(r"^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$", val):
+                p1, p2, year = m.groups()
+                p1, p2 = p1.zfill(2), p2.zfill(2)
+                specific_filters.append(or_(
+                    text_filter(FileIndex.modified, f"{year}-{p1}-{p2}"),
+                    text_filter(FileIndex.modified, f"{year}-{p2}-{p1}")
+                ))
+            else:
+                specific_filters.append(text_filter(FileIndex.modified, val))
         elif lower_token.startswith("tag:"):
             tag_tokens.append(token[len("tag:"):].lower())
         elif lower_token.startswith("type:"):
@@ -204,10 +223,67 @@ def _build_search_query(query, s, q_base=None):
             specific_filters.append(text_filter(FileIndex.filename, val))
         elif lower_token.startswith("size:"):
             val = lower_token[len("size:"):]
-            specific_filters.append(text_filter(FileIndex.size, val))
+            operator = ""
+            if val.startswith(">="):
+                operator, val = ">=", val[2:]
+            elif val.startswith("<="):
+                operator, val = "<=", val[2:]
+            elif val.startswith(">"):
+                operator, val = ">", val[1:]
+            elif val.startswith("<"):
+                operator, val = "<", val[1:]
+                
+            bytes_val = None
+            if m := re.match(r"^(\d+(?:\.\d+)?)\s*([kmgtp]?b)?$", val.lower()):
+                num, unit = float(m.group(1)), m.group(2)
+                mult = 1
+                if unit == "kb": mult = 1024
+                elif unit == "mb": mult = 1024**2
+                elif unit == "gb": mult = 1024**3
+                elif unit == "tb": mult = 1024**4
+                elif unit == "pb": mult = 1024**5
+                bytes_val = int(num * mult)
+                
+            if operator and bytes_val is not None:
+                size_col = func.cast(FileIndex.size, Integer)
+                if operator == ">=": specific_filters.append(size_col >= bytes_val)
+                elif operator == "<=": specific_filters.append(size_col <= bytes_val)
+                elif operator == ">": specific_filters.append(size_col > bytes_val)
+                elif operator == "<": specific_filters.append(size_col < bytes_val)
+            else:
+                specific_filters.append(func.lower(FileIndex.size).like(f"{val}%"))
         elif lower_token.startswith("length:"):
             val = lower_token[len("length:"):]
-            specific_filters.append(text_filter(FileIndex.metadata_json, val))
+            operator = ""
+            if val.startswith(">="):
+                operator, val = ">=", val[2:]
+            elif val.startswith("<="):
+                operator, val = "<=", val[2:]
+            elif val.startswith(">"):
+                operator, val = ">", val[1:]
+            elif val.startswith("<"):
+                operator, val = "<", val[1:]
+                
+            num_val = None
+            if m := re.match(r"^(\d+(?:\.\d+)?)\s*([smh])?$", val.lower()):
+                num, unit = float(m.group(1)), m.group(2)
+                mult = 1
+                if unit == "m": mult = 60
+                elif unit == "h": mult = 3600
+                num_val = num * mult
+                
+            if operator and num_val is not None:
+                duration_col = func.cast(func.json_extract(FileIndex.metadata_json, '$.duration'), Integer)
+                fmt_duration_col = func.cast(func.json_extract(FileIndex.metadata_json, '$.format.duration'), Integer)
+                length_col = func.cast(func.json_extract(FileIndex.metadata_json, '$.length'), Integer)
+                val_col = func.coalesce(duration_col, fmt_duration_col, length_col)
+                
+                if operator == ">=": specific_filters.append(val_col >= num_val)
+                elif operator == "<=": specific_filters.append(val_col <= num_val)
+                elif operator == ">": specific_filters.append(val_col > num_val)
+                elif operator == "<": specific_filters.append(val_col < num_val)
+            else:
+                specific_filters.append(text_filter(FileIndex.metadata_json, val))
         elif "*" in lower_token:
             like_val = lower_token.replace("*", "%")
             specific_filters.append(func.lower(func.coalesce(FileIndex.filename, "")).like(like_val))
@@ -240,6 +316,11 @@ def _build_search_query(query, s, q_base=None):
 
 @app.get("/files")
 def files(category:str="all", offset:int=0, limit:int=50):
+    cfg = load_config()
+    ui_prefs = cfg.get("ui_preferences", {})
+    cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", cfg.get("enable_photo_thumbnail_cache", False))
+    cache_flag = "&tc=1" if cache_enabled else ""
+
     with SessionLocal() as s:
         q = s.query(FileIndex)
         if category != "all":
@@ -253,10 +334,15 @@ def files(category:str="all", offset:int=0, limit:int=50):
             else:
                 q = q.filter(FileIndex.category == category)
         rows = q.offset(offset).limit(limit).all()
-        return [_build_item(r) for r in rows]
+        return [_build_item(r, cache_flag) for r in rows]
 
 @app.get("/search")
 def search(query:str="", category:str="all", offset:int=0, limit:int=50):
+    cfg = load_config()
+    ui_prefs = cfg.get("ui_preferences", {})
+    cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", cfg.get("enable_photo_thumbnail_cache", False))
+    cache_flag = "&tc=1" if cache_enabled else ""
+
     from sqlalchemy import text
     with SessionLocal() as s:
         q_base = s.query(FileIndex)
@@ -274,7 +360,7 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50):
         query = query.strip()
         if not query:
             rows = q_base.offset(offset).limit(limit).all()
-            return [_build_item(r) for r in rows]
+            return [_build_item(r, cache_flag) for r in rows]
 
         regex = _parse_regex_pattern(query)
         if regex:
@@ -289,13 +375,13 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50):
                     match_count += 1
                     if len(filtered) == limit:
                         break
-            return [_build_item(r) for r in filtered]
+            return [_build_item(r, cache_flag) for r in filtered]
 
         # Fallback to standard builder for custom search parameters (date:, size:, etc)
         if any(query.lower().startswith(prefix) for prefix in ["date:", "tag:", "type:", "name:", "size:", "length:"]):
             q = _build_search_query(query, s, q_base)
             rows = q.offset(offset).limit(limit).all()
-            return [_build_item(r) for r in rows]
+            return [_build_item(r, cache_flag) for r in rows]
             
         # FTS5 Lightning-Fast Search Path
         safe_query = query.replace('"', '""').replace("'", "''")
@@ -317,7 +403,7 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50):
         id_to_row = {r.id: r for r in rows}
         sorted_rows = [id_to_row[i] for i in matching_ids if i in id_to_row]
         
-        return [_build_item(r) for r in sorted_rows[offset:offset+limit]]
+        return [_build_item(r, cache_flag) for r in sorted_rows[offset:offset+limit]]
 
 @app.get("/search/suggestions")
 def search_suggestions(q: str = "", limit: int = 5):
@@ -366,6 +452,45 @@ def preview(item_id:int):
 
     if file_path.exists() and file_path.is_file():
         if file_category == "photo":
+            cfg = load_config()
+            ui_prefs = cfg.get("ui_preferences", {})
+            cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", cfg.get("enable_photo_thumbnail_cache", False))
+            
+            if cache_enabled:
+                try:
+                    size_limit_mb = float(ui_prefs.get("photo_thumbnail_size_limit_mb", cfg.get("photo_thumbnail_size_limit_mb", 5)))
+                    size_limit_bytes = size_limit_mb * 1024 * 1024
+                    
+                    if file_path.stat().st_size > size_limit_bytes:
+                        thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "photos"
+                        thumb_dir.mkdir(parents=True, exist_ok=True)
+                        cached_thumb = thumb_dir / f"{file_path.stem}_{file_path.stat().st_size}.jpg"
+                        
+                        if cached_thumb.exists():
+                            return FileResponse(str(cached_thumb), media_type="image/jpeg")
+                            
+                        if cv2 is not None:
+                            import numpy as np
+                            img_array = np.fromfile(str(file_path), np.uint8)
+                            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                            if img is not None:
+                                height, width = img.shape[:2]
+                                scaling_factor = min(800 / width, 800 / height)
+                                if scaling_factor < 1.0:
+                                    new_size = (int(width * scaling_factor), int(height * scaling_factor))
+                                    resized_img = cv2.resize(img, new_size, interpolation=cv2.INTER_AREA)
+                                else:
+                                    resized_img = img
+                                    
+                                is_success, buffer = cv2.imencode(".jpg", resized_img)
+                                if is_success:
+                                    with open(str(cached_thumb), "wb") as f:
+                                        f.write(buffer.tobytes())
+                                    if cached_thumb.exists():
+                                        return FileResponse(str(cached_thumb), media_type="image/jpeg")
+                except Exception as e:
+                    print(f"Large photo thumbnail error: {e}")
+
             media_type, _ = mimetypes.guess_type(str(file_path))
             return FileResponse(str(file_path), media_type=media_type or "application/octet-stream")
         elif file_category == "video":
@@ -393,9 +518,13 @@ def preview(item_id:int):
                         scaling_factor = min(400 / width, 300 / height)
                         new_size = (int(width * scaling_factor), int(height * scaling_factor))
                         resized_frame = cv2.resize(frame, new_size, interpolation=cv2.INTER_AREA)
-                        cv2.imwrite(str(cached_thumb), resized_frame)
+                        is_success, buffer = cv2.imencode(".jpg", resized_frame)
+                        if is_success:
+                            with open(str(cached_thumb), "wb") as f:
+                                f.write(buffer.tobytes())
                         cap.release()
-                        return FileResponse(str(cached_thumb), media_type="image/jpeg")
+                        if cached_thumb.exists():
+                            return FileResponse(str(cached_thumb), media_type="image/jpeg")
                     cap.release()
                 except Exception as e:
                     print(f"Video thumbnail error: {e}")
@@ -418,7 +547,8 @@ def preview(item_id:int):
                         pix = page.get_pixmap(matrix=fitz.Matrix(0.5, 0.5))
                         pix.save(str(cached_thumb))
                         doc.close()
-                        return FileResponse(str(cached_thumb), media_type="image/jpeg")
+                        if cached_thumb.exists():
+                            return FileResponse(str(cached_thumb), media_type="image/jpeg")
                     except Exception as e:
                         print(f"PDF thumbnail error: {e}")
             else:
@@ -616,11 +746,33 @@ def stats():
         dup_subq = s.query(func.count(FileIndex.id).label('c')).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1).subquery()
         dup_count = s.query(func.sum(dup_subq.c.c)).scalar() or 0
         stats_dict["duplicates"] = int(dup_count)
+        
+        stats_dict["known_faces"] = 0
+        stats_dict["unknown_faces"] = 0
+        ai_db_path = get_ai_db_path()
+        if ai_db_path.exists():
+            try:
+                with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;")
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='faces'")
+                    if cursor.fetchone():
+                        cursor.execute("SELECT COUNT(*) FROM faces JOIN people ON faces.person_id = people.id WHERE people.name NOT LIKE 'Unknown Person%'")
+                        stats_dict["known_faces"] = cursor.fetchone()[0] or 0
+                        
+                        cursor.execute("SELECT COUNT(*) FROM faces JOIN people ON faces.person_id = people.id WHERE people.name LIKE 'Unknown Person%'")
+                        stats_dict["unknown_faces"] = cursor.fetchone()[0] or 0
+            except Exception as e:
+                print(f"Error fetching AI stats: {e}")
+                
         return stats_dict
 
 @app.get("/indexer/status")
 def indexer_status():
-    return INDEXER_STATE
+    status = dict(INDEXER_STATE)
+    status["face_scanner_running"] = face_scanner_running
+    status["object_scanner_running"] = object_scanner_running
+    return status
 
 @app.post("/indexer/start")
 def indexer_start():
@@ -709,12 +861,59 @@ def choose_path_api(mode: str = "directory"):
 
 @app.get("/settings")
 def settings():
-    return load_config()
+    cfg = load_config()
+    if not isinstance(cfg, dict):
+        cfg = {}
+        
+    # Define a schema of all possible settings and their defaults to ensure a complete config
+    defaults = {
+        "database_path": "archive.db",
+        "thumbnail_path": "thumbnails",
+        "backup_configs": [],
+        "ui_preferences": {
+            "enable_photo_thumbnail_cache": False,
+            "photo_thumbnail_size_limit_mb": 5,
+            "allow_unverified_deletion": False,
+            "animations_enabled": True,
+        },
+        "smart_searches": [],
+        "read_only_mode": True,
+        "ai_enabled": False,
+        "ai_provider": "",
+        "ai_model": "",
+        "openai_api_key": "",
+        "face_sensitivity": "medium",
+        "face_clustering_sensitivity": "medium",
+        "object_sensitivity": "medium",
+    }
+
+    # Recursively merge defaults into the loaded config to prevent crashes from missing keys
+    def merge_defaults(config, defaults_dict):
+        for key, default_value in defaults_dict.items():
+            if key not in config:
+                config[key] = default_value
+            elif isinstance(default_value, dict) and isinstance(config[key], dict):
+                merge_defaults(config[key], default_value)
+        return config
+        
+    return merge_defaults(cfg, defaults)
 
 @app.post("/settings")
 def save(data:dict):
     save_config(data)
     return {"saved":True}
+
+@app.post("/clear-cache")
+def clear_cache():
+    cfg = load_config()
+    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
+    if thumb_dir.exists() and thumb_dir.is_dir():
+        try:
+            shutil.rmtree(thumb_dir)
+            return {"cleared": True}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to clear cache: {e}")
+    return {"cleared": True, "message": "Cache was already empty"}
 
 @app.post("/shutdown")
 def shutdown(request: Request):
@@ -758,6 +957,788 @@ def stop_verify_duplicates():
         from state import STATE
     STATE["hasher_stopped"] = True
     return {"status": "stopping"}
+
+def _cosine_similarity(vec1, vec2):
+    dot_product = sum(a * b for a, b in zip(vec1, vec2))
+    norm_a = sum(a * a for a in vec1) ** 0.5
+    norm_b = sum(b * b for b in vec2) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot_product / (norm_a * norm_b)
+
+def _scan_and_cluster_faces_worker():
+    global face_scanner_running
+    try:
+        import numpy as np
+        yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
+        sface_path = get_bundled_model_path("face_recognition_sface_2021dec.onnx")
+
+        if not Path(yunet_path).exists() or not Path(sface_path).exists():
+            print("Face recognition models not found. Ensure .onnx files are in the backend folder.")
+            return
+
+        cfg = load_config()
+        ai_db_path = get_ai_db_path()
+
+        face_sensitivity = cfg.get("face_sensitivity", "medium")
+        if face_sensitivity == "high":
+            face_threshold = 0.55
+        elif face_sensitivity == "low":
+            face_threshold = 0.85
+        else:
+            face_threshold = 0.70
+
+        face_clustering_sensitivity = cfg.get("face_clustering_sensitivity", "medium")
+        if face_clustering_sensitivity == "high":
+            cluster_threshold = 0.65
+        elif face_clustering_sensitivity == "low":
+            cluster_threshold = 0.45
+        else:
+            cluster_threshold = 0.55
+
+        detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
+        detector.setScoreThreshold(face_threshold)
+        recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
+
+        with sqlite3.connect(ai_db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''CREATE TABLE IF NOT EXISTS people (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                name TEXT DEFAULT 'Unknown Person'
+                              )''')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS faces (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                person_id INTEGER,
+                                file_id INTEGER,
+                                embedding_json TEXT,
+                                FOREIGN KEY(person_id) REFERENCES people(id)
+                              )''')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS processed_files (
+                                file_id INTEGER PRIMARY KEY
+                              )''')
+            cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) SELECT DISTINCT file_id FROM faces")
+            conn.commit()
+
+            cursor.execute("SELECT DISTINCT file_id FROM faces")
+            cursor.execute("SELECT file_id FROM processed_files")
+            processed_ids = set(r[0] for r in cursor.fetchall())
+
+            cursor.execute("SELECT person_id, embedding_json FROM faces GROUP BY person_id")
+            clusters = [(r[0], json.loads(r[1])) for r in cursor.fetchall()]
+
+            with SessionLocal() as s:
+                photos = s.query(FileIndex).filter(FileIndex.category == 'photo').all()
+
+            for photo in photos:
+                if not face_scanner_running:
+                    break
+                if photo.id in processed_ids:
+                    continue
+                file_path = _resolve_path(Path(photo.path))
+                if not file_path.exists():
+                    continue
+                
+                try:
+                    # Use numpy to safely load paths with spaces/Unicode on Windows
+                    img_array = np.fromfile(str(file_path), np.uint8)
+                    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                except Exception:
+                    img = cv2.imread(str(file_path))
+
+                if img is None:
+                    cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (photo.id,))
+                    conn.commit()
+                    continue
+
+                height, width, _ = img.shape
+                target_dim = 800
+                scale = 1.0
+                if max(height, width) > target_dim:
+                    scale = target_dim / max(height, width)
+                    new_w, new_h = int(width * scale), int(height * scale)
+                    det_img = cv2.resize(img, (new_w, new_h))
+                    detector.setInputSize((new_w, new_h))
+                else:
+                    det_img = img
+                    detector.setInputSize((width, height))
+
+                try:
+                    success, faces = detector.detect(det_img)
+                except Exception as e:
+                    print(f"Skipping large/invalid image {file_path.name}: {e}")
+                    cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (photo.id,))
+                    conn.commit()
+                    continue
+                
+                # Second pass fallback for extreme close-up selfies
+                if faces is None:
+                    target_dim = 320
+                    scale = 1.0
+                    if max(height, width) > target_dim:
+                        scale = target_dim / max(height, width)
+                        new_w, new_h = int(width * scale), int(height * scale)
+                        det_img = cv2.resize(img, (new_w, new_h))
+                        detector.setInputSize((new_w, new_h))
+                    else:
+                        det_img = img
+                        detector.setInputSize((width, height))
+                    try:
+                        success, faces = detector.detect(det_img)
+                    except Exception:
+                        pass
+
+                if faces is not None:
+                    if scale != 1.0:
+                        faces[:, :14] /= scale
+                    print(f"Scanned {file_path.name}: Found {len(faces)} faces.")
+                    for face in faces:
+                        try:
+                            face_align = recognizer.alignCrop(img, face)
+                            face_feature = recognizer.feature(face_align)
+                            embedding = face_feature[0].tolist()
+
+                            best_match_id = None
+                            best_sim = -1.0
+                            for person_id, rep_emb in clusters:
+                                sim = _cosine_similarity(embedding, rep_emb)
+                                if sim > cluster_threshold and sim > best_sim:
+                                    best_sim = sim
+                                    best_match_id = person_id
+
+                            if best_match_id is None:
+                                cursor.execute("SELECT COUNT(id) FROM people")
+                                p_count = cursor.fetchone()[0]
+                                cursor.execute("INSERT INTO people (name) VALUES (?)", (f"Unknown Person #{p_count + 1}",))
+                                best_match_id = cursor.lastrowid
+                                clusters.append((best_match_id, embedding))
+                            
+                            cursor.execute("INSERT INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
+                                           (best_match_id, photo.id, json.dumps(embedding)))
+                            conn.commit()
+                        except Exception as e:
+                            print(f"Face processing error on {file_path}: {e}")
+                            
+    except Exception as e:
+        print(f"Face Worker Error: {e}")
+    finally:
+        face_scanner_running = False
+
+@app.post("/scan-faces")
+def scan_faces():
+    if cv2 is None:
+        raise HTTPException(status_code=500, detail="OpenCV is required for face recognition.")
+    global face_scanner_thread, face_scanner_running
+    if face_scanner_running:
+        raise HTTPException(status_code=400, detail="Face scanning is already in progress.")
+    face_scanner_running = True
+    face_scanner_thread = threading.Thread(target=_scan_and_cluster_faces_worker)
+    face_scanner_thread.start()
+    return {"message": "Face scanning and clustering started in the background."}
+
+@app.post("/stop-scan-faces")
+def stop_scan_faces():
+    global face_scanner_running
+    if not face_scanner_running:
+        raise HTTPException(status_code=400, detail="Face scanner is not running.")
+    face_scanner_running = False
+    return {"message": "Stopping face scanner."}
+
+@app.get("/people")
+def get_people():
+    try:
+        cfg = load_config()
+        ai_db_path = get_ai_db_path()
+        if not ai_db_path.exists():
+            return []
+        with sqlite3.connect(ai_db_path, timeout=15) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT p.id, p.name, f.file_id, COUNT(f.id) 
+                FROM people p
+                JOIN faces f ON p.id = f.person_id
+                GROUP BY p.id
+                ORDER BY COUNT(f.id) DESC
+            """)
+            
+            results = []
+            for row in cursor.fetchall():
+                person_id, name, sample_file_id, count = row
+                results.append({
+                    "id": person_id, 
+                    "name": name, 
+                    "face_count": count, 
+                    "thumbnail": f"/people/{person_id}/thumbnail"
+                })
+            return results
+    except Exception as e:
+        print(f"Error in /people API: {e}")
+        return []
+
+@app.get("/people/{person_id}/thumbnail")
+def get_person_thumbnail(person_id: int):
+    if cv2 is None:
+        raise HTTPException(status_code=500, detail="OpenCV not installed")
+        
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    with sqlite3.connect(ai_db_path) as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT thumbnail_file_id FROM people WHERE id = ?", (person_id,))
+            thumb_row = cursor.fetchone()
+            thumb_file_id = thumb_row[0] if thumb_row else None
+        except sqlite3.OperationalError:
+            thumb_file_id = None
+            
+        face_row = None
+        if thumb_file_id:
+            cursor.execute("SELECT file_id, embedding_json FROM faces WHERE person_id = ? AND file_id = ? LIMIT 1", (person_id, thumb_file_id))
+            face_row = cursor.fetchone()
+            
+        if not face_row:
+            cursor.execute("SELECT file_id, embedding_json FROM faces WHERE person_id = ? LIMIT 1", (person_id,))
+            face_row = cursor.fetchone()
+            
+        if not face_row:
+            raise HTTPException(status_code=404, detail="Person not found")
+        file_id, emb_json = face_row
+        target_embedding = json.loads(emb_json)
+
+    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    cached_face = thumb_dir / f"person_{person_id}.jpg"
+    
+    if cached_face.exists():
+        return FileResponse(str(cached_face), media_type="image/jpeg")
+
+    try:
+        with SessionLocal() as s:
+            file_item = s.query(FileIndex).filter(FileIndex.id == file_id).first()
+            if not file_item:
+                raise HTTPException(status_code=404, detail="Image not found")
+        file_path = _resolve_path(Path(file_item.path))
+        
+        import numpy as np
+        img_array = np.fromfile(str(file_path), np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if img is None:
+            return preview(file_id)
+            
+        yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
+        sface_path = get_bundled_model_path("face_recognition_sface_2021dec.onnx")
+        detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
+        detector.setScoreThreshold(0.5)
+        recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
+
+        height, width, _ = img.shape
+        target_dim = 800
+        scale = 1.0
+        if max(height, width) > target_dim:
+            scale = target_dim / max(height, width)
+            new_w, new_h = int(width * scale), int(height * scale)
+            det_img = cv2.resize(img, (new_w, new_h))
+            detector.setInputSize((new_w, new_h))
+        else:
+            det_img = img
+            detector.setInputSize((width, height))
+
+        success, faces = detector.detect(det_img)
+
+        if faces is None:
+            target_dim = 320
+            scale = 1.0
+            if max(height, width) > target_dim:
+                scale = target_dim / max(height, width)
+                new_w, new_h = int(width * scale), int(height * scale)
+                det_img = cv2.resize(img, (new_w, new_h))
+                detector.setInputSize((new_w, new_h))
+            else:
+                det_img = img
+                detector.setInputSize((width, height))
+            success, faces = detector.detect(det_img)
+
+        if faces is not None:
+            if scale != 1.0:
+                faces[:, :14] /= scale
+
+            best_face_align = None
+            best_sim = -1.0
+            for face in faces:
+                face_align = recognizer.alignCrop(img, face)
+                face_feature = recognizer.feature(face_align)
+                embedding = face_feature[0].tolist()
+                sim = _cosine_similarity(embedding, target_embedding)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_face_align = face_align
+
+            if best_face_align is not None:
+                is_success, buffer = cv2.imencode(".jpg", best_face_align)
+                if is_success:
+                    with open(str(cached_face), "wb") as f:
+                        f.write(buffer.tobytes())
+                if cached_face.exists():
+                    return FileResponse(str(cached_face), media_type="image/jpeg")
+
+    except Exception as e:
+        print(f"Failed to generate face thumbnail: {e}")
+
+    # Fallback to the full image thumbnail if face crop fails
+    return preview(file_id)
+
+@app.get("/people/{person_id}/photos")
+def get_person_photos(person_id: int):
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+        return []
+        
+    ui_prefs = cfg.get("ui_preferences", {})
+    cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", cfg.get("enable_photo_thumbnail_cache", False))
+    cache_flag = "&tc=1" if cache_enabled else ""
+
+    with sqlite3.connect(ai_db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT file_id FROM faces WHERE person_id = ?", (person_id,))
+        file_ids = [r[0] for r in cursor.fetchall()]
+    if not file_ids:
+        return []
+    with SessionLocal() as s:
+        photos = s.query(FileIndex).filter(FileIndex.id.in_(file_ids)).all()
+        return [_build_item(p, cache_flag) for p in photos]
+
+@app.post("/people/{person_id}/set-thumbnail")
+def set_person_thumbnail(person_id: int, payload: dict = Body(...)):
+    file_id = payload.get("file_id")
+    if not file_id:
+        raise HTTPException(status_code=400, detail="file_id is required")
+
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+         raise HTTPException(status_code=404, detail="Database not found")
+         
+    with sqlite3.connect(ai_db_path) as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("ALTER TABLE people ADD COLUMN thumbnail_file_id INTEGER")
+        except sqlite3.OperationalError:
+            pass
+            
+        cursor.execute("UPDATE people SET thumbnail_file_id = ? WHERE id = ?", (file_id, person_id))
+        conn.commit()
+        
+    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
+    cached_face = thumb_dir / f"person_{person_id}.jpg"
+    if cached_face.exists():
+        try:
+            cached_face.unlink()
+        except Exception:
+            pass
+            
+    return {"success": True}
+
+@app.post("/people/{person_id}/remove-photo")
+def remove_person_photo(person_id: int, payload: dict = Body(...)):
+    file_id = payload.get("file_id")
+    if not file_id:
+        raise HTTPException(status_code=400, detail="file_id is required")
+
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+         raise HTTPException(status_code=404, detail="Database not found")
+
+    with sqlite3.connect(ai_db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM people WHERE id = ?", (person_id,))
+        person_row = cursor.fetchone()
+        person_name = person_row[0] if person_row else None
+        
+        cursor.execute("DELETE FROM faces WHERE person_id = ? AND file_id = ?", (person_id, file_id))
+        deleted_count = cursor.rowcount
+        
+        try:
+            cursor.execute("SELECT thumbnail_file_id FROM people WHERE id = ?", (person_id,))
+            thumb_row = cursor.fetchone()
+            if thumb_row and thumb_row[0] == file_id:
+                cursor.execute("UPDATE people SET thumbnail_file_id = NULL WHERE id = ?", (person_id,))
+        except sqlite3.OperationalError:
+            pass
+            
+        conn.commit()
+        
+    if deleted_count > 0:
+        if person_name and not person_name.startswith("Unknown Person"):
+            with SessionLocal() as s:
+                f = s.query(FileIndex).filter(FileIndex.id == file_id).first()
+                if f and f.tags:
+                    f.tags = f.tags.replace(f"person:{person_name}", "").replace("  ", " ").strip()
+                    s.commit()
+
+        thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
+        cached_face = thumb_dir / f"person_{person_id}.jpg"
+        if cached_face.exists():
+            try:
+                cached_face.unlink()
+            except Exception:
+                pass
+
+    return {"success": True, "removed": deleted_count}
+
+@app.post("/people/{person_id}/add-photo")
+def add_person_photo(person_id: int, payload: dict = Body(...)):
+    file_id = payload.get("file_id")
+    if not file_id:
+        raise HTTPException(status_code=400, detail="file_id is required")
+
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+         raise HTTPException(status_code=404, detail="Database not found")
+
+    with sqlite3.connect(ai_db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM people WHERE id = ?", (person_id,))
+        person_row = cursor.fetchone()
+        if not person_row:
+            raise HTTPException(status_code=404, detail="Person not found")
+        person_name = person_row[0]
+        
+        cursor.execute("SELECT id FROM faces WHERE person_id = ? AND file_id = ?", (person_id, file_id))
+        if cursor.fetchone():
+            return {"success": True, "message": "Already tagged"}
+            
+        # Insert empty array since it's a manual tag (bypasses similarity checks)
+        cursor.execute("INSERT INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)", (person_id, file_id, "[]"))
+        conn.commit()
+        
+    if person_name and not person_name.startswith("Unknown Person"):
+        with SessionLocal() as s:
+            f = s.query(FileIndex).filter(FileIndex.id == file_id).first()
+            if f:
+                current_tags = f.tags or ""
+                new_tag = f"person:{person_name}"
+                if new_tag not in current_tags:
+                    f.tags = f"{current_tags} {new_tag}".strip()
+                    s.commit()
+
+    return {"success": True}
+
+@app.post("/people/{person_id}/rename")
+def rename_person(person_id: int, payload: dict = Body(...)):
+    new_name = payload.get("name", "Unknown Person").strip()
+    if not new_name:
+        new_name = "Unknown Person"
+
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+         raise HTTPException(status_code=404, detail="Database not found")
+         
+    with sqlite3.connect(ai_db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM people WHERE id = ?", (person_id,))
+        old_name_row = cursor.fetchone()
+        old_name = old_name_row[0] if old_name_row else "Unknown Person"
+        
+        cursor.execute("SELECT DISTINCT file_id FROM faces WHERE person_id = ?", (person_id,))
+        file_ids = [r[0] for r in cursor.fetchall()]
+        
+        # Case-insensitive check to see if the target name already exists
+        cursor.execute("SELECT id FROM people WHERE name COLLATE NOCASE = ? AND id != ?", (new_name, person_id))
+        existing_person = cursor.fetchone()
+        
+        if existing_person:
+            target_id = existing_person[0]
+            # Auto-Merge: Reassign all faces to the existing person, then delete the duplicate
+            cursor.execute("UPDATE faces SET person_id = ? WHERE person_id = ?", (target_id, person_id))
+            cursor.execute("DELETE FROM people WHERE id = ?", (person_id,))
+        else:
+            # Standard Rename
+            cursor.execute("UPDATE people SET name = ? WHERE id = ?", (new_name, person_id))
+            
+        conn.commit()
+        
+    if file_ids:
+        with SessionLocal() as s:
+            files_to_update = s.query(FileIndex).filter(FileIndex.id.in_(file_ids)).all()
+            for f in files_to_update:
+                current_tags = f.tags or ""
+                if old_name and not old_name.startswith("Unknown Person"):
+                    current_tags = current_tags.replace(f"person:{old_name}", "").replace("  ", " ").strip()
+                if new_name and not new_name.startswith("Unknown Person"):
+                    new_tag = f"person:{new_name}"
+                    if new_tag not in current_tags:
+                        current_tags = f"{current_tags} {new_tag}".strip()
+                f.tags = current_tags
+            s.commit()
+            
+    return {"success": True, "name": new_name}
+
+@app.delete("/people/{person_id}")
+def delete_person(person_id: int):
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+         raise HTTPException(status_code=404, detail="Database not found")
+         
+    with sqlite3.connect(ai_db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM people WHERE id = ?", (person_id,))
+        old_name_row = cursor.fetchone()
+        old_name = old_name_row[0] if old_name_row else "Unknown Person"
+        
+        cursor.execute("SELECT DISTINCT file_id FROM faces WHERE person_id = ?", (person_id,))
+        file_ids = [r[0] for r in cursor.fetchall()]
+        
+        # Wipe the face embeddings and the person
+        cursor.execute("DELETE FROM faces WHERE person_id = ?", (person_id,))
+        cursor.execute("DELETE FROM people WHERE id = ?", (person_id,))
+        conn.commit()
+        
+    # Clean up any tags from the main index
+    if file_ids and old_name and not old_name.startswith("Unknown Person"):
+        with SessionLocal() as s:
+            files_to_update = s.query(FileIndex).filter(FileIndex.id.in_(file_ids)).all()
+            for f in files_to_update:
+                if f.tags:
+                    f.tags = f.tags.replace(f"person:{old_name}", "").replace("  ", " ").strip()
+            s.commit()
+            
+    return {"success": True, "deleted_id": person_id}
+
+@app.post("/people/merge")
+def merge_people(payload: dict = Body(...)):
+    person_ids = payload.get("person_ids", [])
+    if not person_ids or len(person_ids) < 2:
+        raise HTTPException(status_code=400, detail="At least two person IDs are required for merging.")
+    
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+         raise HTTPException(status_code=404, detail="Database not found")
+         
+    with sqlite3.connect(ai_db_path) as conn:
+        cursor = conn.cursor()
+        
+        placeholders = ",".join("?" * len(person_ids))
+        cursor.execute(f"SELECT id, name FROM people WHERE id IN ({placeholders})", person_ids)
+        people_rows = cursor.fetchall()
+        
+        if not people_rows:
+             raise HTTPException(status_code=404, detail="People not found.")
+             
+        people_rows.sort(key=lambda p: (0 if p[1] and not p[1].startswith("Unknown Person") else 1, p[0]))
+        primary_id = people_rows[0][0]
+        ids_to_merge = [p[0] for p in people_rows if p[0] != primary_id]
+        
+        for old_id in ids_to_merge:
+            cursor.execute("UPDATE faces SET person_id = ? WHERE person_id = ?", (primary_id, old_id))
+            cursor.execute("DELETE FROM people WHERE id = ?", (old_id,))
+            
+        conn.commit()
+        
+    return {"success": True, "merged_into": primary_id}
+
+object_scanner_running = False
+object_scanner_thread = None
+
+def _scan_and_tag_objects_worker():
+    global object_scanner_running
+    try:
+        import numpy as np
+        model_path = get_bundled_model_path("mobilenetv2-7.onnx")
+        classes_path = get_bundled_model_path("imagenet_classes.txt")
+        
+        if not Path(model_path).exists() or not Path(classes_path).exists():
+            print("Object classification models not found. Ensure mobilenetv2-7.onnx and imagenet_classes.txt are in the backend folder.")
+            return
+
+        net = cv2.dnn.readNetFromONNX(model_path)
+        with open(classes_path, 'rt') as f:
+            classes = [line.strip() for line in f.readlines()]
+            
+        cfg = load_config()
+        object_sensitivity = cfg.get("object_sensitivity", "medium")
+        if object_sensitivity == "high":
+            object_threshold = 0.05
+        elif object_sensitivity == "low":
+            object_threshold = 0.25
+        else:
+            object_threshold = 0.10
+            
+        with SessionLocal() as s:
+            # Skip photos that already have AI tags so we seamlessly resume where we left off!
+            photos = s.query(FileIndex).filter(
+                FileIndex.category == 'photo',
+                or_(FileIndex.tags.is_(None), ~FileIndex.tags.like('%object:%'))
+            ).all()
+            for photo in photos:
+                if not object_scanner_running:
+                    break
+                    
+                filename_lower = photo.filename.lower() if photo.filename else ""
+                if "screenshot" in filename_lower or "meme" in filename_lower:
+                    continue
+
+                # Skip files we already successfully tagged
+                current_tags = photo.tags or ""
+                if "object:" in current_tags:
+                    continue
+                    
+                file_path = _resolve_path(Path(photo.path))
+                if not file_path.exists():
+                    continue
+                    
+                try:
+                    img_array = np.fromfile(str(file_path), np.uint8)
+                    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                except Exception:
+                    img = cv2.imread(str(file_path))
+                    
+                if img is None:
+                    continue
+                    
+                try:
+                    img = cv2.resize(img, (224, 224))
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    img = img.astype(np.float32) / 255.0
+                    img -= np.array([0.485, 0.456, 0.406])
+                    img /= np.array([0.229, 0.224, 0.225])
+                    img = img.transpose(2, 0, 1)
+                    img = np.expand_dims(img, axis=0)
+                    img = np.ascontiguousarray(img) # OpenCV strictly requires contiguous memory for DNN inputs!
+                    
+                    net.setInput(img)
+                    preds = net.forward().flatten()
+                    
+                    # Apply Softmax to convert raw logits to proper probabilities (0.0 to 1.0)
+                    exp_preds = np.exp(preds - np.max(preds))
+                    probs = exp_preds / np.sum(exp_preds)
+                    
+                    # Grab the top 5 highest confidence predictions
+                    classIds = np.argsort(probs)[-5:][::-1]
+                    new_tags = []
+                    for classId in classIds:
+                        confidence = probs[classId]
+                        if confidence > object_threshold:
+                            label = classes[classId].split(',')[0].strip().lower().replace(" ", "_")
+                            new_tags.append(f"object:{label}")
+                            
+                    if new_tags:
+                        for tag in new_tags:
+                            if tag not in current_tags:
+                                current_tags = f"{current_tags} {tag}".strip()
+                        photo.tags = current_tags
+                        s.commit()
+                        print(f"Classified {file_path.name}: {new_tags}")
+                except Exception as e:
+                    print(f"Failed to classify {file_path.name}: {e}")
+    except Exception as e:
+        print(f"Object Scanner Error: {e}")
+    finally:
+        object_scanner_running = False
+
+@app.post("/scan-objects")
+def scan_objects():
+    global object_scanner_thread, object_scanner_running
+    if object_scanner_running:
+        raise HTTPException(status_code=400, detail="Object scanning is already in progress.")
+    object_scanner_running = True
+    object_scanner_thread = threading.Thread(target=_scan_and_tag_objects_worker)
+    object_scanner_thread.start()
+    return {"message": "Object scanning started in the background."}
+
+@app.post("/stop-scan-objects")
+def stop_scan_objects():
+    global object_scanner_running
+    if not object_scanner_running:
+        raise HTTPException(status_code=400, detail="Object scanner is not running.")
+    object_scanner_running = False
+    return {"message": "Stopping object scanner."}
+
+class TagUpdateRequest(BaseModel):
+    file_ids: list[int]
+    tags: list[str]
+
+@app.post("/tags/add")
+def add_tags(req: TagUpdateRequest):
+    with SessionLocal() as s:
+        files_to_update = s.query(FileIndex).filter(FileIndex.id.in_(req.file_ids)).all()
+        for f in files_to_update:
+            current_tags = set((f.tags or "").split())
+            for tag in req.tags:
+                formatted_tag = f"object:{tag}" if ":" not in tag else tag
+                current_tags.add(formatted_tag)
+            f.tags = " ".join(sorted(current_tags))
+        s.commit()
+    return {"status": "success"}
+
+@app.post("/tags/remove")
+def remove_tags(req: TagUpdateRequest):
+    with SessionLocal() as s:
+        files_to_update = s.query(FileIndex).filter(FileIndex.id.in_(req.file_ids)).all()
+        for f in files_to_update:
+            if not f.tags:
+                continue
+            current_tags = set((f.tags or "").split())
+            for tag in req.tags:
+                formatted_tag = f"object:{tag}" if ":" not in tag else tag
+                current_tags.discard(formatted_tag)
+            f.tags = " ".join(sorted(current_tags))
+        s.commit()
+    return {"status": "success"}
+
+@app.delete("/tags/objects/all")
+def clear_all_object_tags():
+    with SessionLocal() as s:
+        # Find all files that have any object tag
+        files_with_object_tags = s.query(FileIndex).filter(FileIndex.tags.like('%object:%')).all()
+        
+        for f in files_with_object_tags:
+            if f.tags:
+                # Split tags, filter out object tags, and rejoin
+                tags_list = [t for t in re.split(r'[\s,]+', f.tags) if not t.startswith('object:')]
+                f.tags = " ".join(filter(bool, tags_list))
+        
+        s.commit()
+    return {"status": "success", "message": "All object tags have been cleared."}
+
+@app.delete("/tags/objects/{tag_name}")
+def delete_object_tag_globally(tag_name: str):
+    tag_to_delete = tag_name
+    if not tag_to_delete.startswith("object:"):
+        tag_to_delete = f"object:{tag_to_delete}"
+
+    with SessionLocal() as s:
+        # Find all files that have this tag using a LIKE query
+        files_with_tag = s.query(FileIndex).filter(FileIndex.tags.like(f'%{tag_to_delete}%')).all()
+        
+        for f in files_with_tag:
+            if f.tags:
+                # Split on space or comma, remove all occurrences, and rejoin with spaces
+                tags_list = [t for t in re.split(r'[\s,]+', f.tags) if t != tag_to_delete]
+                f.tags = " ".join(filter(bool, tags_list))
+        
+        s.commit()
+    return {"status": "success", "deleted_tag": tag_to_delete}
+
+@app.get("/tags/objects")
+def get_object_tags():
+    with SessionLocal() as s:
+        rows = s.query(FileIndex.tags).filter(FileIndex.tags.like('%object:%')).all()
+        unique_tags = set()
+        for r in rows:
+            if r[0]:
+                for tag in r[0].split():
+                    if tag.startswith('object:'):
+                        unique_tags.add(tag)
+        return sorted(list(unique_tags))
 
 # --- Serve React Frontend (Production) ---
 if hasattr(sys, '_MEIPASS'):

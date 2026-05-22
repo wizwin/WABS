@@ -9,6 +9,11 @@ This document outlines the development setup, local build processes, and GitHub 
 ### Prerequisites
 - **Node.js**: v16 or higher (for the frontend)
 - **Python**: 3.10 or higher (for the backend)
+- **Models**: 
+  - [face_detection_yunet_2023mar.onnx](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
+  - [face_recognition_sface_2021dec.onnx](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface)
+  - [mobilenetv2-7.onnx](https://github.com/onnx/models/raw/main/validated/vision/classification/mobilenet/model/mobilenetv2-7.onnx)
+  - [imagenet_classes.txt](https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt)
 
 ### 1. Backend Setup
 Open your terminal in the root directory of the project (e.g., inside VSCode) and set up your Python environment.
@@ -88,12 +93,12 @@ Ensure your Python virtual environment is activated and `pyinstaller` is install
 
 **For Windows:**
 ```bash
-pyinstaller --name WABS-Windows.exe --onefile --add-data "frontend/dist;frontend/dist" run.py
+pyinstaller --name WABS-Windows.exe --onefile --noconsole --add-data "frontend/dist;frontend/dist" --add-data "backend/*.onnx;backend" --add-data "backend/*.txt;backend" run.py
 ```
 
 **For Linux:**
 ```bash
-pyinstaller --name WABS-Linux --onefile --add-data "frontend/dist:frontend/dist" run.py
+pyinstaller --name WABS-Linux --onefile --noconsole --add-data "frontend/dist:frontend/dist" --add-data "backend/*.onnx:backend" --add-data "backend/*.txt:backend" run.py
 ```
 *(Note the separator difference: Windows uses `;` while Linux uses `:`)*
 

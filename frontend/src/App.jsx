@@ -37,6 +37,7 @@ import PowerSettingsNewIcon from '@mui/icons-material/PowerSettingsNew'
 import FileCopyIcon from '@mui/icons-material/FileCopy'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty'
+import FaceIcon from '@mui/icons-material/Face'
 
 // Use relative path in production to support network IPs, fallback to localhost for Vite dev server
 const API = window.location.port === '5173' ? 'http://127.0.0.1:8000' : ''
@@ -109,7 +110,32 @@ function AppIcon({ size = 64 }) {
   );
 }
 
-function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContextMenu, onSelectAndOpen, renderThumb, isAltGroup, showVerified, showUnverified, isReadOnly }) {
+function ProgressBar({ current = 0, total = 0, color = '#3b82f6' }) {
+  if (!total) return null;
+  const percentage = Math.min(100, Math.max(0, (current / total) * 100));
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px', marginBottom: '4px' }}>
+      <div style={{ width: '100%', background: '#1e293b', borderRadius: '4px', overflow: 'hidden', height: '6px' }}>
+        <div style={{ width: `${percentage}%`, background: color, height: '100%', transition: 'width 0.3s ease' }}></div>
+      </div>
+      <span style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'right' }}>{current} / {total} ({Math.round(percentage)}%)</span>
+    </div>
+  );
+}
+
+function formatSize(size) {
+  if (!size || size === '0') return '0 B';
+  const str = String(size);
+  if (/[a-zA-Z]/.test(str)) return str; // Already has a unit
+  const bytes = parseFloat(str.replace(/,/g, ''));
+  if (isNaN(bytes) || bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContextMenu, onSelectAndOpen, renderThumb, isAltGroup, showVerified, showUnverified, isReadOnly, isProcessing }) {
   const [isHovered, setIsHovered] = useState(false);
   const [isActive, setIsActive] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
@@ -132,8 +158,9 @@ function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContext
         transition: animationsEnabled ? 'all 0.3s ease' : 'none',
         opacity: animationsEnabled ? (isMounted ? 1 : 0) : 1,
         transform: animationsEnabled ? (isActive ? 'scale(0.97)' : isHovered ? 'translateY(-2px)' : isMounted ? 'none' : 'translateY(10px)') : 'none',
-        boxShadow: animationsEnabled && isActive ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none',
-        backgroundColor: isAltGroup ? '#1e293b' : undefined
+        boxShadow: isProcessing ? '0 0 0 2px #3b82f6, 0 0 15px rgba(59, 130, 246, 0.4)' : animationsEnabled && isActive ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none',
+        backgroundColor: isProcessing ? '#1e3a8a' : isAltGroup ? '#1e293b' : undefined,
+        border: isProcessing ? '1px solid #3b82f6' : undefined
       }}
     >
       {viewMode === 'grid' ? (
@@ -153,14 +180,15 @@ function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContext
           )}
           <div className='info' style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px', overflow: 'hidden' }} title={item.filename}>
-              {showVerified && <CheckCircleIcon style={{ color: '#10b981', fontSize: '16px', flexShrink: 0 }} title="Verified Duplicate (SHA-256 Match)" />}
-              {showUnverified && <HourglassEmptyIcon style={{ color: '#f59e0b', fontSize: '16px', flexShrink: 0 }} title="Unverified Duplicate (Pending Hash)" />}
+              {isProcessing && <HourglassEmptyIcon style={{ color: '#38bdf8', fontSize: '16px', flexShrink: 0 }} title="Processing..." />}
+              {showVerified && !isProcessing && <CheckCircleIcon style={{ color: '#10b981', fontSize: '16px', flexShrink: 0 }} title="Verified Duplicate (SHA-256 Match)" />}
+              {showUnverified && !isProcessing && <HourglassEmptyIcon style={{ color: '#f59e0b', fontSize: '16px', flexShrink: 0 }} title="Unverified Duplicate (Pending Hash)" />}
               <span style={{ fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.filename}</span>
               {isReadOnly && <span style={{ fontSize: '10px', background: '#334155', color: '#94a3b8', padding: '2px 4px', borderRadius: '4px', flexShrink: 0, fontWeight: 'bold' }} title="Read-Only Location">RO</span>}
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#94a3b8' }}>
               <span>{item.category}</span>
-              <span>{item.size}</span>
+            <span>{formatSize(item.size)}</span>
             </div>
           </div>
         </>
@@ -176,14 +204,15 @@ function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContext
           />
           <div className="list-info">
             <p className="list-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              {showVerified && <CheckCircleIcon style={{ color: '#10b981', fontSize: '18px', flexShrink: 0 }} title="Verified Duplicate (SHA-256 Match)" />}
-              {showUnverified && <HourglassEmptyIcon style={{ color: '#f59e0b', fontSize: '18px', flexShrink: 0 }} title="Unverified Duplicate (Pending Hash)" />}
+              {isProcessing && <HourglassEmptyIcon style={{ color: '#38bdf8', fontSize: '18px', flexShrink: 0 }} title="Processing..." />}
+              {showVerified && !isProcessing && <CheckCircleIcon style={{ color: '#10b981', fontSize: '18px', flexShrink: 0 }} title="Verified Duplicate (SHA-256 Match)" />}
+              {showUnverified && !isProcessing && <HourglassEmptyIcon style={{ color: '#f59e0b', fontSize: '18px', flexShrink: 0 }} title="Unverified Duplicate (Pending Hash)" />}
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.filename}</span>
               {isReadOnly && <span style={{ fontSize: '10px', background: '#334155', color: '#94a3b8', padding: '2px 6px', borderRadius: '4px', flexShrink: 0, fontWeight: 'bold' }} title="Read-Only Location">Read-Only</span>}
             </p>
             <p className="list-meta">
               <span>{item.category}</span>
-              <span>{item.size}</span>
+            <span>{formatSize(item.size)}</span>
               <span>{item.modified}</span>
             </p>
           </div>
@@ -237,8 +266,8 @@ const [searchCache,setSearchCache]=useState([])
 const [offset,setOffset]=useState(0)
 const [hasMore,setHasMore]=useState(true)
 const [loadingMore,setLoadingMore]=useState(false)
-const [stats,setStats]=useState({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0})
-const [indexer,setIndexer]=useState({running:false,paused:false,stopped:false,current:0,total:0,current_file:'',status:'Idle',indexed:0})
+const [stats,setStats]=useState({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0})
+const [indexer,setIndexer]=useState({running:false,paused:false,stopped:false,current:0,total:0,current_file:'',status:'Idle',indexed:0,face_scanner_running:false,object_scanner_running:false,hasher_running:false,hasher_current:0,hasher_total:0,face_scanner_current:0,face_scanner_total:0,object_scanner_current:0,object_scanner_total:0})
 const [sortBy,setSortBy]=useState('date')
 const [sortOrder,setSortOrder]=useState('desc')
 const [filterCategory, setFilterCategory] = useState('all')
@@ -264,6 +293,23 @@ const [suggestionsData, setSuggestionsData] = useState({ type: 'none', suggestio
 const suggestionTimeout = useRef(null);
 const searchContainerRef = useRef(null);
 const [focusedSuggestionIndex, setFocusedSuggestionIndex] = useState(-1);
+const [people, setPeople] = useState([]);
+const [currentPerson, setCurrentPerson] = useState(null);
+const [personFiles, setPersonFiles] = useState([]);
+const [peopleSortBy, setPeopleSortBy] = useState('name');
+const [objectTags, setObjectTags] = useState([]);
+const [checkedPeople, setCheckedPeople] = useState(new Set());
+const [isTaggingPerson, setIsTaggingPerson] = useState(false);
+const [isTaggingObject, setIsTaggingObject] = useState(false);
+const [tagInput, setTagInput] = useState('');
+const [editingNames, setEditingNames] = useState({});
+const [dbFilename, setDbFilename] = useState('archive.db');
+const [thumbUpdateTimestamps, setThumbUpdateTimestamps] = useState({});
+const [actionInProgress, setActionInProgress] = useState(false);
+const [tagsPage, setTagsPage] = useState(1);
+const [tagSearchQuery, setTagSearchQuery] = useState('');
+const [unknownPeoplePage, setUnknownPeoplePage] = useState(1);
+const [namedPeoplePage, setNamedPeoplePage] = useState(1);
 
 useEffect(() => {
   if (checkedFiles.size === 0 && showSelectedOnly) {
@@ -421,6 +467,16 @@ function handleScroll(e){
 async function loadSettings(){
  const r=await axios.get(`${API}/settings`)
  let data = r.data;
+ if (data.database_path && typeof data.database_path === 'string' && data.database_path.endsWith('.db')) {
+   const lastSlash = Math.max(data.database_path.lastIndexOf('/'), data.database_path.lastIndexOf('\\'));
+   if (lastSlash !== -1) {
+     setDbFilename(data.database_path.substring(lastSlash + 1));
+     data.database_path = data.database_path.substring(0, lastSlash);
+   } else {
+     setDbFilename(data.database_path);
+     data.database_path = '';
+   }
+ }
  if (!data.backup_configs || data.backup_configs.length === 0) {
    data.backup_configs = [{
      id: 'default',
@@ -450,7 +506,13 @@ const showToastMessage = (message) => {
 };
 
 async function saveSettings(){
- await axios.post(`${API}/settings`,settings)
+ const payload = { ...settings };
+ if (payload.database_path && typeof payload.database_path === 'string' && !payload.database_path.endsWith('.db')) {
+   const separator = payload.database_path.includes('\\') ? '\\' : '/';
+   const cleanPath = payload.database_path.replace(/[/\\]$/, '');
+   payload.database_path = cleanPath ? (cleanPath + separator + dbFilename) : dbFilename;
+ }
+ await axios.post(`${API}/settings`, payload)
  showToastMessage('Settings Saved');
  await loadDashboard();
  // After saving settings, reload content if on explorer or search page
@@ -488,13 +550,289 @@ async function choosePathForConfig(configId, field, mode){
  }
 }
 
+async function clearCache() {
+  if (!window.confirm('Are you sure you want to clear the thumbnail cache? The cached images will be permanently deleted and automatically regenerated as needed.')) return;
+  try {
+    await axios.post(`${API}/clear-cache`);
+    showToastMessage('Thumbnail cache cleared successfully.');
+  } catch(err) {
+    alert('Error clearing cache: ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
 async function loadDashboard(){
- const [statsRes, indexerRes] = await Promise.all([
-   axios.get(`${API}/stats`),
-   axios.get(`${API}/indexer/status`)
+ const timestamp = Date.now();
+ const [statsRes, indexerRes, tagsRes] = await Promise.all([
+   axios.get(`${API}/stats?t=${timestamp}`),
+   axios.get(`${API}/indexer/status?t=${timestamp}`),
+   axios.get(`${API}/tags/objects?t=${timestamp}`).catch(() => ({ data: [] }))
  ])
  setStats(prev => ({...prev, ...statsRes.data}))
  setIndexer(indexerRes.data)
+ if(tagsRes && tagsRes.data) setObjectTags(tagsRes.data)
+}
+
+async function loadPeople() {
+  try {
+    const r = await axios.get(`${API}/people?t=${Date.now()}`);
+    if (Array.isArray(r.data)) {
+      setPeople(r.data);
+    } else {
+      console.warn('API returned non-array:', r.data);
+      setPeople(null);
+    }
+  } catch (err) {
+    console.warn('Failed to load people', err);
+    setPeople(null);
+  }
+}
+
+async function openPersonPhotos(person) {
+  try {
+    const r = await axios.get(`${API}/people/${person.id}/photos`);
+    setPersonFiles(r.data);
+    setCurrentPerson(person);
+    setPage('person_files');
+  } catch (err) {
+    console.warn('Failed to load person photos', err);
+  }
+}
+
+const updatePersonNameLocal = (id, newName) => setPeople(prev => prev.map(p => p.id === id ? { ...p, name: newName } : p));
+const savePersonName = async (id, newName) => { try { await axios.post(`${API}/people/${id}/rename`, { name: newName }); loadPeople(); } catch (err) { console.warn(err); } };
+const deletePerson = async (e, id, name) => { 
+  e.stopPropagation(); 
+  if (name && !name.startsWith('Unknown Person')) {
+    if (window.confirm(`Remove name "${name}"? This will move them back to the Unknown Persons list.`)) { 
+      try { 
+        await axios.post(`${API}/people/${id}/rename`, { name: `Unknown Person #${id}` }); 
+        loadPeople(); 
+      } catch(err) { console.warn(err); } 
+    }
+  } else {
+    if (window.confirm(`Delete "${name}" and ignore their faces?`)) { 
+      try { 
+        await axios.delete(`${API}/people/${id}`); 
+        loadPeople(); 
+      } catch(err) { console.warn(err); } 
+    } 
+  }
+};
+
+async function mergeSelectedPeople() {
+  if (!window.confirm(`Are you sure you want to merge these ${checkedPeople.size} people into one?`)) return;
+  const ids = Array.from(checkedPeople);
+  try {
+    await axios.post(`${API}/people/merge`, { person_ids: ids });
+    showToastMessage('People merged successfully.');
+    setCheckedPeople(new Set());
+    loadPeople();
+  } catch (err) {
+    alert('Error merging people: ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
+async function setPersonThumbnail(personId, fileId) {
+  try {
+    await axios.post(`${API}/people/${personId}/set-thumbnail`, { file_id: fileId });
+    showToastMessage('Cover photo updated successfully.');
+    setCheckedFiles(new Set());
+    setThumbUpdateTimestamps(prev => ({ ...prev, [personId]: Date.now() }));
+    loadPeople();
+  } catch(err) {
+    alert('Error setting thumbnail: ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
+async function removePersonPhotosBulk(personId, fileIds) {
+  if (!window.confirm(`Are you sure you want to un-tag ${fileIds.length} photo(s) from this person?`)) return;
+  try {
+    for (const fileId of fileIds) {
+      await axios.post(`${API}/people/${personId}/remove-photo`, { file_id: fileId });
+    }
+    showToastMessage(`Removed ${fileIds.length} photo(s).`);
+    setPersonFiles(prev => prev.filter(f => !fileIds.includes(f.id)));
+    setCheckedFiles(new Set());
+  } catch(err) {
+    alert('Error removing photo(s): ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
+async function assignPhotosToPerson(personId, filePaths) {
+  if (!personId) return;
+  const fileIds = filePaths.map(p => files.find(f => f.path === p)?.id).filter(id => id);
+  try {
+    for (const id of fileIds) {
+      await axios.post(`${API}/people/${personId}/add-photo`, { file_id: id });
+    }
+    showToastMessage(`Successfully tagged ${fileIds.length} photo(s).`);
+    setIsTaggingPerson(false);
+    setCheckedFiles(new Set());
+    if (page === 'explorer') loadFiles(0, false, filterCategory);
+    else if (page === 'search') doSearch(query, filterCategory);
+  } catch(err) {
+    alert('Error tagging photo(s): ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
+function locateSelectedFileInExplorer() {
+    if (checkedFiles.size !== 1) return;
+    const path = Array.from(checkedFiles)[0];
+    const file = personFiles.find(f => f.path === path);
+    if (!file) return;
+
+    // Search for the specific day to provide timeline context
+    let q = '';
+    const d = new Date(file.modified);
+    if (file.modified && !isNaN(d.getTime())) {
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        q = `date:${d.getFullYear()}-${month}-${day}`;
+    } else {
+        q = `name:"${file.filename}"`;
+    }
+
+    setFilterCategory('all');
+    setSortBy('date');
+    setSortOrder('desc');
+    setQuery(q);
+    setPage('search');
+    setSelected(file);
+    setCheckedFiles(new Set([file.path]));
+    
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    setLoadingMore(true);
+    
+    axios.get(`${API}/search?query=${encodeURIComponent(q)}&category=all&offset=0&limit=50`).then(r => {
+        setSearchCache(r.data);
+        setFiles(r.data);
+        setOffset(r.data.length);
+        setHasMore(r.data.length === 50);
+        setLoadingMore(false);
+        setTimeout(() => {
+            const dateKey = (!isNaN(d.getTime()) && file.modified) ? d.toLocaleDateString('default', { month: 'short', year: 'numeric' }) : 'Unknown Date';
+            document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 300);
+    }).catch(() => setLoadingMore(false));
+}
+
+async function addTagsToSelected(tagsStr) {
+  if (!tagsStr) return;
+  const tags = tagsStr.split(',').map(t => t.trim().replace(/\s+/g, '_').toLowerCase()).filter(t => t);
+  if (tags.length === 0) return;
+  const fileIds = Array.from(checkedFiles).map(p => files.find(f => f.path === p)?.id).filter(id => id);
+  try {
+    await axios.post(`${API}/tags/add`, { file_ids: fileIds, tags });
+    showToastMessage(`Added tags to ${fileIds.length} files.`);
+    setIsTaggingObject(false);
+    setTagInput('');
+    setCheckedFiles(new Set());
+    if (page === 'explorer') loadFiles(0, false, filterCategory);
+    else if (page === 'search') doSearch(query, filterCategory);
+    loadDashboard();
+  } catch(err) {
+    alert('Error adding tags: ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
+async function removeTagsFromSelected(tagsStr) {
+  if (!tagsStr) return;
+  const tags = tagsStr.split(',').map(t => t.trim().replace(/\s+/g, '_').toLowerCase()).filter(t => t);
+  if (tags.length === 0) return;
+  const fileIds = Array.from(checkedFiles).map(p => files.find(f => f.path === p)?.id).filter(id => id);
+  try {
+    await axios.post(`${API}/tags/remove`, { file_ids: fileIds, tags });
+    showToastMessage(`Removed tags from ${fileIds.length} files.`);
+    setIsTaggingObject(false);
+    setTagInput('');
+    setCheckedFiles(new Set());
+    if (page === 'explorer') loadFiles(0, false, filterCategory);
+    else if (page === 'search') doSearch(query, filterCategory);
+    loadDashboard();
+  } catch(err) {
+    alert('Error removing tags: ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
+async function deleteTagGlobally(tag) {
+  const tagName = tag.replace('object:', '').replace(/_/g, ' ');
+  if (!window.confirm(`Are you sure you want to remove the tag "${tagName}" from ALL files? This cannot be undone.`)) return;
+  try {
+    await axios.delete(`${API}/tags/objects/${encodeURIComponent(tag)}`);
+    showToastMessage(`Tag "${tagName}" removed from all files.`);
+    loadDashboard(); // This re-fetches object tags
+  } catch(err) {
+    alert('Error deleting tag: ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
+async function clearAllObjectTags() {
+  if (!window.confirm(`Are you sure you want to remove ALL automatically detected object tags from EVERY file in the database? This action cannot be undone.`)) return;
+  try {
+    await axios.delete(`${API}/tags/objects/all`);
+    showToastMessage(`All object tags have been cleared.`);
+    loadDashboard(); // This re-fetches object tags
+  } catch(err) {
+    alert('Error clearing all tags: ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
+async function startFaceScan() {
+  setActionInProgress(true);
+  try {
+    setIndexer(prev => ({ ...prev, face_scanner_running: true, face_scanner_stopped: false }));
+    await axios.post(`${API}/scan-faces`);
+    showToastMessage('Face scanning started in background...');
+    await loadDashboard(); // Refresh status
+  } catch(err) {
+    setIndexer(prev => ({ ...prev, face_scanner_running: false }));
+    alert('Error starting face scan: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
+  }
+}
+
+async function stopFaceScan() {
+  setActionInProgress(true);
+  try {
+    setIndexer(prev => ({ ...prev, face_scanner_stopped: true }));
+    await axios.post(`${API}/stop-scan-faces`);
+    showToastMessage('Stopping face scan...');
+    await loadDashboard(); // Refresh status
+  } catch(err) {
+    alert('Error stopping face scan: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
+  }
+}
+
+async function startObjectScan() {
+  setActionInProgress(true);
+  try {
+    setIndexer(prev => ({ ...prev, object_scanner_running: true, object_scanner_stopped: false }));
+    await axios.post(`${API}/scan-objects`);
+    showToastMessage('Object classification started in background...');
+    await loadDashboard(); 
+  } catch(err) {
+    setIndexer(prev => ({ ...prev, object_scanner_running: false }));
+    alert('Error starting object scan: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
+  }
+}
+
+async function stopObjectScan() {
+  setActionInProgress(true);
+  try {
+    setIndexer(prev => ({ ...prev, object_scanner_stopped: true }));
+    await axios.post(`${API}/stop-scan-objects`);
+    showToastMessage('Stopping object scan...');
+    await loadDashboard(); 
+  } catch(err) {
+    alert('Error stopping object scan: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
+  }
 }
 
 async function indexerAction(action){
@@ -502,6 +840,8 @@ async function indexerAction(action){
    return;
  }
 
+ setActionInProgress(true);
+ try {
  if(action === 'reindex'){
    if(!window.confirm('Are you sure you want to completely re-index the archive? This will wipe the current database and may take a considerable amount of time for large backups.')) return;
    await axios.post(`${API}/indexer/reindex`)
@@ -516,6 +856,9 @@ async function indexerAction(action){
    await axios.post(`${API}/indexer/${action}`)
  }
  await loadDashboard()
+ } finally {
+   setActionInProgress(false);
+ }
 }
 
 async function openFile(itemPath){
@@ -584,6 +927,36 @@ const selectAll = () => {
   else setCheckedFiles(new Set(files.map(f => f.path)));
 };
 
+const selectVerifiedDuplicates = () => {
+  const nextChecked = new Set(checkedFiles);
+  const hashGroups = {};
+  sortedFiles.forEach(f => {
+    if (f.metadata?.sha256) {
+      if (!hashGroups[f.metadata.sha256]) hashGroups[f.metadata.sha256] = [];
+      hashGroups[f.metadata.sha256].push(f);
+    }
+  });
+
+  let addedCount = 0;
+  Object.values(hashGroups).forEach(group => {
+    if (group.length > 1) {
+      for (let i = 1; i < group.length; i++) {
+        if (!nextChecked.has(group[i].path)) {
+          nextChecked.add(group[i].path);
+          addedCount++;
+        }
+      }
+    }
+  });
+
+  if (addedCount === 0) {
+    alert("No new verified duplicate copies found to select. Please wait for 'Verify Hashes' to complete.");
+  } else {
+    setCheckedFiles(nextChecked);
+    showToastMessage(`Auto-selected ${addedCount} verified duplicate(s).`);
+  }
+};
+
 async function deleteSelected() {
   if (filterCategory === 'duplicates' && !settings.allow_unverified_deletion) {
     const filesToDelete = files.filter(f => checkedFiles.has(f.path));
@@ -648,25 +1021,31 @@ async function handleShutdown() {
 }
 
 async function stopVerifyDuplicates() {
+  setActionInProgress(true);
   try {
-    setIndexer(prev => ({ ...prev, hasher_running: false }));
+    setIndexer(prev => ({ ...prev, hasher_stopped: true }));
     await axios.post(`${API}/stop-verify-duplicates`)
     showToastMessage('Stopping duplicate verification...')
     await loadDashboard();
   } catch(err) {
     alert('Error stopping verification: ' + (err?.response?.data?.detail || err.message))
+  } finally {
+    setActionInProgress(false);
   }
 }
 
 async function verifyDuplicates() {
+  setActionInProgress(true);
   try {
-    setIndexer(prev => ({ ...prev, hasher_running: true }));
+    setIndexer(prev => ({ ...prev, hasher_running: true, hasher_stopped: false }));
     await axios.post(`${API}/verify-duplicates`)
     showToastMessage('Duplicate verification started in background...')
     await loadDashboard();
   } catch(err) {
     setIndexer(prev => ({ ...prev, hasher_running: false }));
     alert('Error starting verification: ' + (err?.response?.data?.detail || err.message))
+  } finally {
+    setActionInProgress(false);
   }
 }
 
@@ -697,7 +1076,35 @@ const handleCategoryClick = (category) => {
 };
 
 const sortedFiles = useMemo(() => {
-  const baseFiles = showSelectedOnly ? files.filter(f => checkedFiles.has(f.path)) : files;
+  let baseFiles = showSelectedOnly ? files.filter(f => checkedFiles.has(f.path)) : files;
+
+  if (filterCategory === 'duplicates' && !showSelectedOnly) {
+    const sizeGroups = {};
+    baseFiles.forEach(f => {
+      if (!sizeGroups[f.size]) sizeGroups[f.size] = [];
+      sizeGroups[f.size].push(f);
+    });
+
+    baseFiles = baseFiles.filter(f => {
+      const group = sizeGroups[f.size];
+      if (f.metadata?.sha256) {
+        const sameHashCount = group.filter(g => g.metadata?.sha256 === f.metadata.sha256).length;
+        const unhashedCount = group.filter(g => !g.metadata?.sha256).length;
+        if (sameHashCount === 1 && unhashedCount === 0) {
+          return false; // Proven unique, hide it from duplicates view
+        }
+      }
+      return true;
+    });
+    
+    const newSizeGroups = {};
+    baseFiles.forEach(f => {
+      if (!newSizeGroups[f.size]) newSizeGroups[f.size] = [];
+      newSizeGroups[f.size].push(f);
+    });
+    baseFiles = baseFiles.filter(f => newSizeGroups[f.size].length > 1);
+  }
+
   const sorted = [...baseFiles].sort((a,b) => {
     let aVal, bVal;
     if(sortBy === 'date'){
@@ -705,23 +1112,25 @@ const sortedFiles = useMemo(() => {
       bVal = new Date(b.modified).getTime();
     } else if(sortBy === 'size'){
       const parseSize = (s) => {
-        const match = String(s).match(/(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)/i);
-        if(!match) return 0;
+        if (!s) return 0;
+        const str = String(s).replace(/,/g, '');
+        const match = str.match(/(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)/i);
+        if(!match) return parseFloat(str) || 0;
         const num = parseFloat(match[1]);
         const unit = match[2].toUpperCase();
-        const mult = {B:1, KB:1024, MB:1024**2, GB:1024**3}[unit];
+        const mult = {B:1, KB:1024, MB:1024**2, GB:1024**3, TB:1024**4}[unit];
         return num * mult;
       };
-      aVal = parseSize(a.size || '0 B');
-      bVal = parseSize(b.size || '0 B');
+      aVal = parseSize(a.size);
+      bVal = parseSize(b.size);
     } else if(sortBy === 'filename'){
       aVal = String(a.filename || '').toLowerCase();
       bVal = String(b.filename || '').toLowerCase();
     }
     if(sortOrder === 'asc'){
-      return aVal > bVal ? 1 : -1;
+      return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
     } else {
-      return aVal < bVal ? 1 : -1;
+      return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
     }
   });
   return sorted;
@@ -760,7 +1169,13 @@ useEffect(() => {
 const updateUIPreferences = (updates) => {
   setSettings(prev => {
     const next = { ...prev, ...updates };
-    axios.post(`${API}/settings`, next).catch(e => console.warn(e));
+    const payload = { ...next };
+    if (payload.database_path && typeof payload.database_path === 'string' && !payload.database_path.endsWith('.db')) {
+      const separator = payload.database_path.includes('\\') ? '\\' : '/';
+      const cleanPath = payload.database_path.replace(/[/\\]$/, '');
+      payload.database_path = cleanPath ? (cleanPath + separator + dbFilename) : dbFilename;
+    }
+    axios.post(`${API}/settings`, payload).catch(e => console.warn(e));
     return next;
   });
 };
@@ -837,14 +1252,42 @@ useEffect(()=>{
 },[])
 
 useEffect(() => {
-  let interval;
-  if (indexer.running || indexer.hasher_running) {
-    interval = setInterval(() => {
-      loadDashboard();
-    }, 1000); // Poll every 1 second while the indexer or hasher is running
+  let isMounted = true;
+  let timeoutId;
+  let errorRetries = 0;
+
+  const poll = async () => {
+    if (!isMounted) return;
+    try {
+      await loadDashboard();
+      if (page === 'people') await loadPeople();
+      errorRetries = 0; // Reset counter on successful poll
+    } catch (e) {
+      console.warn("Polling error:", e);
+      errorRetries++;
+      if (errorRetries >= 5) {
+        console.error("Max polling retries reached. Assuming backend is offline.");
+        setIndexer(prev => ({ 
+          ...prev, 
+          running: false, 
+          hasher_running: false, 
+          face_scanner_running: false, 
+          object_scanner_running: false 
+        }));
+        showToastMessage("Connection lost. Stopped monitoring background tasks.");
+        return; // Stop polling and gracefully unlock UI
+      }
+    }
+    // Exponential backoff for retries: 1s, 2s, 4s, 8s...
+    const delay = errorRetries > 0 ? 1000 * Math.pow(2, errorRetries - 1) : 1000;
+    if (isMounted) timeoutId = setTimeout(poll, delay);
+  };
+
+  if (indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running) {
+    timeoutId = setTimeout(poll, 1000);
   }
-  return () => clearInterval(interval);
-}, [indexer.running, indexer.hasher_running]);
+  return () => { isMounted = false; clearTimeout(timeoutId); };
+}, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, page]);
 
 function getOfflinePlaceholder(text, bgColor, textColor) {
   const safeText = String(text).replace(/[<>&'"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','\'':'&apos;','"':'&quot;'}[c]));
@@ -917,6 +1360,19 @@ function renderValue(value){
  return String(value)
 }
 
+const getPersonThumbUrl = (p) => {
+  if (!p.thumbnail) return '';
+  let url = p.thumbnail.startsWith('http') ? p.thumbnail : `${API}${p.thumbnail}`;
+  if (thumbUpdateTimestamps[p.id]) {
+    url += (url.includes('?') ? '&' : '?') + `cb=${thumbUpdateTimestamps[p.id]}`;
+  }
+  return url;
+};
+
+const filteredTags = useMemo(() => {
+  return objectTags.filter(t => t.toLowerCase().includes(tagSearchQuery.toLowerCase()));
+}, [objectTags, tagSearchQuery]);
+
 return(
 <SettingsContext.Provider value={{ animationsEnabled: settings.animations_enabled !== false }}>
 <div className='layout'>
@@ -950,11 +1406,11 @@ return(
       <AppIcon size={40} />
       <div>
         <h2 style={{ margin: 0, fontSize: '20px', color: '#f8fafc' }}>WABS</h2>
-        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta2</div>
+        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta.3</div>
       </div>
     </div>
 
-    <ActionButton className="" onClick={()=>{ setPage('dashboard'); setSelected(null); }}>
+    <ActionButton className="" onClick={()=>{ setPage('dashboard'); setSelected(null); loadDashboard(); }}>
     <DashboardIcon fontSize="small" /> Dashboard
     </ActionButton>
 
@@ -964,6 +1420,14 @@ return(
 
     <ActionButton className="" onClick={()=>goToSearch()}>
     <SearchIcon fontSize="small" /> Search
+    </ActionButton>
+
+    <ActionButton className="" onClick={()=>{ setPage('people'); setSelected(null); setCheckedPeople(new Set()); setUnknownPeoplePage(1); setNamedPeoplePage(1); loadPeople(); }}>
+    <FaceIcon fontSize="small" /> People
+    </ActionButton>
+
+    <ActionButton className="" onClick={()=>{ setPage('tags'); setSelected(null); setTagsPage(1); setTagSearchQuery(''); }}>
+    <CategoryIcon fontSize="small" /> Tags
     </ActionButton>
 
     <ActionButton className="" onClick={()=>{ setPage('settings'); setSelected(null); }}>
@@ -1051,10 +1515,11 @@ return(
       <h4 style={{ margin: '0 0 10px 0', color: '#f8fafc', fontSize: '14px' }}>Search Patterns Supported</h4>
       <ul style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
         <li><b>type:</b>mp3, audio, document</li>
+        <li><b>object:</b>person name, chair, car</li>
         <li><b>name:</b>vacation (exact match)</li>
-        <li><b>size:</b>300 (size match)</li>
-        <li><b>length:</b>300 (metadata duration)</li>
-        <li><b>date:</b>dd/mm/yyyy or yyyy</li>
+        <li><b>size:</b>&gt;100MB, &lt;5GB, 300</li>
+        <li><b>length:</b>&gt;300, &lt;5m, 1h (duration)</li>
+        <li><b>date:</b>2020-2022, yyyy-mm-dd, yyyy</li>
         <li><b>*.mp3</b> or <b>*vacation*</b> (wildcards)</li>
       </ul>
       <p style={{ margin: '12px 0 0 0', fontSize: '12px', color: '#94a3b8' }}>Combine multiple filters like: <br/><code style={{ background: '#0f172a', padding: '2px 4px', borderRadius: '4px', color: '#38bdf8' }}>*.mp3 type:audio length:300</code></p>
@@ -1115,6 +1580,17 @@ return(
     Select All
   </label>
 
+  {filterCategory === 'duplicates' && (
+    <ActionButton
+      className="btn btn-secondary"
+      style={{ marginRight: '10px', padding: '4px 10px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}
+      onClick={selectVerifiedDuplicates}
+    >
+      <CheckCircleIcon fontSize="small" style={{ color: '#3b82f6' }} />
+      Select Verified Copies
+    </ActionButton>
+  )}
+
   <label>Filter:</label>
   <select value={filterCategory} onChange={handleFilterChange}>
     <option value='all'>All Files</option>
@@ -1138,6 +1614,7 @@ return(
     <option value='date'>Date</option>
     <option value='size'>Size</option>
     <option value='filename'>Filename</option>
+    <option value='extension'>Extension</option>
   </select>
   <ActionButton className="" style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }} onClick={()=>setSortOrder(sortOrder==='asc'?'desc':'asc')}>
     {sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />}
@@ -1145,12 +1622,16 @@ return(
 
   {filterCategory === 'duplicates' && (
     indexer.hasher_running ? (
-      <ActionButton className="btn btn-secondary" style={{ marginLeft: '10px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px', color: '#ef4444' }} onClick={stopVerifyDuplicates}>
-        <CloseIcon fontSize="small" />
-        Stop Verification
-      </ActionButton>
+      <div style={{ marginLeft: '10px', display: 'flex', flexDirection: 'column', minWidth: '160px', maxWidth: '250px' }}>
+        <ActionButton disabled={actionInProgress || indexer.hasher_stopped} className="btn btn-secondary" style={{ padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px', color: '#ef4444', justifyContent: 'center' }} onClick={stopVerifyDuplicates}>
+          <CloseIcon fontSize="small" />
+          {indexer.hasher_stopped ? 'Stopping...' : 'Stop Verification'}
+        </ActionButton>
+        <ProgressBar current={indexer.hasher_current} total={indexer.hasher_total} color="#10b981" />
+        <div style={{ fontSize: '10px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left' }}>{indexer.hasher_current_file || ''}</div>
+      </div>
     ) : (
-      <ActionButton className="btn btn-secondary" style={{ marginLeft: '10px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={verifyDuplicates}>
+      <ActionButton disabled={actionInProgress} className="btn btn-secondary" style={{ marginLeft: '10px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={verifyDuplicates}>
         <CheckCircleIcon fontSize="small" style={{ color: '#10b981' }} />
         Verify Hashes
       </ActionButton>
@@ -1183,6 +1664,45 @@ return(
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', borderColor: showSelectedOnly ? '#3b82f6' : undefined, color: showSelectedOnly ? '#38bdf8' : undefined }} onClick={() => setShowSelectedOnly(!showSelectedOnly)}>{showSelectedOnly ? 'Show All Files' : 'Show Selected Only'}</ActionButton>
     <ActionButton className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={openSelected}>Open Selected</ActionButton>
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={copySelected}>Copy Selected</ActionButton>
+    
+    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); setIsTaggingObject(false); loadPeople(); }}>Tag Person</ActionButton>
+    {isTaggingPerson && Array.isArray(people) && (
+      <select 
+        onChange={(e) => assignPhotosToPerson(e.target.value, Array.from(checkedFiles))} 
+        style={{ padding: '6px 12px', background: '#334155', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none' }}
+        value=""
+      >
+        <option value="" disabled>Select person...</option>
+        {[...people].sort((a,b) => (a.name || '').localeCompare(b.name || '')).map(p => <option key={p.id} value={p.id}>{p.name || `Unknown Person #${p.id}`}</option>)}
+      </select>
+    )}
+
+    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => { setIsTaggingObject(!isTaggingObject); setIsTaggingPerson(false); }}>Manage Tags</ActionButton>
+    {isTaggingObject && (
+      <div style={{ display: 'flex', gap: '4px' }}>
+        <input 
+          type="text" 
+          list="existing-tags"
+          placeholder="tag1, tag2..." 
+          value={tagInput}
+          onChange={(e) => setTagInput(e.target.value)}
+          style={{ padding: '6px 12px', background: '#334155', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none', width: '150px' }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              addTagsToSelected(tagInput);
+            }
+          }}
+        />
+        <datalist id="existing-tags">
+          {objectTags.map(tag => (
+            <option key={tag} value={tag.replace('object:', '')} />
+          ))}
+        </datalist>
+        <ActionButton className="btn btn-secondary" style={{ padding: '4px 8px', color: '#10b981' }} onClick={() => addTagsToSelected(tagInput)}>Add</ActionButton>
+        <ActionButton className="btn btn-secondary" style={{ padding: '4px 8px', color: '#ef4444' }} onClick={() => removeTagsFromSelected(tagInput)}>Remove</ActionButton>
+      </div>
+    )}
+
     {!isSelectionReadOnly && (
       <>
         <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={moveSelected}>Move Selected</ActionButton>
@@ -1192,6 +1712,22 @@ return(
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedFiles(new Set())}>Clear Selection</ActionButton>
   </div>
 )}
+
+    {page === 'search' && (
+      <div style={{ padding: '10px 18px', background: '#0f172a', borderBottom: '1px solid #1f2937' }}>
+        <h3 style={{ marginTop: '8px', marginBottom: '16px', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Smart Searches</h3>
+        <div style={{display:'flex', flexWrap: 'wrap', gap:'10px', paddingBottom: '8px'}}>
+          {(settings.smart_searches || []).map(search => (
+            <ActionButton key={search.id} className="btn btn-secondary" style={{ padding: '6px 12px', background: '#1e293b', color: '#38bdf8', borderColor: '#3b82f6', fontSize: '13px' }} onClick={() => doSearch(search.query)}>
+              {search.name}
+            </ActionButton>
+          ))}
+          {(!settings.smart_searches || settings.smart_searches.length === 0) && (
+              <p style={{ color: '#94a3b8', margin: 0, fontSize: '13px' }}>No smart searches configured. Add some in the Settings page!</p>
+          )}
+        </div>
+      </div>
+    )}
 
 <div className='content' onScroll={handleScroll} style={{ paddingTop: '18px' }}>
 
@@ -1225,6 +1761,7 @@ Object.entries(groupedFiles).map(([dateKey, filesGroup]) => (
           showVerified={filterCategory === 'duplicates' && !!item.metadata?.sha256}
           showUnverified={filterCategory === 'duplicates' && !item.metadata?.sha256}
           isReadOnly={checkFileReadOnly(item.path)}
+          isProcessing={filterCategory === 'duplicates' && indexer.hasher_running && indexer.hasher_current_file === item.path}
         />
       </Fragment>
     );
@@ -1268,7 +1805,7 @@ onClick={()=>openFile(selected.path)}
 
 <p><b>Extension:</b> {selected.extension || 'unknown'}</p>
 
-<p><b>Size:</b> {selected.size}</p>
+<p><b>Size:</b> {formatSize(selected.size)}</p>
 
 <p><b>Modified:</b> {selected.modified}</p>
 
@@ -1282,6 +1819,27 @@ onClick={()=>openFile(selected.path)}
     >
       <PlaceIcon fontSize="small" /> View on Map
     </ActionButton>
+  </div>
+)}
+
+{selected.tags && (
+  <div style={{ marginBottom: '16px' }}>
+    <h3 style={{ margin: '0 0 8px 0', fontSize: '15px' }}>Detected Tags</h3>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+      {selected.tags.split(' ').filter(t => t.trim()).map(tag => {
+        const isObj = tag.startsWith('object:');
+        const isPerson = tag.startsWith('person:');
+        const color = isObj ? '#38bdf8' : isPerson ? '#10b981' : '#cbd5e1';
+        const bg = isObj ? '#3b82f64a' : isPerson ? '#10b9814a' : '#334155';
+        const border = isObj ? '#3b82f6' : isPerson ? '#10b981' : '#475569';
+        const label = tag.replace('object:', '').replace('person:', '').replace(/_/g, ' ');
+        return (
+          <span key={tag} style={{ background: bg, color: color, padding: '4px 10px', borderRadius: '12px', fontSize: '12px', border: `1px solid ${border}`, fontWeight: '500' }}>
+            {label}
+          </span>
+        );
+      })}
+    </div>
   </div>
 )}
 
@@ -1303,6 +1861,371 @@ onClick={()=>openFile(selected.path)}
 </>
 )}
 
+</div>
+}
+
+{
+page==='people' &&
+<div style={{padding:'20px', overflowY:'auto', height:'100%'}}>
+<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '16px' }}>
+  <div>
+    <h1 style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: 0, marginBottom: '8px' }}><FaceIcon fontSize="large" style={{ color: '#3b82f6' }} /> People (Face Recognition)</h1>
+    <p style={{ margin: 0, color: '#cbd5e1' }}>Automatically clustered groups of people found in your indexed photos.</p>
+  </div>
+  <div>
+    {indexer.face_scanner_running ? (
+      <div style={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: '200px' }}>
+        <ActionButton disabled={actionInProgress || indexer.face_scanner_stopped} className="btn btn-secondary" style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }} onClick={stopFaceScan}>
+          <CloseIcon fontSize="small" /> {indexer.face_scanner_stopped ? 'Stopping...' : 'Stop Scanning'}
+        </ActionButton>
+        <ProgressBar current={indexer.face_scanner_current} total={indexer.face_scanner_total} color="#8b5cf6" />
+      </div>
+    ) : (
+      <ActionButton disabled={actionInProgress} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startFaceScan}>
+        <PlayCircleIcon fontSize="small" /> Scan Archive for Faces
+      </ActionButton>
+    )}
+  </div>
+</div>
+
+{checkedPeople.size > 0 && (
+  <div style={{ position: 'sticky', bottom: '20px', zIndex: 50, padding: '10px 18px', background: '#1e293b', border: '1px solid #334155', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginTop: '16px', borderRadius: '12px', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)' }}>
+    <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedPeople.size} person(s) selected</span>
+    {checkedPeople.size > 1 && (
+      <ActionButton className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={mergeSelectedPeople}>Merge Selected</ActionButton>
+    )}
+    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedPeople(new Set())}>Clear Selection</ActionButton>
+  </div>
+)}
+
+{people === null ? <p style={{color: '#ef4444', marginTop: '20px'}}>Error: Failed to fetch faces. This usually means the API route in main.py is blocked, or the catch-all route is returning HTML. Check your browser console!</p> : null}
+{Array.isArray(people) && people.length === 0 ? <p style={{color: '#94a3b8', marginTop: '20px'}}>No faces scanned or clustered yet. The background worker will populate this automatically.</p> : null}
+
+{Array.isArray(people) && people.length > 0 && (
+  <>
+    <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '20px' }}>
+      <label>Sort by:</label>
+      <select value={peopleSortBy} onChange={(e) => { setPeopleSortBy(e.target.value); setUnknownPeoplePage(1); setNamedPeoplePage(1); }}>
+        <option value="name">Name</option>
+        <option value="count">Face Count</option>
+      </select>
+    </div>
+
+    {people.filter(p => !(p.name || '').startsWith('Unknown Person')).length > 0 && (
+      <>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '24px', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
+          <h2 style={{ margin: 0, color: '#f8fafc', fontSize: '20px' }}>Named Persons</h2>
+          {people.filter(p => !(p.name || '').startsWith('Unknown Person')).length > 100 && (
+            <div style={{ display: 'flex', gap: '16px' }}>
+              <ActionButton disabled={namedPeoplePage === 1} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setNamedPeoplePage(prev => Math.max(1, prev - 1))}>
+                Previous
+              </ActionButton>
+              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person')).length / 100)}</span>
+              <ActionButton disabled={namedPeoplePage >= Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person')).length / 100)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
+                Next
+              </ActionButton>
+            </div>
+          )}
+        </div>
+        
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
+        {people.filter(p => !(p.name || '').startsWith('Unknown Person')).sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '') : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || ''))).slice((namedPeoplePage - 1) * 100, namedPeoplePage * 100).map(p => (
+          <div key={p.id} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
+             <input 
+               type="checkbox" 
+               checked={checkedPeople.has(p.id)}
+               onClick={(e) => e.stopPropagation()}
+               onChange={(e) => {
+                   const next = new Set(checkedPeople);
+                   if (e.target.checked) next.add(p.id);
+                   else next.delete(p.id);
+                   setCheckedPeople(next);
+               }}
+               style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, cursor: 'pointer', transform: 'scale(1.2)' }}
+             />
+             <div 
+               onClick={(e) => deletePerson(e, p.id, p.name)}
+               style={{position: 'absolute', top: '8px', right: '8px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', width: '26px', height: '26px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', zIndex: 10}}
+               title="Revert to Unknown Person"
+             >
+               ✕
+             </div>
+             <div style={{width:'100%', height:'150px', background:'#1e293b', borderRadius:'12px', display:'flex', alignItems:'center', justifyContent:'center', overflow: 'hidden'}}>
+                 {p.thumbnail && (
+                     <img src={getPersonThumbUrl(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} onError={(e) => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
+                 )}
+                 <FaceIcon style={{fontSize: 60, color:'#94a3b8', display: p.thumbnail ? 'none' : 'block'}} />
+             </div>
+             <div style={{display:'flex', alignItems:'center'}}>
+                 <input 
+                    value={editingNames[p.id] !== undefined ? editingNames[p.id] : (p.name || '')} 
+                    onClick={e => e.stopPropagation()}
+                    onChange={e => setEditingNames(prev => ({ ...prev, [p.id]: e.target.value }))}
+                    onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+                    onBlur={e => {
+                        let newName = e.target.value.trim();
+                        if (!newName) newName = `Unknown Person #${p.id}`;
+                        if (newName !== p.name) {
+                            savePersonName(p.id, newName);
+                            updatePersonNameLocal(p.id, newName);
+                        }
+                        setEditingNames(prev => { const next = {...prev}; delete next[p.id]; return next; });
+                    }}
+                    style={{background:'transparent', border:'none', color:'#f8fafc', fontSize:'16px', fontWeight:'bold', width:'100%', outline: 'none', borderBottom: '1px solid transparent'}}
+                    onFocus={e => { e.target.style.borderBottom = '1px solid #3b82f6'; e.target.select(); }}
+                    onBlurCapture={e => e.target.style.borderBottom = '1px solid transparent'}
+                 />
+             </div>
+             <div style={{ fontSize: '13px', color: '#94a3b8', marginTop: '-4px' }}>
+                 {p.face_count} photo{p.face_count !== 1 ? 's' : ''}
+             </div>
+          </div>
+        ))}
+        </div>
+        
+        {people.filter(p => !(p.name || '').startsWith('Unknown Person')).length > 100 && (
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '32px', marginBottom: '24px' }}>
+            <ActionButton disabled={namedPeoplePage === 1} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setNamedPeoplePage(prev => Math.max(1, prev - 1))}>
+              Previous
+            </ActionButton>
+            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person')).length / 100)}</span>
+            <ActionButton disabled={namedPeoplePage >= Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person')).length / 100)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
+              Next
+            </ActionButton>
+          </div>
+        )}
+        
+      </>
+    )}
+
+    {people.filter(p => (p.name || '').startsWith('Unknown Person')).length > 0 && (
+      <>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '32px', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
+          <h2 style={{ margin: 0, color: '#f8fafc', fontSize: '20px' }}>Unknown Persons</h2>
+          {people.filter(p => (p.name || '').startsWith('Unknown Person')).length > 100 && (
+            <div style={{ display: 'flex', gap: '16px' }}>
+              <ActionButton disabled={unknownPeoplePage === 1} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setUnknownPeoplePage(prev => Math.max(1, prev - 1))}>
+                Previous
+              </ActionButton>
+              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 100)}</span>
+              <ActionButton disabled={unknownPeoplePage >= Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 100)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
+                Next
+              </ActionButton>
+            </div>
+          )}
+        </div>
+        
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
+        {people.filter(p => (p.name || '').startsWith('Unknown Person')).sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }) : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }))).slice((unknownPeoplePage - 1) * 100, unknownPeoplePage * 100).map(p => (
+          <div key={p.id} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
+             <input 
+               type="checkbox" 
+               checked={checkedPeople.has(p.id)}
+               onClick={(e) => e.stopPropagation()}
+               onChange={(e) => {
+                   const next = new Set(checkedPeople);
+                   if (e.target.checked) next.add(p.id);
+                   else next.delete(p.id);
+                   setCheckedPeople(next);
+               }}
+               style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, cursor: 'pointer', transform: 'scale(1.2)' }}
+             />
+             <div 
+               onClick={(e) => deletePerson(e, p.id, p.name)}
+               style={{position: 'absolute', top: '8px', right: '8px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', width: '26px', height: '26px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', zIndex: 10}}
+               title="Delete / Ignore Person"
+             >
+               ✕
+             </div>
+             <div style={{width:'100%', height:'150px', background:'#1e293b', borderRadius:'12px', display:'flex', alignItems:'center', justifyContent:'center', overflow: 'hidden'}}>
+                 {p.thumbnail && (
+                     <img src={getPersonThumbUrl(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} onError={(e) => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
+                 )}
+                 <FaceIcon style={{fontSize: 60, color:'#94a3b8', display: p.thumbnail ? 'none' : 'block'}} />
+             </div>
+             <div style={{display:'flex', alignItems:'center'}}>
+                 <input 
+                    value={editingNames[p.id] !== undefined ? editingNames[p.id] : (p.name || '')} 
+                    onClick={e => e.stopPropagation()}
+                    onChange={e => setEditingNames(prev => ({ ...prev, [p.id]: e.target.value }))}
+                    onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+                    onBlur={e => {
+                        let newName = e.target.value.trim();
+                        if (!newName) newName = `Unknown Person #${p.id}`;
+                        if (newName !== p.name) {
+                            savePersonName(p.id, newName);
+                            updatePersonNameLocal(p.id, newName);
+                        }
+                        setEditingNames(prev => { const next = {...prev}; delete next[p.id]; return next; });
+                    }}
+                    style={{background:'transparent', border:'none', color:'#f8fafc', fontSize:'16px', fontWeight:'bold', width:'100%', outline: 'none', borderBottom: '1px solid transparent'}}
+                    onFocus={e => { e.target.style.borderBottom = '1px solid #3b82f6'; e.target.select(); }}
+                    onBlurCapture={e => e.target.style.borderBottom = '1px solid transparent'}
+                 />
+             </div>
+             <div style={{ fontSize: '13px', color: '#94a3b8', marginTop: '-4px' }}>
+                 {p.face_count} photo{p.face_count !== 1 ? 's' : ''}
+             </div>
+          </div>
+        ))}
+        </div>
+
+        {people.filter(p => (p.name || '').startsWith('Unknown Person')).length > 100 && (
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '32px', marginBottom: '24px' }}>
+            <ActionButton disabled={unknownPeoplePage === 1} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setUnknownPeoplePage(prev => Math.max(1, prev - 1))}>
+              Previous
+            </ActionButton>
+            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 100)}</span>
+            <ActionButton disabled={unknownPeoplePage >= Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 100)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
+              Next
+            </ActionButton>
+          </div>
+        )}
+        
+      </>
+    )}
+  </>
+)}
+</div>
+}
+
+{
+page==='person_files' &&
+<div style={{display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0}}>
+<div style={{padding: '18px', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '16px'}}>
+    <ActionButton className="btn btn-secondary" onClick={() => { setPage('people'); setCheckedFiles(new Set()); loadPeople(); }}>&larr; Back to People</ActionButton>
+    <h2 style={{margin: 0}}>{currentPerson?.name}'s Photos</h2>
+</div>
+{checkedFiles.size > 0 && (
+  <div style={{ padding: '10px 18px', background: '#1e293b', borderBottom: '1px solid #1f2937', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+    <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedFiles.size} photo(s) selected</span>
+    {checkedFiles.size === 1 && (
+      <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => {
+         const fileId = personFiles.find(f => f.path === Array.from(checkedFiles)[0])?.id;
+         if (fileId) setPersonThumbnail(currentPerson.id, fileId);
+      }}>Set as Cover Photo</ActionButton>
+    )}
+    {checkedFiles.size === 1 && (
+        <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={locateSelectedFileInExplorer}>
+            <PlaceIcon fontSize="small" /> Locate in Explorer
+        </ActionButton>
+    )}
+    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={() => {
+         const fileIds = Array.from(checkedFiles).map(path => personFiles.find(f => f.path === path)?.id).filter(id => id);
+         removePersonPhotosBulk(currentPerson.id, fileIds);
+    }}>Remove from Person</ActionButton>
+    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedFiles(new Set())}>Clear Selection</ActionButton>
+  </div>
+)}
+<div className="content" style={{paddingTop: '18px', paddingLeft: '18px', paddingRight: '18px', overflowY: 'auto'}}>
+    <div className={viewMode === 'grid' ? 'grid' : 'list'}>
+        {Array.isArray(personFiles) && personFiles.length === 0 ? <p>No photos found for this person.</p> : null}
+        {Array.isArray(personFiles) && personFiles.map(item => (
+            <FileCard
+              key={item.path}
+              item={item}
+              viewMode={viewMode}
+              isChecked={checkedFiles.has(item.path)}
+              onToggleCheck={toggleCheck}
+              onClick={handleItemClick}
+              onContextMenu={openContainingFolder}
+              onSelectAndOpen={(i) => { setSelected(i); openFile(i.path); }}
+              renderThumb={renderThumb}
+              isAltGroup={false}
+              showVerified={false}
+              showUnverified={false}
+              isReadOnly={checkFileReadOnly(item.path)}
+            />
+        ))}
+    </div>
+</div>
+</div>
+}
+
+{
+page==='tags' &&
+<div style={{padding:'20px', overflowY:'auto', height:'100%'}}>
+<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '16px' }}>
+  <div>
+    <h1 style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: 0, marginBottom: '8px' }}><CategoryIcon fontSize="large" style={{ color: '#3b82f6' }} /> Detected Objects &amp; Scenes</h1>
+    <p style={{ margin: 0, color: '#cbd5e1' }}>Explore automatically classified objects and scenes found in your indexed photos.</p>
+  </div>
+  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+    <ActionButton 
+        className="btn btn-secondary" 
+        style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', flexShrink: 0, whiteSpace: 'nowrap' }} 
+        onClick={clearAllObjectTags}
+        disabled={actionInProgress || indexer.object_scanner_running}
+        title="Permanently remove all 'object:' tags from the entire database."
+    >
+      Clear All Tags
+    </ActionButton>
+    {indexer.object_scanner_running ? (
+      <div style={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: '200px' }}>
+        <ActionButton disabled={actionInProgress || indexer.object_scanner_stopped} className="btn btn-secondary" style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }} onClick={stopObjectScan}>
+          <CloseIcon fontSize="small" /> {indexer.object_scanner_stopped ? 'Stopping...' : 'Stop Scanning'}
+        </ActionButton>
+        <ProgressBar current={indexer.object_scanner_current} total={indexer.object_scanner_total} color="#f59e0b" />
+      </div>
+    ) : (
+      <ActionButton disabled={actionInProgress} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startObjectScan}>
+        <PlayCircleIcon fontSize="small" /> Classify Objects & Scenes
+      </ActionButton>
+    )}
+  </div>
+</div>
+
+<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
+  <input
+    type="text"
+    placeholder="Search tags..."
+    value={tagSearchQuery}
+    onChange={(e) => { setTagSearchQuery(e.target.value); setTagsPage(1); }}
+    style={{ padding: '10px 16px', borderRadius: '8px', border: '1px solid #334155', background: '#1e293b', color: '#f8fafc', width: '100%', maxWidth: '300px', outline: 'none' }}
+  />
+  
+  {filteredTags.length > 100 && (
+    <div style={{ display: 'flex', gap: '16px' }}>
+      <ActionButton disabled={tagsPage === 1} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setTagsPage(prev => Math.max(1, prev - 1))}>
+        Previous
+      </ActionButton>
+      <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {tagsPage} of {Math.ceil(filteredTags.length / 100)}</span>
+      <ActionButton disabled={tagsPage >= Math.ceil(filteredTags.length / 100)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setTagsPage(prev => prev + 1)}>
+        Next
+      </ActionButton>
+    </div>
+  )}
+</div>
+
+<div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '20px' }}>
+  {filteredTags.slice((tagsPage - 1) * 100, tagsPage * 100).map(tag => {
+    const tagName = tag.replace('object:', '').replace(/_/g, ' ');
+    return (
+      <div key={tag} style={{ position: 'relative', display: 'inline-block' }}>
+        <ActionButton className="btn btn-secondary" style={{ padding: '8px 16px', background: '#1e293b', color: '#38bdf8', borderColor: '#3b82f6', fontSize: '14px', paddingRight: '32px' }} onClick={() => { doSearch(tag); }}>
+          {tagName}
+        </ActionButton>
+        <ActionButton style={{ position: 'absolute', top: '50%', right: '6px', transform: 'translateY(-50%)', background: 'transparent', color: '#ef4444', borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', padding: 0, minWidth: 0 }} onClick={() => deleteTagGlobally(tag)} title={`Delete tag "${tagName}" globally`}>
+          <CloseIcon fontSize="small" />
+        </ActionButton>
+      </div>
+    );
+  })}
+  {filteredTags.length === 0 && tagSearchQuery && <p style={{ color: '#94a3b8', margin: 0 }}>No tags match your search.</p>}
+  {objectTags.length === 0 && !tagSearchQuery && <p style={{ color: '#94a3b8', margin: 0 }}>No objects classified yet. Run the Object Scanner to populate this list.</p>}
+</div>
+
+{filteredTags.length > 100 && (
+  <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '32px', marginBottom: '24px' }}>
+    <ActionButton disabled={tagsPage === 1} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setTagsPage(prev => Math.max(1, prev - 1))}>
+      Previous
+    </ActionButton>
+    <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {tagsPage} of {Math.ceil(filteredTags.length / 100)}</span>
+    <ActionButton disabled={tagsPage >= Math.ceil(filteredTags.length / 100)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setTagsPage(prev => prev + 1)}>
+      Next
+    </ActionButton>
+  </div>
+)}
 </div>
 }
 
@@ -1330,6 +2253,9 @@ page==='dashboard' &&
 <h3 style={{ marginTop: '32px', marginBottom: '16px' }}>Maintenance & Analysis</h3>
 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
 <StatCard title="Duplicates" value={stats.duplicates || 0} icon={<FileCopyIcon />} color="#f43f5e" onClick={() => handleCategoryClick('duplicates')} />
+<StatCard title="Known People" value={stats.known_faces || 0} icon={<FaceIcon />} color="#10b981" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); setNamedPeoplePage(1); loadPeople(); }} />
+<StatCard title="Unknown Faces" value={stats.unknown_faces || 0} icon={<FaceIcon />} color="#94a3b8" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); loadPeople(); }} />
+<StatCard title="Object Tags" value={objectTags.length || 0} icon={<CategoryIcon />} color="#38bdf8" onClick={() => { setPage('tags'); setSelected(null); setTagsPage(1); setTagSearchQuery(''); }} />
 </div>
 
 <div style={{display:'grid',gridTemplateColumns:'1.3fr 1fr',gap:'18px',marginTop:'24px'}}>
@@ -1340,38 +2266,79 @@ page==='dashboard' &&
 <p><b>Paused:</b> {indexer.paused ? 'Yes' : 'No'}</p>
 <p><b>Indexed:</b> {indexer.indexed}</p>
 <p><b>Progress:</b> {indexer.current} / {indexer.total}</p>
-<p style={{wordBreak:'break-word'}}><b>Current File:</b> {indexer.current_file || '—'}</p>
+<ProgressBar current={indexer.current} total={indexer.total} color="#3b82f6" />
+<p style={{wordBreak:'break-word', marginTop: '8px'}}><b>Current File:</b> {indexer.current_file || '—'}</p>
 </div>
 <div style={{background:'#111827',padding:'18px',borderRadius:'16px',border:'1px solid #24324a'}}>
 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: 0 }}><SettingsApplicationsIcon style={{ color: '#3b82f6' }} /> Indexer Controls</h2>
-<div style={{display:'grid',gap:'10px',marginTop:'12px'}}>
-<ActionButton disabled={indexer.running} onClick={()=>indexerAction('start')}>
+
+<h3 style={{ margin: '16px 0 10px 0', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Core Database</h3>
+<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(90px, 1fr))',gap:'8px'}}>
+<ActionButton disabled={actionInProgress || indexer.running} onClick={()=>indexerAction('start')}>
 Start
 </ActionButton>
-<ActionButton disabled={indexer.running} onClick={()=>indexerAction('update')}>
+<ActionButton disabled={actionInProgress || indexer.running} onClick={()=>indexerAction('update')}>
 Update
 </ActionButton>
-<ActionButton disabled={!indexer.running || indexer.paused || indexer.stopped} onClick={()=>indexerAction('pause')}>
-Pause
-</ActionButton>
-<ActionButton disabled={(indexer.running && !indexer.paused) || indexer.stopped} onClick={()=>indexerAction('resume')}>
-Resume
-</ActionButton>
-<ActionButton disabled={!indexer.running || indexer.stopped} onClick={()=>indexerAction('stop')}>
-Stop
-</ActionButton>
-<ActionButton disabled={indexer.running} onClick={()=>indexerAction('reindex')}>
+<ActionButton disabled={actionInProgress || indexer.running} onClick={()=>indexerAction('reindex')} style={{ color: indexer.running ? undefined : '#f59e0b' }}>
 Re-index
 </ActionButton>
-{indexer.hasher_running ? (
-<ActionButton onClick={stopVerifyDuplicates} style={{ color: '#ef4444' }}>
-Stop Hash Verification
+<ActionButton disabled={actionInProgress || !indexer.running || indexer.paused || indexer.stopped} onClick={()=>indexerAction('pause')}>
+Pause
 </ActionButton>
+<ActionButton disabled={actionInProgress || (indexer.running && !indexer.paused) || indexer.stopped} onClick={()=>indexerAction('resume')}>
+Resume
+</ActionButton>
+<ActionButton disabled={actionInProgress || !indexer.running || indexer.stopped} onClick={()=>indexerAction('stop')} style={{ color: (!indexer.running || indexer.stopped) ? undefined : '#ef4444' }}>
+Stop
+</ActionButton>
+</div>
+
+<h3 style={{ margin: '20px 0 10px 0', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Background Analysis</h3>
+<div style={{display:'grid',gap:'8px'}}>
+<div style={{display:'flex', flexDirection:'column'}}>
+{indexer.hasher_running ? (
+<>
+<ActionButton disabled={actionInProgress || indexer.hasher_stopped} onClick={stopVerifyDuplicates} style={{ width: '100%', color: '#ef4444' }}>
+{indexer.hasher_stopped ? 'Stopping Hash Verification...' : 'Stop Hash Verification'}
+</ActionButton>
+<ProgressBar current={indexer.hasher_current} total={indexer.hasher_total} color="#10b981" />
+<div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.hasher_current_file || ''}</div>
+</>
 ) : (
-<ActionButton onClick={verifyDuplicates}>
-Verify Hashes
+<ActionButton disabled={actionInProgress} onClick={verifyDuplicates} style={{ width: '100%' }}>
+Verify Hashes (Duplicates)
 </ActionButton>
 )}
+</div>
+<div style={{display:'flex', flexDirection:'column'}}>
+{indexer.face_scanner_running ? (
+<>
+<ActionButton disabled={actionInProgress || indexer.face_scanner_stopped} onClick={stopFaceScan} style={{ width: '100%', color: '#ef4444' }}>
+{indexer.face_scanner_stopped ? 'Stopping Face Scan...' : 'Stop Face Scan'}
+</ActionButton>
+<ProgressBar current={indexer.face_scanner_current} total={indexer.face_scanner_total} color="#8b5cf6" />
+</>
+) : (
+<ActionButton disabled={actionInProgress} onClick={startFaceScan} style={{ width: '100%' }}>
+Scan for Faces (People)
+</ActionButton>
+)}
+</div>
+<div style={{display:'flex', flexDirection:'column'}}>
+{indexer.object_scanner_running ? (
+<>
+<ActionButton disabled={actionInProgress || indexer.object_scanner_stopped} onClick={stopObjectScan} style={{ width: '100%', color: '#ef4444' }}>
+{indexer.object_scanner_stopped ? 'Stopping Object Scan...' : 'Stop Object Scan'}
+</ActionButton>
+<ProgressBar current={indexer.object_scanner_current} total={indexer.object_scanner_total} color="#f59e0b" />
+</>
+) : (
+<ActionButton disabled={actionInProgress} onClick={startObjectScan} style={{ width: '100%' }}>
+Classify Objects & Scenes
+</ActionButton>
+)}
+</div>
 </div>
 </div>
 </div>
@@ -1401,9 +2368,30 @@ page==='settings' &&
 <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
 <input type='checkbox' checked={showDetails} onChange={toggleDetails} /> Show Details
 </label>
-<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'24px'}}>
+<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
 <input type='checkbox' checked={settings.animations_enabled !== false} onChange={(e)=>updateUIPreferences({ animations_enabled: e.target.checked })} /> Enable UI Animations
 </label>
+<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom: '10px', color:'#38bdf8'}}>
+<input type='checkbox' checked={settings.enable_photo_thumbnail_cache || settings.ui_preferences?.enable_photo_thumbnail_cache || false} onChange={(e)=>updateUIPreferences({ enable_photo_thumbnail_cache: e.target.checked })} /> Enable Photo Thumbnail Caching (Improves load times for large images)
+</label>
+{(settings.enable_photo_thumbnail_cache || settings.ui_preferences?.enable_photo_thumbnail_cache) && (
+<div style={{display:'flex',gap:'10px', marginBottom: '10px', alignItems: 'center'}}>
+<span style={{ color: '#94a3b8', fontSize: '14px' }}>Cache photos larger than (MB):</span>
+<input
+className='setting'
+type='number'
+style={{ marginBottom: 0, width: '80px', padding: '4px 8px', fontSize: '14px' }}
+value={settings.photo_thumbnail_size_limit_mb !== undefined ? settings.photo_thumbnail_size_limit_mb : (settings.ui_preferences?.photo_thumbnail_size_limit_mb !== undefined ? settings.ui_preferences.photo_thumbnail_size_limit_mb : 5)}
+onChange={(e)=>updateUIPreferences({ photo_thumbnail_size_limit_mb: parseFloat(e.target.value) || 0 })}
+/>
+</div>
+)}
+
+<div style={{ marginBottom: '24px' }}>
+  <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={clearCache}>
+    Clear Thumbnail Cache
+  </ActionButton>
+</div>
 
 <h3>Data Safety</h3>
 
@@ -1412,8 +2400,43 @@ page==='settings' &&
 </label>
 
 <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'24px', color:'#ef4444'}}>
-<input type='checkbox' checked={settings.allow_unverified_deletion || false} onChange={(e)=>updateUIPreferences({ allow_unverified_deletion: e.target.checked })} /> Allow deleting unverified duplicates (Danger)
+<input type='checkbox' checked={settings.allow_unverified_deletion || false} onChange={(e)=>updateUIPreferences({ allow_unverified_deletion: e.target.checked })} /> Allow deleting unverified duplicates (Dangerous)
 </label>
+
+<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '24px', marginBottom: '16px' }}>
+  <h3 style={{ margin: 0 }}>Smart Searches</h3>
+  <ActionButton className="btn btn-primary" onClick={() => {
+    const newId = `smartsearch_${Date.now()}`;
+    setSettings(prev => ({
+      ...prev,
+      smart_searches: [...(prev.smart_searches || []), { id: newId, name: `New Search`, query: '' }]
+    }));
+  }}>+ Add Smart Search</ActionButton>
+</div>
+
+{(settings.smart_searches || []).map((search, index) => (
+  <div key={search.id} style={{ padding: '16px', background: '#1e293b', borderRadius: '10px', marginBottom: '16px', border: '1px solid #334155' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+      <input
+        className='setting'
+        style={{ margin: 0, fontWeight: 'bold', background: 'transparent', border: 'none', color: '#f8fafc', fontSize: '16px', padding: '0 4px', width: '100%', maxWidth: '300px' }}
+        value={search.name || `Search ${index + 1}`}
+        onChange={(e) => setSettings(prev => ({ ...prev, smart_searches: prev.smart_searches.map(s => s.id === search.id ? { ...s, name: e.target.value } : s) }))}
+        placeholder="Name your search"
+      />
+      <ActionButton className="btn btn-secondary" style={{ background: '#ef4444', borderColor: '#b91c1c', color: 'white', padding: '4px 8px' }} onClick={() => {
+        if (window.confirm(`Are you sure you want to remove "${search.name || `Search ${index + 1}`}"?`)) {
+          setSettings(prev => ({ ...prev, smart_searches: prev.smart_searches.filter(s => s.id !== search.id) }));
+        }
+      }}>Remove</ActionButton>
+    </div>
+    
+    <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Search Query</p>
+    <div style={{ display: 'flex', gap: '10px', marginBottom: '0' }}>
+      <input className='setting' style={{ marginBottom: 0 }} value={search.query || ''} onChange={(e) => setSettings(prev => ({ ...prev, smart_searches: prev.smart_searches.map(s => s.id === search.id ? { ...s, query: e.target.value } : s) }))} />
+    </div>
+  </div>
+))}
 
 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '24px', marginBottom: '16px' }}>
   <h3 style={{ margin: 0 }}>Storage & Backup Locations</h3>
@@ -1473,8 +2496,9 @@ page==='settings' &&
   </div>
 ))}
 
-<h3>System Paths</h3>
-<p>Database Path</p>
+<h3 style={{ margin: '24px 0 16px 0' }}>System Paths</h3>
+<div style={{ padding: '16px', background: '#1e293b', borderRadius: '10px', marginBottom: '24px', border: '1px solid #334155' }}>
+<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Database Path</p>
 
 <div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
 <input
@@ -1486,12 +2510,12 @@ onChange={(e)=>setSettings({
 database_path:e.target.value
 })}
 />
-<ActionButton className="btn btn-secondary" onClick={()=>choosePath('database_path','file')}>Select</ActionButton>
+<ActionButton className="btn btn-secondary" onClick={()=>choosePath('database_path','directory')}>Select</ActionButton>
 </div>
 
-<p>Thumbnail Path</p>
+<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Thumbnail Path</p>
 
-<div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
+<div style={{display:'flex',gap:'10px', marginBottom: '0'}}>
 <input
 className='setting'
 style={{ marginBottom: 0 }}
@@ -1503,10 +2527,12 @@ thumbnail_path:e.target.value
 />
 <ActionButton className="btn btn-secondary" onClick={()=>choosePath('thumbnail_path','directory')}>Select</ActionButton>
 </div>
+</div>
 
-<h3>AI / LLM</h3>
+<h3 style={{ margin: '0 0 16px 0' }}>AI / LLM</h3>
+<div style={{ padding: '16px', background: '#1e293b', borderRadius: '10px', marginBottom: '24px', border: '1px solid #334155' }}>
 
-<label>
+<label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
 <input
 type='checkbox'
 checked={settings.ai_enabled || false}
@@ -1518,10 +2544,11 @@ ai_enabled:e.target.checked
  Enable AI Classification
 </label>
 
-<p>AI Provider Base URL (Leave empty for OpenAI)</p>
+<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>AI Provider Base URL (Leave empty for OpenAI)</p>
 
 <input
 className='setting'
+style={{ marginBottom: '16px' }}
 value={settings.ai_provider || ''}
 onChange={(e)=>setSettings({
 ...settings,
@@ -1529,10 +2556,11 @@ ai_provider:e.target.value
 })}
 />
 
-<p>AI Model</p>
+<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>AI Model</p>
 
 <input
 className='setting'
+style={{ marginBottom: '16px' }}
 value={settings.ai_model || ''}
 onChange={(e)=>setSettings({
 ...settings,
@@ -1540,17 +2568,59 @@ ai_model:e.target.value
 })}
 />
 
-<p>OpenAI API Key</p>
+<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>OpenAI API Key</p>
 
 <input
 type='password'
 className='setting'
+style={{ marginBottom: '0' }}
 value={settings.openai_api_key || ''}
 onChange={(e)=>setSettings({
 ...settings,
 openai_api_key:e.target.value
 })}
 />
+</div>
+
+<h3 style={{ margin: '0 0 16px 0' }}>Detection Sensitivity</h3>
+<div style={{ padding: '16px', background: '#1e293b', borderRadius: '10px', marginBottom: '24px', border: '1px solid #334155' }}>
+
+<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Face Detection</p>
+<select
+  className='setting'
+  style={{ marginBottom: '16px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
+  value={settings.face_sensitivity || 'medium'}
+  onChange={(e)=>setSettings({...settings, face_sensitivity: e.target.value})}
+>
+  <option value='high'>Detect more faces (Less accurate)</option>
+  <option value='medium'>Balanced (Recommended)</option>
+  <option value='low'>Detect fewer faces (More accurate)</option>
+</select>
+
+<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Face Clustering Strictness</p>
+<select
+  className='setting'
+  style={{ marginBottom: '16px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
+  value={settings.face_clustering_sensitivity || 'medium'}
+  onChange={(e)=>setSettings({...settings, face_clustering_sensitivity: e.target.value})}
+>
+  <option value='high'>Strict (More accurate, creates more profiles)</option>
+  <option value='medium'>Balanced (Recommended)</option>
+  <option value='low'>Loose (Groups more aggressively, may mix people)</option>
+</select>
+
+<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Object & Scene Detection</p>
+<select
+  className='setting'
+  style={{ marginBottom: '0', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
+  value={settings.object_sensitivity || 'medium'}
+  onChange={(e)=>setSettings({...settings, object_sensitivity: e.target.value})}
+>
+  <option value='high'>Detect more tags (Less accurate)</option>
+  <option value='medium'>Balanced (Recommended)</option>
+  <option value='low'>Detect fewer tags (More accurate)</option>
+</select>
+</div>
 
 <div style={{ marginTop: '30px', borderTop: '1px solid #1f2937', paddingTop: '20px', display: 'flex' }}>
   <ActionButton className="btn btn-primary" style={{ padding: '12px 24px', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={saveSettings}>
@@ -1577,7 +2647,7 @@ page==='about' &&
     <div style={{background:'#8b5cf61a', padding:'10px', borderRadius:'10px', color:'#8b5cf6', display:'flex'}}><InfoIcon /></div>
     <div>
       <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Version Info</h3>
-      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta2</strong></p>
+      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta.3</strong></p>
     </div>
   </div>
 
@@ -1599,6 +2669,22 @@ page==='about' &&
     <div>
       <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Acknowledgements</h3>
       <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px', fontStyle: 'italic'}}>AI Assisted Development by ChatGPT, GitHub Copilot, and Google Gemini (Pro)</p>
+    </div>
+  </div>
+
+  <div style={{height: '1px', background: '#1f2937', margin: '24px 0'}}></div>
+
+  <div style={{display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px'}}>
+    <div style={{background:'#0ea5e91a', padding:'10px', borderRadius:'10px', color:'#0ea5e9', display:'flex'}}><MemoryIcon /></div>
+    <div>
+      <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Open Source & AI Models</h3>
+      <p style={{color:'#94a3b8', margin: '4px 0 8px 0', fontSize: '14px'}}>WABS is powered by the following open-source projects and models:</p>
+      <ul style={{ margin: 0, paddingLeft: '20px', color: '#cbd5e1', fontSize: '13px', lineHeight: '1.6' }}>
+        <li><b>Face Detection:</b> YuNet (OpenCV Zoo)</li>
+        <li><b>Face Recognition:</b> SFace (OpenCV Zoo)</li>
+        <li><b>Object Classification:</b> MobileNetV2 (ONNX Model Zoo)</li>
+        <li><b>Core Tech:</b> Python, FastAPI, SQLite (FTS5), OpenCV, PyMuPDF, React, Vite, Material UI</li>
+      </ul>
     </div>
   </div>
 

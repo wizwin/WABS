@@ -51,3 +51,10 @@ To efficiently detect and verify duplicate files without bottlenecking the initi
 * **Size-Based Pre-Filtering:** The system first queries the database to find files that share the exact same byte size. Only these potential duplicates are queued for hashing, preventing massive amounts of unnecessary disk read operations for unique files.
 * **Chunked SHA-256 Hashing:** The background worker reads the flagged files in streaming 4MB chunks, computing a cryptographic SHA-256 hash while maintaining a tiny memory footprint, even for massive ISOs or video files.
 * **Metadata Stamping:** Once computed, the hash is saved to the file's JSON metadata, allowing the frontend to confidently distinguish between unverified (size-match only) and verified (cryptographic match) duplicates.
+
+### 7. Offline AI Computer Vision (Faces & Objects)
+WABS incorporates lightweight, 100% offline computer vision models to automatically enrich the archive without relying on cloud APIs.
+* **ONNX Models & OpenCV:** Utilizes OpenCV's DNN module alongside bundled ONNX models (`YuNet` and `SFace` for facial recognition, `MobileNetV2` for object/scene classification). This approach avoids bloated ML dependencies, keeping the final executable small and performant.
+* **Sidecar AI Database:** All computationally expensive embeddings, clusters, and facial tracking data are stored in a completely separate `ai_metadata.db` file. This ensures the core index (`archive.db`) remains lightning-fast and clean.
+* **Face Clustering:** When faces are detected, they are converted into numerical embeddings and compared against known clusters using Cosine Similarity. "Unknown Person" profiles are dynamically generated and can be later renamed, merged, or deleted via the UI.
+* **Object Tagging:** Photos are passed through the MobileNetV2 classifier. Softmax probabilities are checked against user-defined "Sensitivity" thresholds before being injected into the file's searchable `tags` column as an `object:` prefix, instantly becoming available to the FTS5 search engine.

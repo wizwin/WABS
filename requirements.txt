@@ -9,3 +9,5 @@ pefile
 filetype
 pyinstaller
 pyyaml
+numpy
+scikit-learn

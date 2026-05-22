@@ -20,7 +20,9 @@ if not cfg.get("backup_configs"):
         "read_only_mode": cfg.get("read_only_mode", True)
     }]
 
-db = Path(cfg["database_path"])
+# Provide a safe default for the database path if it's missing from config.yaml
+db_path = cfg.get("database_path", "archive.db")
+db = Path(db_path)
 
 if not db.is_absolute():
     if getattr(sys, 'frozen', False):
@@ -28,7 +30,13 @@ if not db.is_absolute():
     else:
         db = Path(__file__).resolve().parent.parent.parent / db
 
-db.parent.mkdir(parents=True, exist_ok=True)
+try:
+    db.parent.mkdir(parents=True, exist_ok=True)
+except FileExistsError:
+    if db.parent.is_file():
+        db = db.parent
+    else:
+        raise
 
 engine = create_engine(
     f"sqlite:///{db.resolve()}",
