@@ -61,7 +61,8 @@ If you move or copy your `config.yaml` file to a different computer (or change m
 ---
 
 ## Screenshot
-<img width="1895" height="892" alt="image" src="https://github.com/user-attachments/assets/80d4dde3-47e1-41c1-ba4c-475700327862" />
+<img width="1891" height="1077" alt="image" src="https://github.com/user-attachments/assets/606a6834-c188-4fae-8d66-593dfb4737fd" />
+
 
 ## Advanced Users & Developers
 * **Development & Build Instructions:** See `BUILD.md`
