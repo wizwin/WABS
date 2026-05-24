@@ -1950,6 +1950,7 @@ def _scan_and_tag_objects_worker():
         traceback.print_exc()
     finally:
         object_scanner_running = False
+        INDEXER_STATE["object_scanner_stopped"] = False
         INDEXER_STATE["object_scanner_current_file"] = ""
 
 @app.post("/scan-objects")
@@ -1958,6 +1959,7 @@ def scan_objects():
     if object_scanner_running:
         raise HTTPException(status_code=400, detail="Object scanning is already in progress.")
     object_scanner_running = True
+    INDEXER_STATE["object_scanner_stopped"] = False
     object_scanner_thread = threading.Thread(target=_scan_and_tag_objects_worker)
     object_scanner_thread.start()
     return {"message": "Object scanning started in the background."}
