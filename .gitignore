@@ -26,3 +26,7 @@ Thumbs.db
 WABS-Windows.exe.spec
 /dist
 config.yaml
+/models
+/Releases
+/database
+wabs.log

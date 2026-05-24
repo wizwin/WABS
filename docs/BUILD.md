@@ -12,8 +12,8 @@ This document outlines the development setup, local build processes, and GitHub 
 - **Models**: 
   - [face_detection_yunet_2023mar.onnx](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
   - [face_recognition_sface_2021dec.onnx](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface)
-  - [mobilenetv2-7.onnx](https://github.com/onnx/models/raw/main/validated/vision/classification/mobilenet/model/mobilenetv2-7.onnx)
-  - [imagenet_classes.txt](https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt)
+  - [mobilenetv2-small.onnx](Extracted onnx)
+  - [imagenet_classes.txt](https://github.com/pytorch/hub/blob/master/imagenet_classes.txt)
 
 ### 1. Backend Setup
 Open your terminal in the root directory of the project (e.g., inside VSCode) and set up your Python environment.

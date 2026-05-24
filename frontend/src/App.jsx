@@ -111,14 +111,16 @@ function AppIcon({ size = 64 }) {
 }
 
 function ProgressBar({ current = 0, total = 0, color = '#3b82f6' }) {
-  if (!total) return null;
-  const percentage = Math.min(100, Math.max(0, (current / total) * 100));
+  const safeTotal = total || 0;
+  const percentage = safeTotal > 0 ? Math.min(100, Math.max(0, (current / safeTotal) * 100)) : 0;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px', marginBottom: '4px' }}>
       <div style={{ width: '100%', background: '#1e293b', borderRadius: '4px', overflow: 'hidden', height: '6px' }}>
-        <div style={{ width: `${percentage}%`, background: color, height: '100%', transition: 'width 0.3s ease' }}></div>
+        <div style={{ width: safeTotal > 0 ? `${percentage}%` : '100%', background: safeTotal > 0 ? color : `${color}40`, height: '100%', transition: 'width 0.3s ease' }}></div>
       </div>
-      <span style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'right' }}>{current} / {total} ({Math.round(percentage)}%)</span>
+      <span style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'right' }}>
+        {safeTotal > 0 ? `${current} / ${safeTotal} (${Math.round(percentage)}%)` : 'Calculating...'}
+      </span>
     </div>
   );
 }
@@ -148,6 +150,7 @@ function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContext
   return (
     <div
       className={viewMode === 'grid' ? 'card' : 'list-item'}
+      data-path={item.path}
       onClick={(e) => onClick(e, item)}
       onContextMenu={(e) => { e.preventDefault(); onContextMenu(item.path); }}
       onMouseEnter={() => setIsHovered(true)}
@@ -276,7 +279,6 @@ const [checkedFiles, setCheckedFiles] = useState(new Set())
 const [showSelectedOnly, setShowSelectedOnly] = useState(false)
 const lastCheckedPath = useRef(null)
 const [activeDate, setActiveDate] = useState('')
-const observer = useRef(null)
 const searchTimeout = useRef(null)
 const [showSidebar, setShowSidebar] = useState(true)
 const [showTimeline, setShowTimeline] = useState(true)
@@ -310,6 +312,14 @@ const [tagsPage, setTagsPage] = useState(1);
 const [tagSearchQuery, setTagSearchQuery] = useState('');
 const [unknownPeoplePage, setUnknownPeoplePage] = useState(1);
 const [namedPeoplePage, setNamedPeoplePage] = useState(1);
+const [similarUnknowns, setSimilarUnknowns] = useState(null);
+const [isFindingSimilar, setIsFindingSimilar] = useState(false);
+const [checkedSimilar, setCheckedSimilar] = useState(new Set());
+const [similarityThreshold, setSimilarityThreshold] = useState(0.60);
+const [settingsTab, setSettingsTab] = useState('general');
+const findSimilarAbortController = useRef(null);
+const [personFilesPage, setPersonFilesPage] = useState(1);
+const [fullTimelineData, setFullTimelineData] = useState([]);
 
 useEffect(() => {
   if (checkedFiles.size === 0 && showSelectedOnly) {
@@ -335,7 +345,11 @@ const isSelectionReadOnly = useMemo(() => {
 async function loadFiles(nextOffset = 0, append = false, cat = filterCategory){
   const r = await axios.get(`${API}/files?category=${cat}&offset=${nextOffset}&limit=50`)
   if(append){
-    setFiles(prev => [...prev, ...r.data])
+    setFiles(prev => {
+      const existing = new Set(prev.map(f => f.path));
+      const additions = r.data.filter(f => !existing.has(f.path));
+      return [...prev, ...additions];
+    });
   } else {
     setFiles(r.data)
   }
@@ -358,8 +372,37 @@ const handleSearchChange = (e) => {
       setSuggestionsData({ type: 'none', suggestions: [], lastWord: '' });
       return;
     }
+
+    const words = value.trimStart().split(/\s+/);
+    const lastWord = words[words.length - 1].toLowerCase();
+
+    const isAndPrefix = lastWord.startsWith('+');
+    const isNotPrefix = lastWord.startsWith('-');
+    const cleanWord = (isAndPrefix || isNotPrefix) ? lastWord.substring(1) : lastWord;
+
+    if (cleanWord.startsWith('object:')) {
+      const suggestions = (objectTags || [])
+        .filter(t => t.toLowerCase().startsWith(cleanWord))
+        .slice(0, 8);
+      if (suggestions.length > 0) {
+        setSuggestionsData({ type: 'tag', suggestions: suggestions.map(s => isAndPrefix ? '+' + s : isNotPrefix ? '-' + s : s), lastWord });
+        return;
+      }
+    } else if (cleanWord.startsWith('person:')) {
+      const searchName = cleanWord.replace('person:', '').replace(/_/g, ' ');
+      const suggestions = (Array.isArray(people) ? people : [])
+        .filter(p => p.name && !p.name.startsWith('Unknown Person') && p.name.toLowerCase().includes(searchName))
+        .map(p => isAndPrefix ? `+person:"${p.name}"` : isNotPrefix ? `-person:"${p.name}"` : `person:"${p.name}"`)
+        .slice(0, 8);
+      if (suggestions.length > 0) {
+        setSuggestionsData({ type: 'tag', suggestions, lastWord });
+        return;
+      }
+    }
+
     try {
-      const r = await axios.get(`${API}/search/suggestions?q=${encodeURIComponent(value)}&limit=5`);
+      const safeQuery = value.replace(/,/g, ' ');
+      const r = await axios.get(`${API}/search/suggestions?q=${encodeURIComponent(safeQuery)}&limit=5`);
       setSuggestionsData(r.data);
     } catch (err) {
       console.warn('Suggestions failed', err);
@@ -413,7 +456,8 @@ function doSearch(value, cat = filterCategory){
 
     setLoadingMore(true)
     setSelected(null)
-    const r = await axios.get(`${API}/search?query=${encodeURIComponent(value)}&category=${cat}&offset=0&limit=50`)
+    const safeQuery = value.replace(/,/g, ' ');
+    const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=50`)
     setSearchCache(r.data)
     setFiles(r.data)
     setOffset(r.data.length)
@@ -427,7 +471,8 @@ async function goToSearch(cat = filterCategory){
   setSelected(null)
   if(query){
     setLoadingMore(true)
-    const r = await axios.get(`${API}/search?query=${encodeURIComponent(query)}&category=${cat}&offset=0&limit=50`)
+    const safeQuery = query.replace(/,/g, ' ');
+    const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=50`)
     setSearchCache(r.data)
     setFiles(r.data)
     setOffset(r.data.length)
@@ -448,20 +493,54 @@ async function loadMore(){
   if(page === 'explorer'){
     await loadFiles(offset, true, filterCategory)
   } else if(page === 'search'){
-    const r = await axios.get(`${API}/search?query=${encodeURIComponent(query)}&category=${filterCategory}&offset=${offset}&limit=50`)
-    setFiles(prev => [...prev, ...r.data])
-    setSearchCache(prev => [...prev, ...r.data])
+    const safeQuery = query.replace(/,/g, ' ');
+    const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${offset}&limit=50`)
+    setFiles(prev => {
+      const existing = new Set(prev.map(f => f.path));
+      const additions = r.data.filter(f => !existing.has(f.path));
+      return [...prev, ...additions];
+    });
+    setSearchCache(prev => {
+      const existing = new Set(prev.map(f => f.path));
+      const additions = r.data.filter(f => !existing.has(f.path));
+      return [...prev, ...additions];
+    });
     setOffset(offset + r.data.length)
     setHasMore(r.data.length === 50)
   }
   setLoadingMore(false)
 }
 
+const syncActiveDate = (containerElement) => {
+  if (!containerElement) return;
+  const containerRect = containerElement.getBoundingClientRect();
+  const headers = document.querySelectorAll('.date-header');
+  let currentActive = null;
+  
+  for (let i = 0; i < headers.length; i++) {
+    const rect = headers[i].getBoundingClientRect();
+    if (rect.top - containerRect.top <= 120) {
+      currentActive = headers[i].getAttribute('data-date');
+    } else {
+      break;
+    }
+  }
+  
+  if (!currentActive && headers.length > 0) {
+    currentActive = headers[0].getAttribute('data-date');
+  }
+  
+  if (currentActive) {
+    setActiveDate(prev => prev !== currentActive ? currentActive : prev);
+  }
+};
+
 function handleScroll(e){
   const {scrollTop, scrollHeight, clientHeight} = e.currentTarget
   if(scrollHeight - scrollTop - clientHeight < 120){
     loadMore()
   }
+  syncActiveDate(e.currentTarget);
 }
 
 async function loadSettings(){
@@ -574,7 +653,8 @@ async function loadDashboard(){
 
 async function loadPeople() {
   try {
-    const r = await axios.get(`${API}/people?t=${Date.now()}`);
+    const minPhotos = settings.min_unknown_photos !== undefined ? settings.min_unknown_photos : 1;
+    const r = await axios.get(`${API}/people?min_unknown_photos=${minPhotos}&t=${Date.now()}`);
     if (Array.isArray(r.data)) {
       setPeople(r.data);
     } else {
@@ -592,16 +672,51 @@ async function openPersonPhotos(person) {
     const r = await axios.get(`${API}/people/${person.id}/photos`);
     setPersonFiles(r.data);
     setCurrentPerson(person);
+    setPersonFilesPage(1);
     setPage('person_files');
   } catch (err) {
     console.warn('Failed to load person photos', err);
   }
 }
 
+async function findSimilarUnknowns(personId, threshold = similarityThreshold) {
+  if (findSimilarAbortController.current) {
+    findSimilarAbortController.current.abort();
+  }
+  const abortCtrl = new AbortController();
+  findSimilarAbortController.current = abortCtrl;
+  setIsFindingSimilar(true);
+  try {
+    const r = await axios.get(`${API}/people/${personId}/similar-unknowns?threshold=${threshold}`, {
+      signal: abortCtrl.signal
+    });
+    setSimilarUnknowns(r.data);
+    setCheckedSimilar(new Set());
+    setIsFindingSimilar(false);
+  } catch(err) {
+    if (!axios.isCancel(err)) {
+      alert('Error finding similar unknowns: ' + (err?.response?.data?.detail || err.message));
+      setSimilarUnknowns(null);
+      setIsFindingSimilar(false);
+    }
+  }
+}
+
+function stopFindSimilarUnknowns() {
+  if (findSimilarAbortController.current) {
+    findSimilarAbortController.current.abort();
+  }
+  setIsFindingSimilar(false);
+}
+
 const updatePersonNameLocal = (id, newName) => setPeople(prev => prev.map(p => p.id === id ? { ...p, name: newName } : p));
 const savePersonName = async (id, newName) => { try { await axios.post(`${API}/people/${id}/rename`, { name: newName }); loadPeople(); } catch (err) { console.warn(err); } };
 const deletePerson = async (e, id, name) => { 
   e.stopPropagation(); 
+  if (indexer.face_scanner_running) {
+    alert("Please stop the Face Scanner before modifying profiles to prevent database conflicts.");
+    return;
+  }
   if (name && !name.startsWith('Unknown Person')) {
     if (window.confirm(`Remove name "${name}"? This will move them back to the Unknown Persons list.`)) { 
       try { 
@@ -620,6 +735,10 @@ const deletePerson = async (e, id, name) => {
 };
 
 async function mergeSelectedPeople() {
+  if (indexer.face_scanner_running) {
+    alert("Please stop the Face Scanner before merging profiles to prevent database conflicts.");
+    return;
+  }
   if (!window.confirm(`Are you sure you want to merge these ${checkedPeople.size} people into one?`)) return;
   const ids = Array.from(checkedPeople);
   try {
@@ -645,6 +764,10 @@ async function setPersonThumbnail(personId, fileId) {
 }
 
 async function removePersonPhotosBulk(personId, fileIds) {
+  if (indexer.face_scanner_running) {
+    alert("Please stop the Face Scanner before modifying profiles to prevent database conflicts.");
+    return;
+  }
   if (!window.confirm(`Are you sure you want to un-tag ${fileIds.length} photo(s) from this person?`)) return;
   try {
     for (const fileId of fileIds) {
@@ -659,6 +782,10 @@ async function removePersonPhotosBulk(personId, fileIds) {
 }
 
 async function assignPhotosToPerson(personId, filePaths) {
+  if (indexer.face_scanner_running) {
+    alert("Please stop the Face Scanner before modifying profiles to prevent database conflicts.");
+    return;
+  }
   if (!personId) return;
   const fileIds = filePaths.map(p => files.find(f => f.path === p)?.id).filter(id => id);
   try {
@@ -703,20 +830,35 @@ function locateSelectedFileInExplorer() {
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
     setLoadingMore(true);
     
-    axios.get(`${API}/search?query=${encodeURIComponent(q)}&category=all&offset=0&limit=50`).then(r => {
-        setSearchCache(r.data);
-        setFiles(r.data);
+    const safeQuery = q.replace(/,/g, ' ');
+    axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=all&offset=0&limit=50`).then(r => {
+        let newFiles = r.data;
+        if (!newFiles.some(f => f.path === file.path)) {
+            newFiles = [...newFiles, file];
+        }
+        setSearchCache(newFiles);
+        setFiles(newFiles);
         setOffset(r.data.length);
         setHasMore(r.data.length === 50);
         setLoadingMore(false);
         setTimeout(() => {
-            const dateKey = (!isNaN(d.getTime()) && file.modified) ? d.toLocaleDateString('default', { month: 'short', year: 'numeric' }) : 'Unknown Date';
-            document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            const escapedPath = file.path.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            const el = document.querySelector(`[data-path="${escapedPath}"]`);
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } else {
+                const dateKey = (!isNaN(d.getTime()) && file.modified) ? d.toLocaleDateString('default', { month: 'short', year: 'numeric' }) : 'Unknown Date';
+                document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
         }, 300);
     }).catch(() => setLoadingMore(false));
 }
 
 async function addTagsToSelected(tagsStr) {
+  if (indexer.object_scanner_running) {
+    alert("Please stop the Object Scanner before modifying tags to prevent database conflicts.");
+    return;
+  }
   if (!tagsStr) return;
   const tags = tagsStr.split(',').map(t => t.trim().replace(/\s+/g, '_').toLowerCase()).filter(t => t);
   if (tags.length === 0) return;
@@ -736,6 +878,10 @@ async function addTagsToSelected(tagsStr) {
 }
 
 async function removeTagsFromSelected(tagsStr) {
+  if (indexer.object_scanner_running) {
+    alert("Please stop the Object Scanner before modifying tags to prevent database conflicts.");
+    return;
+  }
   if (!tagsStr) return;
   const tags = tagsStr.split(',').map(t => t.trim().replace(/\s+/g, '_').toLowerCase()).filter(t => t);
   if (tags.length === 0) return;
@@ -755,6 +901,10 @@ async function removeTagsFromSelected(tagsStr) {
 }
 
 async function deleteTagGlobally(tag) {
+  if (indexer.object_scanner_running) {
+    alert("Please stop the Object Scanner before modifying tags to prevent database conflicts.");
+    return;
+  }
   const tagName = tag.replace('object:', '').replace(/_/g, ' ');
   if (!window.confirm(`Are you sure you want to remove the tag "${tagName}" from ALL files? This cannot be undone.`)) return;
   try {
@@ -767,9 +917,14 @@ async function deleteTagGlobally(tag) {
 }
 
 async function clearAllObjectTags() {
+  if (indexer.object_scanner_running) {
+    alert("Please stop the Object Scanner before modifying tags to prevent database conflicts.");
+    return;
+  }
   if (!window.confirm(`Are you sure you want to remove ALL automatically detected object tags from EVERY file in the database? This action cannot be undone.`)) return;
   try {
     await axios.delete(`${API}/tags/objects/all`);
+    await axios.post(`${API}/reset-object-scanner-progress`);
     showToastMessage(`All object tags have been cleared.`);
     loadDashboard(); // This re-fetches object tags
   } catch(err) {
@@ -1009,6 +1164,21 @@ async function moveSelected() {
   }
 }
 
+async function backupDatabase() {
+  try {
+    const dest = await axios.get(`${API}/choose-path?mode=directory`);
+    if (!dest.data || !dest.data.path) return;
+    
+    setActionInProgress(true);
+    await axios.post(`${API}/system/backup`, { destination: dest.data.path });
+    showToastMessage('Data safely backed up to ' + dest.data.path);
+  } catch (err) {
+    alert('Error backing up database: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
+  }
+}
+
 async function handleShutdown() {
   if (window.confirm('Are you sure you want to shut down the WABS server?')) {
     try {
@@ -1155,16 +1325,6 @@ const groupedFiles = useMemo(() => {
   return groups;
 }, [sortedFiles]);
 
-useEffect(() => {
-  observer.current = new IntersectionObserver((entries) => {
-    entries.forEach(entry => {
-      if (entry.isIntersecting) {
-        setActiveDate(entry.target.getAttribute('data-date'));
-      }
-    });
-  }, { rootMargin: '-10% 0px -80% 0px' });
-  return () => observer.current?.disconnect();
-}, []);
 
 const updateUIPreferences = (updates) => {
   setSettings(prev => {
@@ -1230,8 +1390,40 @@ useEffect(() => {
 }, [isResizing]);
 
 useEffect(() => {
-  observer.current?.disconnect();
-  document.querySelectorAll('.date-header').forEach(h => observer.current?.observe(h));
+  const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
+  if (showFull && (page === 'explorer' || page === 'search')) {
+    axios.get(`${API}/timeline?category=${filterCategory}`).then(r => {
+      const groups = new Map();
+      r.data.forEach(item => {
+        if (!item.date) return;
+        const d = new Date(item.date);
+        if (!isNaN(d.getTime())) {
+          const key = d.toLocaleDateString('default', { month: 'short', year: 'numeric' });
+          if (!groups.has(key)) {
+            groups.set(key, { 
+              key, 
+              yearMonth: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}` 
+            });
+          }
+        }
+      });
+      setFullTimelineData(Array.from(groups.values()));
+    }).catch(e => console.warn('Failed to load full timeline', e));
+  }
+}, [settings.show_full_timeline, settings.ui_preferences?.show_full_timeline, filterCategory, page]);
+
+const timelineItems = useMemo(() => {
+  const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
+  if (showFull && fullTimelineData.length > 0) {
+    let items = [...fullTimelineData];
+    if (sortBy === 'date' && sortOrder === 'desc') items.reverse();
+    return items.map(t => t.key);
+  }
+  return Object.keys(groupedFiles);
+}, [settings.show_full_timeline, settings.ui_preferences?.show_full_timeline, fullTimelineData, groupedFiles, sortBy, sortOrder]);
+
+useEffect(() => {
+  syncActiveDate(document.querySelector('.content'));
 }, [groupedFiles, page]);
 
 useEffect(() => {
@@ -1239,6 +1431,7 @@ useEffect(() => {
     if (searchContainerRef.current && !searchContainerRef.current.contains(event.target)) {
       setSuggestionsData({ type: 'none', suggestions: [], lastWord: '' });
       setFocusedSuggestionIndex(-1);
+      setShowSearchHelp(false);
     }
   };
   document.addEventListener('mousedown', handleClickOutside);
@@ -1249,6 +1442,7 @@ useEffect(()=>{
  loadFiles()
  loadSettings()
  loadDashboard()
+ loadPeople()
 },[])
 
 useEffect(() => {
@@ -1406,7 +1600,7 @@ return(
       <AppIcon size={40} />
       <div>
         <h2 style={{ margin: 0, fontSize: '20px', color: '#f8fafc' }}>WABS</h2>
-        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta.3</div>
+        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta.4</div>
       </div>
     </div>
 
@@ -1475,6 +1669,9 @@ return(
       {suggestionsData.type === 'did_you_mean' && (
         <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '8px' }}>Did you mean:</div>
       )}
+      {suggestionsData.type === 'tag' && (
+        <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '8px' }}>Suggested Tags:</div>
+      )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
         {suggestionsData.suggestions.map((s, i) => (
           <button
@@ -1511,18 +1708,19 @@ return(
     </ActionButton>
   </div>
   {showSearchHelp && (
-    <div style={{ position: 'absolute', top: 'calc(100% + 8px)', right: '0', background: '#1e293b', border: '1px solid #334155', padding: '16px', zIndex: 100, borderRadius: '12px', width: '300px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)', color: '#cbd5e1', fontSize: '13px' }}>
+    <div style={{ position: 'absolute', top: 'calc(100% + 8px)', right: '0', background: '#1e293b', border: '1px solid #334155', padding: '16px', zIndex: 100, borderRadius: '12px', width: '320px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)', color: '#cbd5e1', fontSize: '13px' }}>
       <h4 style={{ margin: '0 0 10px 0', color: '#f8fafc', fontSize: '14px' }}>Search Patterns Supported</h4>
       <ul style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-        <li><b>type:</b>mp3, audio, document</li>
-        <li><b>object:</b>person name, chair, car</li>
-        <li><b>name:</b>vacation (exact match)</li>
-        <li><b>size:</b>&gt;100MB, &lt;5GB, 300</li>
-        <li><b>length:</b>&gt;300, &lt;5m, 1h (duration)</li>
-        <li><b>date:</b>2020-2022, yyyy-mm-dd, yyyy</li>
+        <li><b>type:</b>audio <i>(or video, document)</i></li>
+        <li><b>object:</b>car <i>(or beach, indoor)</i></li>
+        <li><b>person:</b>"john doe"</li>
+        <li><b>tag:</b>family_trip <i>(or custom_tag)</i></li>
+        <li><b>size:</b>&gt;100MB, &lt;5GB</li>
+        <li><b>length:</b>&gt;5m, &lt;1h <i>(duration)</i></li>
+        <li><b>date:</b>2020-2022, 2023-10-25</li>
         <li><b>*.mp3</b> or <b>*vacation*</b> (wildcards)</li>
       </ul>
-      <p style={{ margin: '12px 0 0 0', fontSize: '12px', color: '#94a3b8' }}>Combine multiple filters like: <br/><code style={{ background: '#0f172a', padding: '2px 4px', borderRadius: '4px', color: '#38bdf8' }}>*.mp3 type:audio length:300</code></p>
+      <p style={{ margin: '12px 0 0 0', fontSize: '12px', color: '#94a3b8' }}>Combine with spaces (Match Any). Use <code style={{ color: '#38bdf8' }}>+</code> to require (Match All) or <code style={{ color: '#38bdf8' }}>-</code> to exclude: <br/><code style={{ background: '#0f172a', padding: '2px 4px', borderRadius: '4px', color: '#38bdf8' }}>object:car -tag:blur</code></p>
     </div>
   )}
 </div>
@@ -1556,12 +1754,27 @@ return(
 {showTimeline && (
 <>
 <div className='timeline' style={{ width: timelineWidth }}>
-  {Object.keys(groupedFiles).map(dateKey => (
+  {timelineItems.map(dateKey => (
     <TimelineItem
       key={dateKey}
       dateKey={dateKey}
       isActiveDate={activeDate === dateKey}
-      onClick={() => document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'smooth' })}
+      onClick={() => {
+        const el = document.getElementById(`date-group-${dateKey}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
+          if (showFull) {
+            const tData = fullTimelineData.find(t => t.key === dateKey);
+            if (tData) {
+              setSortBy('date');
+              setSortOrder('desc');
+              doSearch(`date:${tData.yearMonth}`);
+            }
+          }
+        }
+      }}
     />
   ))}
 </div>
@@ -1622,14 +1835,10 @@ return(
 
   {filterCategory === 'duplicates' && (
     indexer.hasher_running ? (
-      <div style={{ marginLeft: '10px', display: 'flex', flexDirection: 'column', minWidth: '160px', maxWidth: '250px' }}>
-        <ActionButton disabled={actionInProgress || indexer.hasher_stopped} className="btn btn-secondary" style={{ padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px', color: '#ef4444', justifyContent: 'center' }} onClick={stopVerifyDuplicates}>
-          <CloseIcon fontSize="small" />
-          {indexer.hasher_stopped ? 'Stopping...' : 'Stop Verification'}
-        </ActionButton>
-        <ProgressBar current={indexer.hasher_current} total={indexer.hasher_total} color="#10b981" />
-        <div style={{ fontSize: '10px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left' }}>{indexer.hasher_current_file || ''}</div>
-      </div>
+      <ActionButton disabled={actionInProgress || indexer.hasher_stopped} className="btn btn-secondary" style={{ marginLeft: '10px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px', color: '#ef4444', justifyContent: 'center' }} onClick={stopVerifyDuplicates}>
+        <CloseIcon fontSize="small" />
+        {indexer.hasher_stopped ? 'Stopping...' : 'Stop Verification'}
+      </ActionButton>
     ) : (
       <ActionButton disabled={actionInProgress} className="btn btn-secondary" style={{ marginLeft: '10px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={verifyDuplicates}>
         <CheckCircleIcon fontSize="small" style={{ color: '#10b981' }} />
@@ -1658,57 +1867,72 @@ return(
   </div>
 </div>
 
+{filterCategory === 'duplicates' && indexer.hasher_running && (
+  <div style={{ margin: '10px 18px', background: '#1e293b', padding: '12px 16px', borderRadius: '12px', border: '1px solid #334155' }}>
+    <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc' }}>Duplicate Verification Progress</span>
+    <ProgressBar current={indexer.hasher_current} total={indexer.hasher_total} color="#10b981" />
+    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left' }}>{indexer.hasher_current_file || ''}</div>
+  </div>
+)}
+
 {checkedFiles.size > 0 && (
   <div style={{ padding: '10px 18px', background: '#1e293b', borderBottom: '1px solid #1f2937', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-    <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedFiles.size} files selected</span>
+    <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedFiles.size} file(s) selected</span>
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', borderColor: showSelectedOnly ? '#3b82f6' : undefined, color: showSelectedOnly ? '#38bdf8' : undefined }} onClick={() => setShowSelectedOnly(!showSelectedOnly)}>{showSelectedOnly ? 'Show All Files' : 'Show Selected Only'}</ActionButton>
-    <ActionButton className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={openSelected}>Open Selected</ActionButton>
-    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={copySelected}>Copy Selected</ActionButton>
-    
-    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); setIsTaggingObject(false); loadPeople(); }}>Tag Person</ActionButton>
-    {isTaggingPerson && Array.isArray(people) && (
-      <select 
-        onChange={(e) => assignPhotosToPerson(e.target.value, Array.from(checkedFiles))} 
-        style={{ padding: '6px 12px', background: '#334155', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none' }}
-        value=""
-      >
-        <option value="" disabled>Select person...</option>
-        {[...people].sort((a,b) => (a.name || '').localeCompare(b.name || '')).map(p => <option key={p.id} value={p.id}>{p.name || `Unknown Person #${p.id}`}</option>)}
-      </select>
-    )}
 
-    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => { setIsTaggingObject(!isTaggingObject); setIsTaggingPerson(false); }}>Manage Tags</ActionButton>
-    {isTaggingObject && (
-      <div style={{ display: 'flex', gap: '4px' }}>
-        <input 
-          type="text" 
-          list="existing-tags"
-          placeholder="tag1, tag2..." 
-          value={tagInput}
-          onChange={(e) => setTagInput(e.target.value)}
-          style={{ padding: '6px 12px', background: '#334155', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none', width: '150px' }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              addTagsToSelected(tagInput);
-            }
-          }}
-        />
-        <datalist id="existing-tags">
-          {objectTags.map(tag => (
-            <option key={tag} value={tag.replace('object:', '')} />
-          ))}
-        </datalist>
-        <ActionButton className="btn btn-secondary" style={{ padding: '4px 8px', color: '#10b981' }} onClick={() => addTagsToSelected(tagInput)}>Add</ActionButton>
-        <ActionButton className="btn btn-secondary" style={{ padding: '4px 8px', color: '#ef4444' }} onClick={() => removeTagsFromSelected(tagInput)}>Remove</ActionButton>
-      </div>
-    )}
+    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
+      <ActionButton className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={openSelected}>Open</ActionButton>
+      <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={copySelected}>Copy</ActionButton>
+      {!isSelectionReadOnly && (
+        <>
+          <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={moveSelected}>Move</ActionButton>
+          <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={deleteSelected}>Delete</ActionButton>
+        </>
+      )}
+    </div>
 
-    {!isSelectionReadOnly && (
-      <>
-        <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={moveSelected}>Move Selected</ActionButton>
-        <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={deleteSelected}>Delete Selected</ActionButton>
-      </>
-    )}
+    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
+      <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingPerson ? '#334155' : undefined }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); setIsTaggingObject(false); loadPeople(); }}>Tag Person</ActionButton>
+      {isTaggingPerson && Array.isArray(people) && (
+        <select 
+          onChange={(e) => assignPhotosToPerson(e.target.value, Array.from(checkedFiles))} 
+          style={{ padding: '6px 12px', background: '#1e293b', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none' }}
+          value=""
+        >
+          <option value="" disabled>Select person...</option>
+          {[...people].sort((a,b) => (a.name || '').localeCompare(b.name || '')).map(p => <option key={p.id} value={p.id}>{p.name || `Unknown Person #${p.id}`}</option>)}
+        </select>
+      )}
+    </div>
+
+    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
+      <ActionButton disabled={indexer.object_scanner_running} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingObject ? '#334155' : undefined }} onClick={() => { setIsTaggingObject(!isTaggingObject); setIsTaggingPerson(false); }} title={indexer.object_scanner_running ? "Stop the Object Scanner to manage tags" : ""}>Manage Tags</ActionButton>
+      {isTaggingObject && (
+        <div style={{ display: 'flex', gap: '4px' }}>
+          <input 
+            type="text" 
+            list="existing-tags"
+            placeholder="tag1, tag2..." 
+            value={tagInput}
+            onChange={(e) => setTagInput(e.target.value)}
+            style={{ padding: '6px 12px', background: '#1e293b', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none', width: '150px' }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                addTagsToSelected(tagInput);
+              }
+            }}
+          />
+          <datalist id="existing-tags">
+            {objectTags.map(tag => (
+              <option key={tag} value={tag.replace('object:', '')} />
+            ))}
+          </datalist>
+          <ActionButton className="btn btn-secondary" style={{ padding: '4px 8px', color: '#10b981' }} onClick={() => addTagsToSelected(tagInput)}>Add</ActionButton>
+          <ActionButton className="btn btn-secondary" style={{ padding: '4px 8px', color: '#ef4444' }} onClick={() => removeTagsFromSelected(tagInput)}>Remove</ActionButton>
+        </div>
+      )}
+    </div>
+
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedFiles(new Set())}>Clear Selection</ActionButton>
   </div>
 )}
@@ -1874,12 +2098,9 @@ page==='people' &&
   </div>
   <div>
     {indexer.face_scanner_running ? (
-      <div style={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: '200px' }}>
-        <ActionButton disabled={actionInProgress || indexer.face_scanner_stopped} className="btn btn-secondary" style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }} onClick={stopFaceScan}>
-          <CloseIcon fontSize="small" /> {indexer.face_scanner_stopped ? 'Stopping...' : 'Stop Scanning'}
-        </ActionButton>
-        <ProgressBar current={indexer.face_scanner_current} total={indexer.face_scanner_total} color="#8b5cf6" />
-      </div>
+      <ActionButton disabled={actionInProgress || indexer.face_scanner_stopped} className="btn btn-secondary" style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }} onClick={stopFaceScan}>
+        <CloseIcon fontSize="small" /> {indexer.face_scanner_stopped ? 'Stopping...' : 'Stop Scanning'}
+      </ActionButton>
     ) : (
       <ActionButton disabled={actionInProgress} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startFaceScan}>
         <PlayCircleIcon fontSize="small" /> Scan Archive for Faces
@@ -1888,11 +2109,19 @@ page==='people' &&
   </div>
 </div>
 
+{indexer.face_scanner_running && (
+  <div style={{ marginBottom: '20px', background: '#1e293b', padding: '12px 16px', borderRadius: '12px', border: '1px solid #334155' }}>
+    <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc' }}>Face Scanner Progress</span>
+    <ProgressBar current={indexer.face_scanner_current} total={indexer.face_scanner_total} color="#8b5cf6" />
+    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left' }}>{indexer.face_scanner_current_file || ''}</div>
+  </div>
+)}
+
 {checkedPeople.size > 0 && (
   <div style={{ position: 'sticky', bottom: '20px', zIndex: 50, padding: '10px 18px', background: '#1e293b', border: '1px solid #334155', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginTop: '16px', borderRadius: '12px', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)' }}>
     <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedPeople.size} person(s) selected</span>
     {checkedPeople.size > 1 && (
-      <ActionButton className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={mergeSelectedPeople}>Merge Selected</ActionButton>
+      <ActionButton disabled={indexer.face_scanner_running} className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={mergeSelectedPeople} title={indexer.face_scanner_running ? "Stop the scanner to merge profiles" : ""}>Merge Selected</ActionButton>
     )}
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedPeople(new Set())}>Clear Selection</ActionButton>
   </div>
@@ -2093,9 +2322,110 @@ page==='people' &&
 page==='person_files' &&
 <div style={{display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0}}>
 <div style={{padding: '18px', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '16px'}}>
-    <ActionButton className="btn btn-secondary" onClick={() => { setPage('people'); setCheckedFiles(new Set()); loadPeople(); }}>&larr; Back to People</ActionButton>
+    <ActionButton className="btn btn-secondary" onClick={() => { setPage('people'); setCheckedFiles(new Set()); setSimilarUnknowns(null); loadPeople(); }}>&larr; Back to People</ActionButton>
     <h2 style={{margin: 0}}>{currentPerson?.name}'s Photos</h2>
+    {!currentPerson?.name?.startsWith('Unknown Person') && (
+        isFindingSimilar ? (
+            <ActionButton 
+                className="btn btn-secondary" 
+                style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px', color: '#ef4444', borderColor: '#b91c1c' }}
+                onClick={stopFindSimilarUnknowns}
+            >
+                <CloseIcon fontSize="small" /> Stop Searching
+            </ActionButton>
+        ) : (
+            <ActionButton 
+                className="btn btn-secondary" 
+                style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px', color: '#38bdf8', borderColor: '#3b82f6' }}
+                onClick={() => findSimilarUnknowns(currentPerson.id, similarityThreshold)}
+            >
+                <FaceIcon fontSize="small" /> Find Similar Unknowns
+            </ActionButton>
+        )
+    )}
 </div>
+
+{similarUnknowns && (
+  <div style={{ padding: '18px', borderBottom: '1px solid #1f2937', background: '#0f172a' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
+      <h3 style={{ margin: 0, color: '#f8fafc' }}>Similar Unknown Profiles ({similarUnknowns.length})</h3>
+      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ color: '#94a3b8', fontSize: '14px' }}>Similarity Threshold:</span>
+        <input 
+          type="range" 
+          min="0.4" max="0.8" step="0.01" 
+              disabled={isFindingSimilar}
+          value={similarityThreshold} 
+          onChange={(e) => setSimilarityThreshold(parseFloat(e.target.value))} 
+        />
+        <span style={{ color: '#38bdf8', fontSize: '14px', minWidth: '40px' }}>{Math.round(similarityThreshold * 100)}%</span>
+            <ActionButton disabled={isFindingSimilar} className="btn btn-primary" style={{ padding: '4px 10px' }} onClick={() => findSimilarUnknowns(currentPerson.id, similarityThreshold)}>Apply</ActionButton>
+        <ActionButton className="btn btn-secondary" style={{ padding: '4px 10px' }} onClick={() => { setSimilarUnknowns(null); setCheckedSimilar(new Set()); }}>Close</ActionButton>
+      </div>
+    </div>
+    
+    {similarUnknowns.length === 0 ? (
+      <p style={{ color: '#94a3b8' }}>No similar unknown profiles found at this threshold. Try lowering the slider.</p>
+    ) : (
+      <>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '16px', marginBottom: '16px', maxHeight: '300px', overflowY: 'auto', paddingRight: '8px' }}>
+          {similarUnknowns.map(p => (
+             <div key={p.id} style={{background:'#111827', padding:'10px', borderRadius:'12px', border: checkedSimilar.has(p.id) ? '2px solid #3b82f6' : '1px solid #24324a', cursor:'pointer', position: 'relative'}} onClick={() => {
+                const next = new Set(checkedSimilar);
+                if (next.has(p.id)) next.delete(p.id);
+                else next.add(p.id);
+                setCheckedSimilar(next);
+             }}>
+               <input 
+                 type="checkbox" 
+                 checked={checkedSimilar.has(p.id)}
+                 onChange={() => {}}
+                 style={{ position: 'absolute', top: '8px', left: '8px', zIndex: 10, cursor: 'pointer' }}
+               />
+               <div style={{width:'100%', height:'100px', background:'#1e293b', borderRadius:'8px', display:'flex', alignItems:'center', justifyContent:'center', overflow: 'hidden', marginBottom: '8px'}}>
+                 {p.thumbnail && (
+                     <img src={getPersonThumbUrl(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} onError={(e) => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
+                 )}
+                 <FaceIcon style={{fontSize: 40, color:'#94a3b8', display: p.thumbnail ? 'none' : 'block'}} />
+               </div>
+               <div style={{ fontSize: '13px', color: '#f8fafc', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.name}>{p.name}</div>
+               <div style={{ fontSize: '12px', color: '#38bdf8' }}>{Math.round(p.similarity * 100)}% Match</div>
+               <div style={{ fontSize: '12px', color: '#94a3b8' }}>{p.face_count} photo{p.face_count !== 1 ? 's' : ''}</div>
+             </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: '10px' }}>
+           <ActionButton disabled={checkedSimilar.size === 0 || indexer.face_scanner_running} className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={async () => {
+              if (indexer.face_scanner_running) {
+                 alert("Please stop the Face Scanner before merging profiles to prevent database conflicts.");
+                 return;
+              }
+              if (!window.confirm(`Merge ${checkedSimilar.size} unknown profile(s) into ${currentPerson.name}?`)) return;
+              try {
+                await axios.post(`${API}/people/merge`, { person_ids: [currentPerson.id, ...Array.from(checkedSimilar)] });
+                showToastMessage(`Merged ${checkedSimilar.size} profiles successfully.`);
+                setSimilarUnknowns(null);
+                setCheckedSimilar(new Set());
+                openPersonPhotos(currentPerson);
+                loadPeople();
+              } catch(err) {
+                alert('Error merging: ' + (err?.response?.data?.detail || err.message));
+              }
+           }}>
+             Merge {checkedSimilar.size} Selected
+           </ActionButton>
+           <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => {
+              if (checkedSimilar.size === similarUnknowns.length) setCheckedSimilar(new Set());
+              else setCheckedSimilar(new Set(similarUnknowns.map(p => p.id)));
+           }}>
+              {checkedSimilar.size === similarUnknowns.length ? 'Deselect All' : 'Select All'}
+           </ActionButton>
+        </div>
+      </>
+    )}
+  </div>
+)}
+
 {checkedFiles.size > 0 && (
   <div style={{ padding: '10px 18px', background: '#1e293b', borderBottom: '1px solid #1f2937', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
     <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedFiles.size} photo(s) selected</span>
@@ -2117,10 +2447,23 @@ page==='person_files' &&
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedFiles(new Set())}>Clear Selection</ActionButton>
   </div>
 )}
+
+{Array.isArray(personFiles) && personFiles.length > 100 && (
+  <div style={{ padding: '10px 18px', display: 'flex', justifyContent: 'flex-end', gap: '16px', alignItems: 'center', borderBottom: '1px solid #1f2937' }}>
+    <ActionButton disabled={personFilesPage === 1} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setPersonFilesPage(prev => Math.max(1, prev - 1))}>
+      Previous
+    </ActionButton>
+    <span style={{ color: '#94a3b8', fontSize: '14px' }}>Page {personFilesPage} of {Math.ceil(personFiles.length / 100)}</span>
+    <ActionButton disabled={personFilesPage >= Math.ceil(personFiles.length / 100)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setPersonFilesPage(prev => prev + 1)}>
+      Next
+    </ActionButton>
+  </div>
+)}
+
 <div className="content" style={{paddingTop: '18px', paddingLeft: '18px', paddingRight: '18px', overflowY: 'auto'}}>
     <div className={viewMode === 'grid' ? 'grid' : 'list'}>
         {Array.isArray(personFiles) && personFiles.length === 0 ? <p>No photos found for this person.</p> : null}
-        {Array.isArray(personFiles) && personFiles.map(item => (
+        {Array.isArray(personFiles) && personFiles.slice((personFilesPage - 1) * 100, personFilesPage * 100).map(item => (
             <FileCard
               key={item.path}
               item={item}
@@ -2138,6 +2481,17 @@ page==='person_files' &&
             />
         ))}
     </div>
+    {Array.isArray(personFiles) && personFiles.length > 100 && (
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '32px', marginBottom: '24px' }}>
+        <ActionButton disabled={personFilesPage === 1} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setPersonFilesPage(prev => Math.max(1, prev - 1))}>
+          Previous
+        </ActionButton>
+        <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {personFilesPage} of {Math.ceil(personFiles.length / 100)}</span>
+        <ActionButton disabled={personFilesPage >= Math.ceil(personFiles.length / 100)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setPersonFilesPage(prev => prev + 1)}>
+          Next
+        </ActionButton>
+      </div>
+    )}
 </div>
 </div>
 }
@@ -2161,12 +2515,9 @@ page==='tags' &&
       Clear All Tags
     </ActionButton>
     {indexer.object_scanner_running ? (
-      <div style={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: '200px' }}>
-        <ActionButton disabled={actionInProgress || indexer.object_scanner_stopped} className="btn btn-secondary" style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }} onClick={stopObjectScan}>
-          <CloseIcon fontSize="small" /> {indexer.object_scanner_stopped ? 'Stopping...' : 'Stop Scanning'}
-        </ActionButton>
-        <ProgressBar current={indexer.object_scanner_current} total={indexer.object_scanner_total} color="#f59e0b" />
-      </div>
+      <ActionButton disabled={actionInProgress || indexer.object_scanner_stopped} className="btn btn-secondary" style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }} onClick={stopObjectScan}>
+        <CloseIcon fontSize="small" /> {indexer.object_scanner_stopped ? 'Stopping...' : 'Stop Scanning'}
+      </ActionButton>
     ) : (
       <ActionButton disabled={actionInProgress} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startObjectScan}>
         <PlayCircleIcon fontSize="small" /> Classify Objects & Scenes
@@ -2174,6 +2525,14 @@ page==='tags' &&
     )}
   </div>
 </div>
+
+{indexer.object_scanner_running && (
+  <div style={{ marginBottom: '20px', background: '#1e293b', padding: '12px 16px', borderRadius: '12px', border: '1px solid #334155' }}>
+    <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc' }}>Object Scanner Progress</span>
+    <ProgressBar current={indexer.object_scanner_current} total={indexer.object_scanner_total} color="#f59e0b" />
+    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left' }}>{indexer.object_scanner_current_file || ''}</div>
+  </div>
+)}
 
 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
   <input
@@ -2205,7 +2564,7 @@ page==='tags' &&
         <ActionButton className="btn btn-secondary" style={{ padding: '8px 16px', background: '#1e293b', color: '#38bdf8', borderColor: '#3b82f6', fontSize: '14px', paddingRight: '32px' }} onClick={() => { doSearch(tag); }}>
           {tagName}
         </ActionButton>
-        <ActionButton style={{ position: 'absolute', top: '50%', right: '6px', transform: 'translateY(-50%)', background: 'transparent', color: '#ef4444', borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', padding: 0, minWidth: 0 }} onClick={() => deleteTagGlobally(tag)} title={`Delete tag "${tagName}" globally`}>
+        <ActionButton disabled={indexer.object_scanner_running} style={{ position: 'absolute', top: '50%', right: '6px', transform: 'translateY(-50%)', background: 'transparent', color: '#ef4444', borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', padding: 0, minWidth: 0 }} onClick={() => deleteTagGlobally(tag)} title={`Delete tag "${tagName}" globally`}>
           <CloseIcon fontSize="small" />
         </ActionButton>
       </div>
@@ -2254,7 +2613,7 @@ page==='dashboard' &&
 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
 <StatCard title="Duplicates" value={stats.duplicates || 0} icon={<FileCopyIcon />} color="#f43f5e" onClick={() => handleCategoryClick('duplicates')} />
 <StatCard title="Known People" value={stats.known_faces || 0} icon={<FaceIcon />} color="#10b981" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); setNamedPeoplePage(1); loadPeople(); }} />
-<StatCard title="Unknown Faces" value={stats.unknown_faces || 0} icon={<FaceIcon />} color="#94a3b8" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); loadPeople(); }} />
+<StatCard title="Unknown People" value={stats.unknown_faces || 0} icon={<FaceIcon />} color="#94a3b8" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); loadPeople(); }} />
 <StatCard title="Object Tags" value={objectTags.length || 0} icon={<CategoryIcon />} color="#38bdf8" onClick={() => { setPage('tags'); setSelected(null); setTagsPage(1); setTagSearchQuery(''); }} />
 </div>
 
@@ -2318,6 +2677,7 @@ Verify Hashes (Duplicates)
 {indexer.face_scanner_stopped ? 'Stopping Face Scan...' : 'Stop Face Scan'}
 </ActionButton>
 <ProgressBar current={indexer.face_scanner_current} total={indexer.face_scanner_total} color="#8b5cf6" />
+<div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.face_scanner_current_file || ''}</div>
 </>
 ) : (
 <ActionButton disabled={actionInProgress} onClick={startFaceScan} style={{ width: '100%' }}>
@@ -2332,6 +2692,7 @@ Scan for Faces (People)
 {indexer.object_scanner_stopped ? 'Stopping Object Scan...' : 'Stop Object Scan'}
 </ActionButton>
 <ProgressBar current={indexer.object_scanner_current} total={indexer.object_scanner_total} color="#f59e0b" />
+<div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.object_scanner_current_file || ''}</div>
 </>
 ) : (
 <ActionButton disabled={actionInProgress} onClick={startObjectScan} style={{ width: '100%' }}>
@@ -2348,287 +2709,333 @@ Classify Objects & Scenes
 {
 page==='settings' &&
 <div style={{padding:'20px', overflow:'auto', height:'100%'}}>
-
-<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-  <h1 style={{ margin: 0 }}>Settings</h1>
-  <ActionButton className="btn btn-primary" style={{ padding: '10px 20px', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={saveSettings}>
-    <SettingsIcon fontSize="small" />
-    Save Settings
-  </ActionButton>
-</div>
-
-<h3>View Preferences</h3>
-
-<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
-<input type='checkbox' checked={showSidebar} onChange={toggleSidebar} /> Show Sidebar
-</label>
-<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
-<input type='checkbox' checked={showTimeline} onChange={toggleTimeline} /> Show Timeline
-</label>
-<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
-<input type='checkbox' checked={showDetails} onChange={toggleDetails} /> Show Details
-</label>
-<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
-<input type='checkbox' checked={settings.animations_enabled !== false} onChange={(e)=>updateUIPreferences({ animations_enabled: e.target.checked })} /> Enable UI Animations
-</label>
-<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom: '10px', color:'#38bdf8'}}>
-<input type='checkbox' checked={settings.enable_photo_thumbnail_cache || settings.ui_preferences?.enable_photo_thumbnail_cache || false} onChange={(e)=>updateUIPreferences({ enable_photo_thumbnail_cache: e.target.checked })} /> Enable Photo Thumbnail Caching (Improves load times for large images)
-</label>
-{(settings.enable_photo_thumbnail_cache || settings.ui_preferences?.enable_photo_thumbnail_cache) && (
-<div style={{display:'flex',gap:'10px', marginBottom: '10px', alignItems: 'center'}}>
-<span style={{ color: '#94a3b8', fontSize: '14px' }}>Cache photos larger than (MB):</span>
-<input
-className='setting'
-type='number'
-style={{ marginBottom: 0, width: '80px', padding: '4px 8px', fontSize: '14px' }}
-value={settings.photo_thumbnail_size_limit_mb !== undefined ? settings.photo_thumbnail_size_limit_mb : (settings.ui_preferences?.photo_thumbnail_size_limit_mb !== undefined ? settings.ui_preferences.photo_thumbnail_size_limit_mb : 5)}
-onChange={(e)=>updateUIPreferences({ photo_thumbnail_size_limit_mb: parseFloat(e.target.value) || 0 })}
-/>
-</div>
-)}
-
-<div style={{ marginBottom: '24px' }}>
-  <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={clearCache}>
-    Clear Thumbnail Cache
-  </ActionButton>
-</div>
-
-<h3>Data Safety</h3>
-
-<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px', color:'#38bdf8'}}>
-<input type='checkbox' checked={settings.read_only_mode !== false} onChange={(e)=>updateUIPreferences({ read_only_mode: e.target.checked })} /> Enable Global Read-Only Mode (Overrides individual backup settings if enabled)
-</label>
-
-<label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'24px', color:'#ef4444'}}>
-<input type='checkbox' checked={settings.allow_unverified_deletion || false} onChange={(e)=>updateUIPreferences({ allow_unverified_deletion: e.target.checked })} /> Allow deleting unverified duplicates (Dangerous)
-</label>
-
-<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '24px', marginBottom: '16px' }}>
-  <h3 style={{ margin: 0 }}>Smart Searches</h3>
-  <ActionButton className="btn btn-primary" onClick={() => {
-    const newId = `smartsearch_${Date.now()}`;
-    setSettings(prev => ({
-      ...prev,
-      smart_searches: [...(prev.smart_searches || []), { id: newId, name: `New Search`, query: '' }]
-    }));
-  }}>+ Add Smart Search</ActionButton>
-</div>
-
-{(settings.smart_searches || []).map((search, index) => (
-  <div key={search.id} style={{ padding: '16px', background: '#1e293b', borderRadius: '10px', marginBottom: '16px', border: '1px solid #334155' }}>
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-      <input
-        className='setting'
-        style={{ margin: 0, fontWeight: 'bold', background: 'transparent', border: 'none', color: '#f8fafc', fontSize: '16px', padding: '0 4px', width: '100%', maxWidth: '300px' }}
-        value={search.name || `Search ${index + 1}`}
-        onChange={(e) => setSettings(prev => ({ ...prev, smart_searches: prev.smart_searches.map(s => s.id === search.id ? { ...s, name: e.target.value } : s) }))}
-        placeholder="Name your search"
-      />
-      <ActionButton className="btn btn-secondary" style={{ background: '#ef4444', borderColor: '#b91c1c', color: 'white', padding: '4px 8px' }} onClick={() => {
-        if (window.confirm(`Are you sure you want to remove "${search.name || `Search ${index + 1}`}"?`)) {
-          setSettings(prev => ({ ...prev, smart_searches: prev.smart_searches.filter(s => s.id !== search.id) }));
-        }
-      }}>Remove</ActionButton>
-    </div>
-    
-    <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Search Query</p>
-    <div style={{ display: 'flex', gap: '10px', marginBottom: '0' }}>
-      <input className='setting' style={{ marginBottom: 0 }} value={search.query || ''} onChange={(e) => setSettings(prev => ({ ...prev, smart_searches: prev.smart_searches.map(s => s.id === search.id ? { ...s, query: e.target.value } : s) }))} />
-    </div>
-  </div>
-))}
-
-<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '24px', marginBottom: '16px' }}>
-  <h3 style={{ margin: 0 }}>Storage & Backup Locations</h3>
-  <ActionButton className="btn btn-primary" onClick={() => {
-    const newId = `backup_${Date.now()}`;
-    setSettings(prev => ({
-      ...prev,
-      backup_configs: [...(prev.backup_configs || []), { id: newId, name: `Backup Location ${(prev.backup_configs?.length || 0) + 1}`, backup_path: '', mapped_backup_path: '', path_mapping_enabled: false, read_only_mode: true }]
-    }));
-  }}>+ Add Backup Location</ActionButton>
-</div>
-
-{(settings.backup_configs || []).map((config, index) => (
-  <div key={config.id} style={{ padding: '16px', background: '#1e293b', borderRadius: '10px', marginBottom: '16px', border: '1px solid #334155' }}>
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-      <input
-        className='setting'
-        style={{ margin: 0, fontWeight: 'bold', background: 'transparent', border: 'none', color: '#f8fafc', fontSize: '16px', padding: '0 4px', width: '100%', maxWidth: '300px' }}
-        value={config.name || `Backup Location ${index + 1}`}
-        onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, name: e.target.value } : c) }))}
-        placeholder="Name your backup location"
-      />
-      {(settings.backup_configs || []).length > 1 && (
-        <ActionButton className="btn btn-secondary" style={{ background: '#ef4444', borderColor: '#b91c1c', color: 'white', padding: '4px 8px' }} onClick={() => {
-          if (window.confirm(`Are you sure you want to remove "${config.name || `Backup Location ${index + 1}`}"?`)) {
-            setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.filter(c => c.id !== config.id) }));
-          }
-        }}>Remove Location</ActionButton>
-      )}
-    </div>
-    
-    <p>Backup Path (Indexed Location)</p>
-    <div style={{ display: 'flex', gap: '10px', marginBottom: '14px' }}>
-      <input className='setting' style={{ marginBottom: 0 }} value={config.backup_path || ''} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, backup_path: e.target.value } : c) }))} />
-      <ActionButton className="btn btn-secondary" onClick={()=>choosePathForConfig(config.id, 'backup_path', 'directory')}>Select</ActionButton>
+  <div style={{ maxWidth: '900px', margin: '0 auto' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+      <h1 style={{ margin: 0 }}>Settings</h1>
+      <ActionButton className="btn btn-primary" style={{ padding: '10px 20px', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={saveSettings}>
+        <SettingsIcon fontSize="small" />
+        Save Settings
+      </ActionButton>
     </div>
 
-    <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', color: '#38bdf8' }}>
-      <input type='checkbox' checked={config.path_mapping_enabled || false} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, path_mapping_enabled: e.target.checked } : c) }))} />
-      Enable drive path remapping (Use if drive letter changed)
-    </label>
+    {/* Tab Navigation */}
+    <div style={{ display: 'flex', gap: '10px', borderBottom: '1px solid #334155', paddingBottom: '10px', marginBottom: '24px', flexWrap: 'wrap' }}>
+      {['general', 'ui', 'ai', 'locations', 'search'].map(tab => (
+        <button 
+          key={tab}
+          onClick={() => setSettingsTab(tab)}
+          style={{ 
+            padding: '8px 16px', 
+            background: settingsTab === tab ? '#38bdf8' : 'transparent',
+            color: settingsTab === tab ? '#0f172a' : '#94a3b8',
+            border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold'
+          }}
+        >
+          {tab === 'general' ? 'General' : 
+           tab === 'ui' ? 'UI Preferences' : 
+           tab === 'ai' ? 'AI & Vision' : 
+           tab === 'locations' ? 'Backups' : 'Smart Searches'}
+        </button>
+      ))}
+    </div>
 
-    {config.path_mapping_enabled && (
+    {settingsTab === 'general' && (
+      <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+        <h3 style={{ margin: '0 0 16px 0' }}>System Paths</h3>
+        <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Database Path</p>
+        <div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
+          <input
+            className='setting'
+            style={{ marginBottom: 0 }}
+            value={settings.database_path || ''}
+            onChange={(e)=>setSettings({
+            ...settings,
+            database_path:e.target.value
+            })}
+          />
+          <ActionButton className="btn btn-secondary" onClick={()=>choosePath('database_path','directory')}>Select</ActionButton>
+        </div>
+        <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Thumbnail Path</p>
+        <div style={{display:'flex',gap:'10px', marginBottom: '0'}}>
+          <input
+            className='setting'
+            style={{ marginBottom: 0 }}
+            value={settings.thumbnail_path || ''}
+            onChange={(e)=>setSettings({
+            ...settings,
+            thumbnail_path:e.target.value
+            })}
+          />
+          <ActionButton className="btn btn-secondary" onClick={()=>choosePath('thumbnail_path','directory')}>Select</ActionButton>
+        </div>
+
+        <h3 style={{ margin: '32px 0 16px 0' }}>Data Safety</h3>
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px', color:'#38bdf8'}}>
+          <input type='checkbox' checked={settings.read_only_mode !== false} onChange={(e)=>updateUIPreferences({ read_only_mode: e.target.checked })} /> Enable Global Read-Only Mode (Overrides individual backup settings if enabled)
+        </label>
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'0', color:'#ef4444'}}>
+          <input type='checkbox' checked={settings.allow_unverified_deletion || false} onChange={(e)=>updateUIPreferences({ allow_unverified_deletion: e.target.checked })} /> Allow deleting unverified duplicates (Dangerous)
+        </label>
+
+        <h3 style={{ margin: '32px 0 16px 0' }}>Data Management</h3>
+        <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Create a safe, portable copy of your databases and configuration.</p>
+        <ActionButton disabled={actionInProgress} className="btn btn-secondary" onClick={backupDatabase}>
+          Export / Backup Data
+        </ActionButton>
+
+        <h3 style={{ margin: '32px 0 16px 0' }}>Diagnostics</h3>
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'0', color:'#cbd5e1'}}>
+          <input 
+            type="checkbox" 
+            checked={settings.enable_logging || false} 
+            onChange={(e) => setSettings(prev => ({ ...prev, enable_logging: e.target.checked }))} 
+          />
+          Enable Background Logging (wabs.log)
+        </label>
+      </div>
+    )}
+
+    {settingsTab === 'ui' && (
+      <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+        <h3 style={{ margin: '0 0 16px 0' }}>View Preferences</h3>
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
+          <input type='checkbox' checked={showSidebar} onChange={toggleSidebar} /> Show Sidebar
+        </label>
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
+          <input type='checkbox' checked={showTimeline} onChange={toggleTimeline} /> Show Timeline
+        </label>
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
+          <input type='checkbox' checked={showDetails} onChange={toggleDetails} /> Show Details
+        </label>
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
+          <input type='checkbox' checked={settings.show_full_timeline || settings.ui_preferences?.show_full_timeline || false} onChange={(e)=>updateUIPreferences({ show_full_timeline: e.target.checked })} /> Show Full Archive Timeline
+        </label>
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
+          <input type='checkbox' checked={settings.animations_enabled !== false} onChange={(e)=>updateUIPreferences({ animations_enabled: e.target.checked })} /> Enable UI Animations
+        </label>
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom: '10px', color:'#38bdf8'}}>
+          <input type='checkbox' checked={settings.enable_photo_thumbnail_cache || settings.ui_preferences?.enable_photo_thumbnail_cache || false} onChange={(e)=>updateUIPreferences({ enable_photo_thumbnail_cache: e.target.checked })} /> Enable Photo Thumbnail Caching (Improves load times for large images)
+        </label>
+        {(settings.enable_photo_thumbnail_cache || settings.ui_preferences?.enable_photo_thumbnail_cache) && (
+          <div style={{display:'flex',gap:'10px', marginBottom: '10px', alignItems: 'center'}}>
+            <span style={{ color: '#94a3b8', fontSize: '14px' }}>Cache photos larger than (MB):</span>
+            <input
+              className='setting'
+              type='number'
+              style={{ marginBottom: 0, width: '80px', padding: '4px 8px', fontSize: '14px' }}
+              value={settings.photo_thumbnail_size_limit_mb !== undefined ? settings.photo_thumbnail_size_limit_mb : (settings.ui_preferences?.photo_thumbnail_size_limit_mb !== undefined ? settings.ui_preferences.photo_thumbnail_size_limit_mb : 5)}
+              onChange={(e)=>updateUIPreferences({ photo_thumbnail_size_limit_mb: parseFloat(e.target.value) || 0 })}
+            />
+          </div>
+        )}
+        <div style={{ marginBottom: '0', marginTop: '16px' }}>
+          <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={clearCache}>
+            Clear Thumbnail Cache
+          </ActionButton>
+        </div>
+      </div>
+    )}
+
+    {settingsTab === 'search' && (
+      <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <h3 style={{ margin: 0 }}>Smart Searches</h3>
+          <ActionButton className="btn btn-primary" onClick={() => {
+            const newId = `smartsearch_${Date.now()}`;
+            setSettings(prev => ({
+              ...prev,
+              smart_searches: [...(prev.smart_searches || []), { id: newId, name: `New Search`, query: '' }]
+            }));
+          }}>+ Add Smart Search</ActionButton>
+        </div>
+
+        {(settings.smart_searches || []).map((search, index) => (
+          <div key={search.id} style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', marginBottom: '16px', border: '1px solid #334155' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <input
+                className='setting'
+                style={{ margin: 0, fontWeight: 'bold', background: 'transparent', border: 'none', color: '#f8fafc', fontSize: '16px', padding: '0 4px', width: '100%', maxWidth: '300px' }}
+                value={search.name || `Search ${index + 1}`}
+                onChange={(e) => setSettings(prev => ({ ...prev, smart_searches: prev.smart_searches.map(s => s.id === search.id ? { ...s, name: e.target.value } : s) }))}
+                placeholder="Name your search"
+              />
+              <ActionButton className="btn btn-secondary" style={{ background: '#ef4444', borderColor: '#b91c1c', color: 'white', padding: '4px 8px' }} onClick={() => {
+                if (window.confirm(`Are you sure you want to remove "${search.name || `Search ${index + 1}`}"?`)) {
+                  setSettings(prev => ({ ...prev, smart_searches: prev.smart_searches.filter(s => s.id !== search.id) }));
+                }
+              }}>Remove</ActionButton>
+            </div>
+            <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Search Query</p>
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '0' }}>
+              <input className='setting' style={{ marginBottom: 0 }} value={search.query || ''} onChange={(e) => setSettings(prev => ({ ...prev, smart_searches: prev.smart_searches.map(s => s.id === search.id ? { ...s, query: e.target.value } : s) }))} />
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+
+    {settingsTab === 'locations' && (
+      <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <h3 style={{ margin: 0 }}>Storage & Backup Locations</h3>
+          <ActionButton className="btn btn-primary" onClick={() => {
+            const newId = `backup_${Date.now()}`;
+            setSettings(prev => ({
+              ...prev,
+              backup_configs: [...(prev.backup_configs || []), { id: newId, name: `Backup Location ${(prev.backup_configs?.length || 0) + 1}`, backup_path: '', mapped_backup_path: '', path_mapping_enabled: false, read_only_mode: true }]
+            }));
+          }}>+ Add Backup Location</ActionButton>
+        </div>
+
+        {(settings.backup_configs || []).map((config, index) => (
+          <div key={config.id} style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', marginBottom: '16px', border: '1px solid #334155' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <input
+                className='setting'
+                style={{ margin: 0, fontWeight: 'bold', background: 'transparent', border: 'none', color: '#f8fafc', fontSize: '16px', padding: '0 4px', width: '100%', maxWidth: '300px' }}
+                value={config.name || `Backup Location ${index + 1}`}
+                onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, name: e.target.value } : c) }))}
+                placeholder="Name your backup location"
+              />
+              {(settings.backup_configs || []).length > 1 && (
+                <ActionButton className="btn btn-secondary" style={{ background: '#ef4444', borderColor: '#b91c1c', color: 'white', padding: '4px 8px' }} onClick={() => {
+                  if (window.confirm(`Are you sure you want to remove "${config.name || `Backup Location ${index + 1}`}"?`)) {
+                    setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.filter(c => c.id !== config.id) }));
+                  }
+                }}>Remove Location</ActionButton>
+              )}
+            </div>
+            
+            <p>Backup Path (Indexed Location)</p>
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '14px' }}>
+              <input className='setting' style={{ marginBottom: 0 }} value={config.backup_path || ''} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, backup_path: e.target.value } : c) }))} />
+              <ActionButton className="btn btn-secondary" onClick={()=>choosePathForConfig(config.id, 'backup_path', 'directory')}>Select</ActionButton>
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', color: '#38bdf8' }}>
+              <input type='checkbox' checked={config.path_mapping_enabled || false} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, path_mapping_enabled: e.target.checked } : c) }))} />
+              Enable drive path remapping (Use if drive letter changed)
+            </label>
+
+            {config.path_mapping_enabled && (
+              <>
+                <p>Mapped Backup Path (New Location)</p>
+                <div style={{ display: 'flex', gap: '10px', marginBottom: '14px' }}>
+                  <input className='setting' style={{ marginBottom: 0 }} value={config.mapped_backup_path || ''} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, mapped_backup_path: e.target.value } : c) }))} />
+                  <ActionButton className="btn btn-secondary" onClick={()=>choosePathForConfig(config.id, 'mapped_backup_path', 'directory')}>Select</ActionButton>
+                </div>
+              </>
+            )}
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#38bdf8' }}>
+              <input type='checkbox' checked={config.read_only_mode !== false} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, read_only_mode: e.target.checked } : c) }))} />
+              Enable Read-Only Mode (Hide destructive Move/Delete options for this backup)
+            </label>
+          </div>
+        ))}
+      </div>
+    )}
+
+    {settingsTab === 'ai' && (
       <>
-        <p>Mapped Backup Path (New Location)</p>
-        <div style={{ display: 'flex', gap: '10px', marginBottom: '14px' }}>
-          <input className='setting' style={{ marginBottom: 0 }} value={config.mapped_backup_path || ''} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, mapped_backup_path: e.target.value } : c) }))} />
-          <ActionButton className="btn btn-secondary" onClick={()=>choosePathForConfig(config.id, 'mapped_backup_path', 'directory')}>Select</ActionButton>
+        <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+          <h3 style={{ margin: '0 0 16px 0' }}>AI / LLM</h3>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+            <input
+              type='checkbox'
+              checked={settings.ai_enabled || false}
+              onChange={(e)=>setSettings({
+              ...settings,
+              ai_enabled:e.target.checked
+              })}
+            />
+            Enable AI Classification
+          </label>
+          <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>AI Provider Base URL (Leave empty for OpenAI)</p>
+          <input
+            className='setting'
+            style={{ marginBottom: '16px' }}
+            value={settings.ai_provider || ''}
+            onChange={(e)=>setSettings({
+            ...settings,
+            ai_provider:e.target.value
+            })}
+          />
+          <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>AI Model</p>
+          <input
+            className='setting'
+            style={{ marginBottom: '16px' }}
+            value={settings.ai_model || ''}
+            onChange={(e)=>setSettings({
+            ...settings,
+            ai_model:e.target.value
+            })}
+          />
+          <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>OpenAI API Key</p>
+          <input
+            type='password'
+            className='setting'
+            style={{ marginBottom: '0' }}
+            value={settings.openai_api_key || ''}
+            onChange={(e)=>setSettings({
+            ...settings,
+            openai_api_key:e.target.value
+            })}
+          />
+        </div>
+
+        <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+          <h3 style={{ margin: '0 0 16px 0' }}>Detection Sensitivity</h3>
+          <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Face Detection</p>
+          <select
+            className='setting'
+            style={{ marginBottom: '16px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
+            value={settings.face_sensitivity || 'medium'}
+            onChange={(e)=>setSettings({...settings, face_sensitivity: e.target.value})}
+          >
+            <option value='high'>Detect more faces (Less accurate)</option>
+            <option value='medium'>Balanced (Recommended)</option>
+            <option value='low'>Detect fewer faces (More accurate)</option>
+          </select>
+
+          <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Face Clustering Strictness</p>
+          <select
+            className='setting'
+            style={{ marginBottom: '16px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
+            value={settings.face_clustering_sensitivity || 'medium'}
+            onChange={(e)=>setSettings({...settings, face_clustering_sensitivity: e.target.value})}
+          >
+            <option value='high'>Strict (More accurate, creates more profiles)</option>
+            <option value='medium'>Balanced (Recommended)</option>
+            <option value='low'>Loose (Groups more aggressively, may mix people)</option>
+          </select>
+
+          <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Minimum Photos for Unknown Persons</p>
+          <input
+            type='number'
+            min='1'
+            className='setting'
+            style={{ marginBottom: '16px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
+            value={settings.min_unknown_photos !== undefined ? settings.min_unknown_photos : 1}
+            onChange={(e)=>setSettings({...settings, min_unknown_photos: parseInt(e.target.value) || 1})}
+          />
+
+          <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Object & Scene Detection</p>
+          <select
+            className='setting'
+            style={{ marginBottom: '0', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
+            value={settings.object_sensitivity || 'medium'}
+            onChange={(e)=>setSettings({...settings, object_sensitivity: e.target.value})}
+          >
+            <option value='high'>Detect more tags (Less accurate)</option>
+            <option value='medium'>Balanced (Recommended)</option>
+            <option value='low'>Detect fewer tags (More accurate)</option>
+          </select>
         </div>
       </>
     )}
 
-    <label style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#38bdf8' }}>
-      <input type='checkbox' checked={config.read_only_mode !== false} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, read_only_mode: e.target.checked } : c) }))} />
-      Enable Read-Only Mode (Hide destructive Move/Delete options for this backup)
-    </label>
   </div>
-))}
-
-<h3 style={{ margin: '24px 0 16px 0' }}>System Paths</h3>
-<div style={{ padding: '16px', background: '#1e293b', borderRadius: '10px', marginBottom: '24px', border: '1px solid #334155' }}>
-<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Database Path</p>
-
-<div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
-<input
-className='setting'
-style={{ marginBottom: 0 }}
-value={settings.database_path || ''}
-onChange={(e)=>setSettings({
-...settings,
-database_path:e.target.value
-})}
-/>
-<ActionButton className="btn btn-secondary" onClick={()=>choosePath('database_path','directory')}>Select</ActionButton>
-</div>
-
-<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Thumbnail Path</p>
-
-<div style={{display:'flex',gap:'10px', marginBottom: '0'}}>
-<input
-className='setting'
-style={{ marginBottom: 0 }}
-value={settings.thumbnail_path || ''}
-onChange={(e)=>setSettings({
-...settings,
-thumbnail_path:e.target.value
-})}
-/>
-<ActionButton className="btn btn-secondary" onClick={()=>choosePath('thumbnail_path','directory')}>Select</ActionButton>
-</div>
-</div>
-
-<h3 style={{ margin: '0 0 16px 0' }}>AI / LLM</h3>
-<div style={{ padding: '16px', background: '#1e293b', borderRadius: '10px', marginBottom: '24px', border: '1px solid #334155' }}>
-
-<label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-<input
-type='checkbox'
-checked={settings.ai_enabled || false}
-onChange={(e)=>setSettings({
-...settings,
-ai_enabled:e.target.checked
-})}
-/>
- Enable AI Classification
-</label>
-
-<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>AI Provider Base URL (Leave empty for OpenAI)</p>
-
-<input
-className='setting'
-style={{ marginBottom: '16px' }}
-value={settings.ai_provider || ''}
-onChange={(e)=>setSettings({
-...settings,
-ai_provider:e.target.value
-})}
-/>
-
-<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>AI Model</p>
-
-<input
-className='setting'
-style={{ marginBottom: '16px' }}
-value={settings.ai_model || ''}
-onChange={(e)=>setSettings({
-...settings,
-ai_model:e.target.value
-})}
-/>
-
-<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>OpenAI API Key</p>
-
-<input
-type='password'
-className='setting'
-style={{ marginBottom: '0' }}
-value={settings.openai_api_key || ''}
-onChange={(e)=>setSettings({
-...settings,
-openai_api_key:e.target.value
-})}
-/>
-</div>
-
-<h3 style={{ margin: '0 0 16px 0' }}>Detection Sensitivity</h3>
-<div style={{ padding: '16px', background: '#1e293b', borderRadius: '10px', marginBottom: '24px', border: '1px solid #334155' }}>
-
-<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Face Detection</p>
-<select
-  className='setting'
-  style={{ marginBottom: '16px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
-  value={settings.face_sensitivity || 'medium'}
-  onChange={(e)=>setSettings({...settings, face_sensitivity: e.target.value})}
->
-  <option value='high'>Detect more faces (Less accurate)</option>
-  <option value='medium'>Balanced (Recommended)</option>
-  <option value='low'>Detect fewer faces (More accurate)</option>
-</select>
-
-<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Face Clustering Strictness</p>
-<select
-  className='setting'
-  style={{ marginBottom: '16px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
-  value={settings.face_clustering_sensitivity || 'medium'}
-  onChange={(e)=>setSettings({...settings, face_clustering_sensitivity: e.target.value})}
->
-  <option value='high'>Strict (More accurate, creates more profiles)</option>
-  <option value='medium'>Balanced (Recommended)</option>
-  <option value='low'>Loose (Groups more aggressively, may mix people)</option>
-</select>
-
-<p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Object & Scene Detection</p>
-<select
-  className='setting'
-  style={{ marginBottom: '0', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
-  value={settings.object_sensitivity || 'medium'}
-  onChange={(e)=>setSettings({...settings, object_sensitivity: e.target.value})}
->
-  <option value='high'>Detect more tags (Less accurate)</option>
-  <option value='medium'>Balanced (Recommended)</option>
-  <option value='low'>Detect fewer tags (More accurate)</option>
-</select>
-</div>
-
-<div style={{ marginTop: '30px', borderTop: '1px solid #1f2937', paddingTop: '20px', display: 'flex' }}>
-  <ActionButton className="btn btn-primary" style={{ padding: '12px 24px', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={saveSettings}>
-    <SettingsIcon fontSize="small" />
-    Save Settings
-  </ActionButton>
-</div>
-
 </div>
 }
 
@@ -2647,7 +3054,7 @@ page==='about' &&
     <div style={{background:'#8b5cf61a', padding:'10px', borderRadius:'10px', color:'#8b5cf6', display:'flex'}}><InfoIcon /></div>
     <div>
       <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Version Info</h3>
-      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta.3</strong></p>
+      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta.4</strong></p>
     </div>
   </div>
 

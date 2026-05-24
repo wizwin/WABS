@@ -1,4 +1,22 @@
 # WABS Changelog
+
+## v1.0.0-beta.4
+**Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.4
+
+### 🚀 Major New Features
+*   **Advanced Search Operators:** Added support for explicit boolean search operators `+` (Require/Match All) and `-` (Exclude) to allow fine-grained filtering (e.g., `+object:car -tag:blur`).
+*   **Similar Face Detection:** Introduced the ability to find and merge similar unknown faces directly into an existing person's profile.
+*   **Face Profile Merging:** Added the ability to manually merge multiple face profiles into one for improved face detection organization.
+*   **Data Export & Backup:** Added a new "Export / Backup Data" feature in Settings to easily create a safe, portable copy of your databases and configuration.
+*   **Full Archive Timeline:** Added an option to display the complete chronological timeline of your entire archive in the Explorer and Search views.
+
+### ✨ UI/UX Enhancements
+*   **Settings UI Reorganization:** Completely overhauled the Settings page into a clean, tabbed interface (General, UI Preferences, AI & Vision, Backups, Smart Searches) for much easier navigation.
+
+### 🐞 Bug Fixes & Performance
+*   **Dashboard Statistics:** Corrected the "Known People" and "Unknown People" counts on the dashboard to accurately reflect unique individuals instead of total face appearances.
+*   **Logging Support:** Add logs for critical failures to help debug issues. This can be enabled in Settings UI.
+
 ## v1.0.0-beta.3
 **Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.3
 

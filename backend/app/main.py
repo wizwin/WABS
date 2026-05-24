@@ -9,6 +9,7 @@ import sqlite3
 import shutil
 import sys
 import threading
+import traceback
 import time
 
 from fastapi import FastAPI, HTTPException, Body, Request
@@ -39,6 +40,66 @@ except ModuleNotFoundError:
 
 app = FastAPI()
 
+def get_log_path() -> Path:
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent / "wabs.log"
+    else:
+        return Path(__file__).resolve().parent.parent.parent / "wabs.log"
+
+LOGGING_ENABLED = False
+LOG_FILE_PATH = get_log_path()
+
+class PrintLogger:
+    def __init__(self, stream, max_bytes=5*1024*1024):
+        self.stream = stream
+        self.max_bytes = max_bytes
+        self.current_size = 0
+        try:
+            if LOG_FILE_PATH.exists():
+                self.current_size = LOG_FILE_PATH.stat().st_size
+        except Exception:
+            pass
+
+    def rotate(self):
+        try:
+            if LOG_FILE_PATH.exists():
+                backup_path = LOG_FILE_PATH.with_suffix('.1.log')
+                if backup_path.exists():
+                    backup_path.unlink()
+                LOG_FILE_PATH.rename(backup_path)
+            self.current_size = 0
+        except Exception:
+            pass
+
+    def write(self, data):
+        if not data:
+            return
+        if self.stream:
+            self.stream.write(data)
+            self.stream.flush()
+        if LOGGING_ENABLED:
+            try:
+                data_len = len(data.encode('utf-8'))
+                if self.current_size + data_len > self.max_bytes:
+                    self.rotate()
+                with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
+                    f.write(data)
+                self.current_size += data_len
+            except Exception:
+                pass
+
+    def flush(self):
+        if self.stream:
+            self.stream.flush()
+
+    def isatty(self):
+        if self.stream and hasattr(self.stream, 'isatty'):
+            return self.stream.isatty()
+        return False
+
+sys.stdout = PrintLogger(sys.stdout)
+sys.stderr = PrintLogger(sys.stderr)
+
 # Removed heavy face recognition dependencies.
 # We will now use cv2 (OpenCV) exclusively for face detection and recognition.
 
@@ -55,13 +116,20 @@ from pydantic import BaseModel
 
 @app.on_event("startup")
 def startup_event():
+    global LOGGING_ENABLED
+    try:
+        cfg = load_config()
+        LOGGING_ENABLED = cfg.get("enable_logging", False)
+    except Exception:
+        pass
     try:
         with SessionLocal() as s:
             count = s.query(FileIndex).count()
             INDEXER_STATE["indexed"] = count
             INDEXER_STATE["current"] = count
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"CRITICAL: Startup database connection failed: {e}")
+        traceback.print_exc()
 
 def _parse_json(value):
     if not value:
@@ -142,8 +210,9 @@ def _resolve_path(original_path: Path) -> Path:
                                 break
                         if match:
                             return tgt_path.joinpath(*orig_parts[len(src_parts):])
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"WARNING: Path remapping failed for {original_path}: {e}")
+                    traceback.print_exc()
 
     # This part is reached if remapping is OFF, or if the path was not applicable for remapping.
     return original_path
@@ -184,13 +253,58 @@ def _build_search_query(query, s, q_base=None):
     def text_filter(field, term):
         return func.lower(func.coalesce(field, "")).contains(term)
 
-    tokens = query.split()
+    raw_tokens = re.findall(r'(?:[^\s"]|"(?:\\.|[^"])*")+', query)
+    tokens = [t.replace('"', '') for t in raw_tokens]
     filters = []
     tag_tokens = []
+    and_tag_tokens = []
     specific_filters = []
+    exclude_filters = []
 
     for token in tokens:
         lower_token = token.lower()
+        if lower_token.startswith("-") and len(lower_token) > 1:
+            val = lower_token[1:]
+            if val.startswith("tag:"):
+                tag_val = token[len("-tag:"):]
+                exclude_filters.append(or_(
+                    text_filter(FileIndex.tags, tag_val.lower()),
+                    text_filter(FileIndex.path, tag_val.lower()),
+                    text_filter(FileIndex.filename, tag_val.lower()),
+                    text_filter(FileIndex.metadata_json, tag_val.lower())
+                ))
+            elif val.startswith("object:"):
+                exclude_filters.append(or_(
+                    text_filter(FileIndex.tags, val),
+                    text_filter(FileIndex.path, val),
+                    text_filter(FileIndex.filename, val),
+                    text_filter(FileIndex.metadata_json, val)
+                ))
+            elif val.startswith("person:"):
+                exclude_filters.append(or_(
+                    text_filter(FileIndex.tags, val),
+                    text_filter(FileIndex.path, val),
+                    text_filter(FileIndex.filename, val),
+                    text_filter(FileIndex.metadata_json, val)
+                ))
+            elif val.startswith("type:"):
+                t_val = val[len("type:"):]
+                t_val_ext = t_val if t_val.startswith(".") else "." + t_val
+                exclude_filters.append(or_(
+                    func.lower(FileIndex.extension) == t_val_ext,
+                    func.lower(FileIndex.category) == t_val
+                ))
+            elif val.startswith("name:"):
+                n_val = val[len("name:"):]
+                exclude_filters.append(text_filter(FileIndex.filename, n_val))
+            else:
+                exclude_filters.append(or_(
+                    text_filter(FileIndex.filename, val),
+                    text_filter(FileIndex.path, val),
+                    text_filter(FileIndex.tags, val),
+                    text_filter(FileIndex.metadata_json, val)
+                ))
+            continue
         if lower_token.startswith("date:"):
             val = lower_token[len("date:"):]
             # Date range like YYYY-YYYY
@@ -209,8 +323,18 @@ def _build_search_query(query, s, q_base=None):
                 ))
             else:
                 specific_filters.append(text_filter(FileIndex.modified, val))
+        elif lower_token.startswith("+tag:"):
+            and_tag_tokens.append(token[len("+tag:"):].lower())
         elif lower_token.startswith("tag:"):
             tag_tokens.append(token[len("tag:"):].lower())
+        elif lower_token.startswith("+object:"):
+            and_tag_tokens.append(lower_token[1:])
+        elif lower_token.startswith("object:"):
+            tag_tokens.append(lower_token)
+        elif lower_token.startswith("+person:"):
+            and_tag_tokens.append(lower_token[1:])
+        elif lower_token.startswith("person:"):
+            tag_tokens.append(lower_token)
         elif lower_token.startswith("type:"):
             val = lower_token[len("type:"):]
             val_ext = val if val.startswith(".") else "." + val
@@ -312,6 +436,17 @@ def _build_search_query(query, s, q_base=None):
             )
             for tag in tag_tokens
         ]))
+    if and_tag_tokens:
+        for tag in and_tag_tokens:
+            q = q.filter(or_(
+                text_filter(FileIndex.tags, tag),
+                text_filter(FileIndex.path, tag),
+                text_filter(FileIndex.filename, tag),
+                text_filter(FileIndex.metadata_json, tag)
+            ))
+    if exclude_filters:
+        for ef in exclude_filters:
+            q = q.filter(~ef)
     return q
 
 @app.get("/files")
@@ -378,7 +513,8 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50):
             return [_build_item(r, cache_flag) for r in filtered]
 
         # Fallback to standard builder for custom search parameters (date:, size:, etc)
-        if any(query.lower().startswith(prefix) for prefix in ["date:", "tag:", "type:", "name:", "size:", "length:"]):
+        search_prefixes = ["date:", "tag:", "type:", "name:", "size:", "length:", "object:", "person:"]
+        if any(prefix in query.lower() for prefix in search_prefixes) or "*" in query or query.startswith("-") or " -" in query or query.startswith("+") or " +" in query:
             q = _build_search_query(query, s, q_base)
             rows = q.offset(offset).limit(limit).all()
             return [_build_item(r, cache_flag) for r in rows]
@@ -527,7 +663,8 @@ def preview(item_id:int):
                             return FileResponse(str(cached_thumb), media_type="image/jpeg")
                     cap.release()
                 except Exception as e:
-                    print(f"Video thumbnail error: {e}")
+                    print(f"ERROR: Video thumbnail error for {file_path}: {e}")
+                    traceback.print_exc()
                     
         elif file_category in ["document", "code"] or file_path.suffix.lower() in [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log"]:
             if file_path.suffix.lower() == ".pdf":
@@ -550,7 +687,8 @@ def preview(item_id:int):
                         if cached_thumb.exists():
                             return FileResponse(str(cached_thumb), media_type="image/jpeg")
                     except Exception as e:
-                        print(f"PDF thumbnail error: {e}")
+                        print(f"ERROR: PDF thumbnail error for {file_path}: {e}")
+                        traceback.print_exc()
             else:
                 text_extensions = [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".py", ".js", ".html", ".css", ".c", ".cpp", ".h", ".java", ".cs", ".go", ".rs", ".rb", ".php", ".sh", ".bat", ".sql"]
                 if file_path.suffix.lower() in text_extensions:
@@ -568,7 +706,8 @@ def preview(item_id:int):
                         text_svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300' viewBox='0 0 400 300'>\n  <rect width='400' height='300' fill='#0f172a'/>\n{svg_lines}</svg>"
                         return Response(content=text_svg, media_type='image/svg+xml')
                     except Exception as e:
-                        print(f"Text thumbnail error: {e}")
+                        print(f"ERROR: Text thumbnail error for {file_path}: {e}")
+                        traceback.print_exc()
 
     placeholder = """
 <svg xmlns='http://www.w3.org/2000/svg' width='400' height='300' viewBox='0 0 400 300'>
@@ -757,15 +896,34 @@ def stats():
                     cursor = conn.cursor()
                     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='faces'")
                     if cursor.fetchone():
-                        cursor.execute("SELECT COUNT(*) FROM faces JOIN people ON faces.person_id = people.id WHERE people.name NOT LIKE 'Unknown Person%'")
+                        cursor.execute("SELECT COUNT(DISTINCT people.id) FROM faces JOIN people ON faces.person_id = people.id WHERE people.name NOT LIKE 'Unknown Person%'")
                         stats_dict["known_faces"] = cursor.fetchone()[0] or 0
                         
-                        cursor.execute("SELECT COUNT(*) FROM faces JOIN people ON faces.person_id = people.id WHERE people.name LIKE 'Unknown Person%'")
+                        cursor.execute("SELECT COUNT(DISTINCT people.id) FROM faces JOIN people ON faces.person_id = people.id WHERE people.name LIKE 'Unknown Person%'")
                         stats_dict["unknown_faces"] = cursor.fetchone()[0] or 0
             except Exception as e:
                 print(f"Error fetching AI stats: {e}")
                 
         return stats_dict
+
+@app.get("/timeline")
+def timeline(category: str = "all"):
+    with SessionLocal() as s:
+        q = s.query(func.date(FileIndex.modified).label("date"), func.count(FileIndex.id))
+        if category != "all":
+            if category == "other":
+                standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
+                q = q.filter(~FileIndex.category.in_(standard))
+            elif category == "duplicates":
+                dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
+                q = q.filter(FileIndex.size.in_(dup_sizes))
+            else:
+                q = q.filter(FileIndex.category == category)
+        
+        q = q.filter(FileIndex.modified.isnot(None))
+        q = q.group_by('date').order_by('date')
+        rows = q.all()
+        return [{"date": r[0], "count": r[1]} for r in rows if r[0]]
 
 @app.get("/indexer/status")
 def indexer_status():
@@ -869,12 +1027,14 @@ def settings():
     defaults = {
         "database_path": "archive.db",
         "thumbnail_path": "thumbnails",
+        "enable_logging": False,
         "backup_configs": [],
         "ui_preferences": {
             "enable_photo_thumbnail_cache": False,
             "photo_thumbnail_size_limit_mb": 5,
             "allow_unverified_deletion": False,
             "animations_enabled": True,
+            "show_full_timeline": False,
         },
         "smart_searches": [],
         "read_only_mode": True,
@@ -885,6 +1045,7 @@ def settings():
         "face_sensitivity": "medium",
         "face_clustering_sensitivity": "medium",
         "object_sensitivity": "medium",
+        "min_unknown_photos": 1,
     }
 
     # Recursively merge defaults into the loaded config to prevent crashes from missing keys
@@ -900,7 +1061,9 @@ def settings():
 
 @app.post("/settings")
 def save(data:dict):
+    global LOGGING_ENABLED
     save_config(data)
+    LOGGING_ENABLED = data.get("enable_logging", False)
     return {"saved":True}
 
 @app.post("/clear-cache")
@@ -1000,7 +1163,10 @@ def _scan_and_cluster_faces_worker():
         detector.setScoreThreshold(face_threshold)
         recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 
-        with sqlite3.connect(ai_db_path) as conn:
+        with sqlite3.connect(ai_db_path, timeout=15) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+        with sqlite3.connect(ai_db_path, timeout=15) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
             cursor.execute('''CREATE TABLE IF NOT EXISTS people (
                                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1023,56 +1189,58 @@ def _scan_and_cluster_faces_worker():
             cursor.execute("SELECT file_id FROM processed_files")
             processed_ids = set(r[0] for r in cursor.fetchall())
 
-            cursor.execute("SELECT person_id, embedding_json FROM faces GROUP BY person_id")
-            clusters = [(r[0], json.loads(r[1])) for r in cursor.fetchall()]
+            # Fetch up to 15 diverse faces per person to enable Multi-Exemplar matching
+            cursor.execute("SELECT person_id, embedding_json FROM faces WHERE embedding_json != '[]'")
+            all_faces = cursor.fetchall()
+            
+            clusters = {}
+            for p_id, emb_str in all_faces:
+                if p_id not in clusters:
+                    clusters[p_id] = []
+                if len(clusters[p_id]) < 15:  # Cap at 15 exemplars per person for high performance
+                    clusters[p_id].append(json.loads(emb_str))
+
+            cursor.execute("SELECT COUNT(id) FROM people")
+            p_count = cursor.fetchone()[0]
 
             with SessionLocal() as s:
                 photos = s.query(FileIndex).filter(FileIndex.category == 'photo').all()
 
+            INDEXER_STATE["face_scanner_total"] = len(photos)
+            INDEXER_STATE["face_scanner_current"] = 0
+            processed_count = 0
+
             for photo in photos:
                 if not face_scanner_running:
                     break
-                if photo.id in processed_ids:
-                    continue
-                file_path = _resolve_path(Path(photo.path))
-                if not file_path.exists():
-                    continue
-                
-                try:
-                    # Use numpy to safely load paths with spaces/Unicode on Windows
-                    img_array = np.fromfile(str(file_path), np.uint8)
-                    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                except Exception:
-                    img = cv2.imread(str(file_path))
-
-                if img is None:
-                    cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (photo.id,))
-                    conn.commit()
-                    continue
-
-                height, width, _ = img.shape
-                target_dim = 800
-                scale = 1.0
-                if max(height, width) > target_dim:
-                    scale = target_dim / max(height, width)
-                    new_w, new_h = int(width * scale), int(height * scale)
-                    det_img = cv2.resize(img, (new_w, new_h))
-                    detector.setInputSize((new_w, new_h))
-                else:
-                    det_img = img
-                    detector.setInputSize((width, height))
+                    
+                INDEXER_STATE["face_scanner_current"] += 1
+                INDEXER_STATE["face_scanner_current_file"] = photo.filename or "Unknown file"
 
                 try:
-                    success, faces = detector.detect(det_img)
-                except Exception as e:
-                    print(f"Skipping large/invalid image {file_path.name}: {e}")
-                    cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (photo.id,))
-                    conn.commit()
-                    continue
-                
-                # Second pass fallback for extreme close-up selfies
-                if faces is None:
-                    target_dim = 320
+                    if photo.id in processed_ids:
+                        continue
+                    
+                    file_path = _resolve_path(Path(photo.path))
+                    if not file_path.exists():
+                        continue
+                    
+                    try:
+                        # Use numpy to safely load paths with spaces/Unicode on Windows
+                        img_array = np.fromfile(str(file_path), np.uint8)
+                        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                    except Exception:
+                        img = cv2.imread(str(file_path))
+
+                    if img is None:
+                        cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (photo.id,))
+                        processed_count += 1
+                        if processed_count % 50 == 0:
+                            conn.commit()
+                        continue
+
+                    height, width, _ = img.shape
+                    target_dim = 800
                     scale = 1.0
                     if max(height, width) > target_dim:
                         scale = target_dim / max(height, width)
@@ -1082,46 +1250,83 @@ def _scan_and_cluster_faces_worker():
                     else:
                         det_img = img
                         detector.setInputSize((width, height))
+
                     try:
                         success, faces = detector.detect(det_img)
-                    except Exception:
-                        pass
-
-                if faces is not None:
-                    if scale != 1.0:
-                        faces[:, :14] /= scale
-                    print(f"Scanned {file_path.name}: Found {len(faces)} faces.")
-                    for face in faces:
-                        try:
-                            face_align = recognizer.alignCrop(img, face)
-                            face_feature = recognizer.feature(face_align)
-                            embedding = face_feature[0].tolist()
-
-                            best_match_id = None
-                            best_sim = -1.0
-                            for person_id, rep_emb in clusters:
-                                sim = _cosine_similarity(embedding, rep_emb)
-                                if sim > cluster_threshold and sim > best_sim:
-                                    best_sim = sim
-                                    best_match_id = person_id
-
-                            if best_match_id is None:
-                                cursor.execute("SELECT COUNT(id) FROM people")
-                                p_count = cursor.fetchone()[0]
-                                cursor.execute("INSERT INTO people (name) VALUES (?)", (f"Unknown Person #{p_count + 1}",))
-                                best_match_id = cursor.lastrowid
-                                clusters.append((best_match_id, embedding))
-                            
-                            cursor.execute("INSERT INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
-                                           (best_match_id, photo.id, json.dumps(embedding)))
+                    except Exception as e:
+                        print(f"Skipping large/invalid image {file_path.name}: {e}")
+                        cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (photo.id,))
+                        processed_count += 1
+                        if processed_count % 50 == 0:
                             conn.commit()
-                        except Exception as e:
-                            print(f"Face processing error on {file_path}: {e}")
+                        continue
+                    
+                    # Second pass fallback for extreme close-up selfies
+                    if faces is None:
+                        target_dim = 320
+                        scale = 1.0
+                        if max(height, width) > target_dim:
+                            scale = target_dim / max(height, width)
+                            new_w, new_h = int(width * scale), int(height * scale)
+                            det_img = cv2.resize(img, (new_w, new_h))
+                            detector.setInputSize((new_w, new_h))
+                        else:
+                            det_img = img
+                            detector.setInputSize((width, height))
+                        try:
+                            success, faces = detector.detect(det_img)
+                        except Exception:
+                            pass
+
+                    if faces is not None:
+                        if scale != 1.0:
+                            faces[:, :14] /= scale
+                        for face in faces:
+                            try:
+                                face_align = recognizer.alignCrop(img, face)
+                                face_feature = recognizer.feature(face_align)
+                                embedding = face_feature[0].tolist()
+
+                                best_match_id = None
+                                best_sim = -1.0
+                                for person_id, rep_embs in clusters.items():
+                                    for rep_emb in rep_embs:
+                                        sim = _cosine_similarity(embedding, rep_emb)
+                                        if sim > cluster_threshold and sim > best_sim:
+                                            best_sim = sim
+                                            best_match_id = person_id
+
+                                if best_match_id is None:
+                                    p_count += 1
+                                    cursor.execute("INSERT INTO people (name) VALUES (?)", (f"Unknown Person #{p_count}",))
+                                    best_match_id = cursor.lastrowid
+                                    clusters[best_match_id] = [embedding]
+                                else:
+                                    if len(clusters[best_match_id]) < 15:
+                                        clusters[best_match_id].append(embedding)
+                                
+                                cursor.execute("INSERT INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
+                                               (best_match_id, photo.id, json.dumps(embedding)))
+                            except Exception as e:
+                                print(f"Face processing error on {file_path}: {e}")
+                                
+                    # Mark as processed whether faces were found or not!
+                    cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (photo.id,))
+                    processed_count += 1
+                    if processed_count % 50 == 0:
+                        conn.commit()
+                except Exception as loop_e:
+                    print(f"Unexpected error in face scanner loop for file {photo.id}: {loop_e}")
+            
+            # Final commit for any remaining uncommitted rows
+            conn.commit()
                             
     except Exception as e:
-        print(f"Face Worker Error: {e}")
+        print(f"CRITICAL: Face Worker Error: {e}")
+        traceback.print_exc()
     finally:
         face_scanner_running = False
+        INDEXER_STATE["face_scanner_current_file"] = ""
 
 @app.post("/scan-faces")
 def scan_faces():
@@ -1144,7 +1349,7 @@ def stop_scan_faces():
     return {"message": "Stopping face scanner."}
 
 @app.get("/people")
-def get_people():
+def get_people(min_unknown_photos: int = 1):
     try:
         cfg = load_config()
         ai_db_path = get_ai_db_path()
@@ -1154,12 +1359,13 @@ def get_people():
             conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT p.id, p.name, f.file_id, COUNT(f.id) 
+                SELECT p.id, p.name, f.file_id, COUNT(f.id) as face_count
                 FROM people p
                 JOIN faces f ON p.id = f.person_id
                 GROUP BY p.id
-                ORDER BY COUNT(f.id) DESC
-            """)
+                HAVING p.name NOT LIKE 'Unknown Person%' OR face_count >= ?
+                ORDER BY face_count DESC
+            """, (min_unknown_photos,))
             
             results = []
             for row in cursor.fetchall():
@@ -1175,6 +1381,57 @@ def get_people():
         print(f"Error in /people API: {e}")
         return []
 
+@app.get("/people/{person_id}/similar-unknowns")
+def get_similar_unknowns(person_id: int, threshold: float = 0.60):
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+         raise HTTPException(status_code=404, detail="Database not found")
+         
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        
+        # Fetch known person's embeddings
+        cursor.execute("SELECT embedding_json FROM faces WHERE person_id = ? AND embedding_json != '[]'", (person_id,))
+        known_rows = cursor.fetchall()
+        if not known_rows:
+            raise HTTPException(status_code=404, detail="Known person faces not found.")
+        
+        known_embeddings = [json.loads(row[0]) for row in known_rows if row[0]]
+        
+        # Fetch all unknown persons and their embeddings
+        cursor.execute("""
+            SELECT p.id, p.name, f.embedding_json, 
+                   (SELECT COUNT(id) FROM faces WHERE person_id = p.id) as photo_count
+            FROM people p
+            JOIN faces f ON p.id = f.person_id
+            WHERE p.name LIKE 'Unknown Person%' AND f.embedding_json != '[]'
+        """)
+        
+        unknown_faces = cursor.fetchall()
+        
+        similar_profiles = {}
+        for unk_person_id, unk_name, unk_embedding_json, photo_count in unknown_faces:
+            if not unk_embedding_json:
+                continue
+            unk_embedding = json.loads(unk_embedding_json)
+            max_sim = 0.0
+            for known_emb in known_embeddings:
+                if known_emb:
+                    sim = _cosine_similarity(known_emb, unk_embedding)
+                    if sim > max_sim:
+                        max_sim = sim
+            if max_sim >= threshold:
+                if unk_person_id not in similar_profiles or max_sim > similar_profiles[unk_person_id]["similarity"]:
+                    similar_profiles[unk_person_id] = {
+                        "id": unk_person_id, "name": unk_name, "similarity": round(float(max_sim), 3),
+                        "face_count": photo_count, "thumbnail": f"/people/{unk_person_id}/thumbnail"
+                    }
+        results = list(similar_profiles.values())
+        results.sort(key=lambda x: x["similarity"], reverse=True)
+        return results
+
 @app.get("/people/{person_id}/thumbnail")
 def get_person_thumbnail(person_id: int):
     if cv2 is None:
@@ -1185,7 +1442,8 @@ def get_person_thumbnail(person_id: int):
     if not ai_db_path.exists():
         raise HTTPException(status_code=404, detail="Database not found")
 
-    with sqlite3.connect(ai_db_path) as conn:
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         try:
             cursor.execute("SELECT thumbnail_file_id FROM people WHERE id = ?", (person_id,))
@@ -1301,7 +1559,8 @@ def get_person_photos(person_id: int):
     cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", cfg.get("enable_photo_thumbnail_cache", False))
     cache_flag = "&tc=1" if cache_enabled else ""
 
-    with sqlite3.connect(ai_db_path) as conn:
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         cursor.execute("SELECT DISTINCT file_id FROM faces WHERE person_id = ?", (person_id,))
         file_ids = [r[0] for r in cursor.fetchall()]
@@ -1322,7 +1581,8 @@ def set_person_thumbnail(person_id: int, payload: dict = Body(...)):
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
          
-    with sqlite3.connect(ai_db_path) as conn:
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         try:
             cursor.execute("ALTER TABLE people ADD COLUMN thumbnail_file_id INTEGER")
@@ -1353,7 +1613,8 @@ def remove_person_photo(person_id: int, payload: dict = Body(...)):
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
 
-    with sqlite3.connect(ai_db_path) as conn:
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM people WHERE id = ?", (person_id,))
         person_row = cursor.fetchone()
@@ -1401,7 +1662,8 @@ def add_person_photo(person_id: int, payload: dict = Body(...)):
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
 
-    with sqlite3.connect(ai_db_path) as conn:
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM people WHERE id = ?", (person_id,))
         person_row = cursor.fetchone()
@@ -1440,7 +1702,8 @@ def rename_person(person_id: int, payload: dict = Body(...)):
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
          
-    with sqlite3.connect(ai_db_path) as conn:
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM people WHERE id = ?", (person_id,))
         old_name_row = cursor.fetchone()
@@ -1487,7 +1750,8 @@ def delete_person(person_id: int):
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
          
-    with sqlite3.connect(ai_db_path) as conn:
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM people WHERE id = ?", (person_id,))
         old_name_row = cursor.fetchone()
@@ -1523,7 +1787,8 @@ def merge_people(payload: dict = Body(...)):
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
          
-    with sqlite3.connect(ai_db_path) as conn:
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         
         placeholders = ",".join("?" * len(person_ids))
@@ -1547,16 +1812,21 @@ def merge_people(payload: dict = Body(...)):
 
 object_scanner_running = False
 object_scanner_thread = None
+object_scanner_current = 0
+object_scanner_total = 0
+object_scanner_stopped = False
+object_scanner_current_file = ""
 
 def _scan_and_tag_objects_worker():
-    global object_scanner_running
+    global object_scanner_running, object_scanner_current, object_scanner_total, object_scanner_stopped, object_scanner_current_file
     try:
         import numpy as np
-        model_path = get_bundled_model_path("mobilenetv2-7.onnx")
+        # model_path = get_bundled_model_path("mobilenetv2-small.onnx")
+        model_path = get_bundled_model_path("mobilenetv2-small.onnx")
         classes_path = get_bundled_model_path("imagenet_classes.txt")
         
         if not Path(model_path).exists() or not Path(classes_path).exists():
-            print("Object classification models not found. Ensure mobilenetv2-7.onnx and imagenet_classes.txt are in the backend folder.")
+            print("Object classification models not found. Ensure mobilenetv2-small.onnx and imagenet_classes.txt are in the backend folder.")
             return
 
         net = cv2.dnn.readNetFromONNX(model_path)
@@ -1566,83 +1836,121 @@ def _scan_and_tag_objects_worker():
         cfg = load_config()
         object_sensitivity = cfg.get("object_sensitivity", "medium")
         if object_sensitivity == "high":
-            object_threshold = 0.05
-        elif object_sensitivity == "low":
-            object_threshold = 0.25
-        else:
             object_threshold = 0.10
+        elif object_sensitivity == "low":
+            object_threshold = 0.30
+        else:
+            object_threshold = 0.15
             
-        with SessionLocal() as s:
-            # Skip photos that already have AI tags so we seamlessly resume where we left off!
-            photos = s.query(FileIndex).filter(
-                FileIndex.category == 'photo',
-                or_(FileIndex.tags.is_(None), ~FileIndex.tags.like('%object:%'))
-            ).all()
-            for photo in photos:
-                if not object_scanner_running:
-                    break
-                    
-                filename_lower = photo.filename.lower() if photo.filename else ""
-                if "screenshot" in filename_lower or "meme" in filename_lower:
-                    continue
+        ai_db_path = get_ai_db_path()
+        with sqlite3.connect(ai_db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''CREATE TABLE IF NOT EXISTS processed_objects (
+                                file_id INTEGER PRIMARY KEY
+                              )''')
+            
+            with SessionLocal() as s:
+                # Seed existing tagged files to avoid rescanning legacy data
+                cursor.execute("SELECT COUNT(*) FROM processed_objects")
+                if cursor.fetchone()[0] == 0:
+                    tagged_photos = s.query(FileIndex.id).filter(FileIndex.category == 'photo', FileIndex.tags.like('%object:%')).all()
+                    for (p_id,) in tagged_photos:
+                        cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (p_id,))
+                    conn.commit()
 
-                # Skip files we already successfully tagged
-                current_tags = photo.tags or ""
-                if "object:" in current_tags:
-                    continue
+                cursor.execute("SELECT file_id FROM processed_objects")
+                processed_ids = set(r[0] for r in cursor.fetchall())
+
+                photos = s.query(FileIndex).filter(FileIndex.category == 'photo').all()
+                
+                INDEXER_STATE["object_scanner_total"] = len(photos)
+                INDEXER_STATE["object_scanner_current"] = 0
+                processed_count = 0
+
+                for photo in photos:
+                    if not object_scanner_running:
+                        break
+                        
+                    INDEXER_STATE["object_scanner_current"] += 1
+                    INDEXER_STATE["object_scanner_current_file"] = photo.filename or "Unknown file"
                     
-                file_path = _resolve_path(Path(photo.path))
-                if not file_path.exists():
-                    continue
+                    if photo.id in processed_ids:
+                        continue
+                        
+                    filename_lower = photo.filename.lower() if photo.filename else ""
+                    if "screenshot" in filename_lower or "meme" in filename_lower:
+                        cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (photo.id,))
+                        processed_count += 1
+                        if processed_count % 50 == 0:
+                            conn.commit()
+                        continue
+
+                    current_tags = photo.tags or ""
                     
-                try:
-                    img_array = np.fromfile(str(file_path), np.uint8)
-                    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                except Exception:
-                    img = cv2.imread(str(file_path))
+                    file_path = _resolve_path(Path(photo.path))
+                    if not file_path.exists():
+                        continue
                     
-                if img is None:
-                    continue
-                    
-                try:
-                    img = cv2.resize(img, (224, 224))
-                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    img = img.astype(np.float32) / 255.0
-                    img -= np.array([0.485, 0.456, 0.406])
-                    img /= np.array([0.229, 0.224, 0.225])
-                    img = img.transpose(2, 0, 1)
-                    img = np.expand_dims(img, axis=0)
-                    img = np.ascontiguousarray(img) # OpenCV strictly requires contiguous memory for DNN inputs!
-                    
-                    net.setInput(img)
-                    preds = net.forward().flatten()
-                    
-                    # Apply Softmax to convert raw logits to proper probabilities (0.0 to 1.0)
-                    exp_preds = np.exp(preds - np.max(preds))
-                    probs = exp_preds / np.sum(exp_preds)
-                    
-                    # Grab the top 5 highest confidence predictions
-                    classIds = np.argsort(probs)[-5:][::-1]
-                    new_tags = []
-                    for classId in classIds:
-                        confidence = probs[classId]
-                        if confidence > object_threshold:
-                            label = classes[classId].split(',')[0].strip().lower().replace(" ", "_")
-                            new_tags.append(f"object:{label}")
-                            
-                    if new_tags:
-                        for tag in new_tags:
-                            if tag not in current_tags:
-                                current_tags = f"{current_tags} {tag}".strip()
-                        photo.tags = current_tags
-                        s.commit()
-                        print(f"Classified {file_path.name}: {new_tags}")
-                except Exception as e:
-                    print(f"Failed to classify {file_path.name}: {e}")
+                    try:
+                        img_array = np.fromfile(str(file_path), np.uint8)
+                        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                    except Exception:
+                        img = cv2.imread(str(file_path))
+                        
+                    if img is None:
+                        cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (photo.id,))
+                        processed_count += 1
+                        if processed_count % 50 == 0:
+                            conn.commit()
+                        continue
+                        
+                    try:
+                        img = cv2.resize(img, (224, 224))
+                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        img = img.astype(np.float32) / 255.0
+                        img -= np.array([0.485, 0.456, 0.406])
+                        img /= np.array([0.229, 0.224, 0.225])
+                        img = img.transpose(2, 0, 1)
+                        img = np.expand_dims(img, axis=0)
+                        img = np.ascontiguousarray(img) # OpenCV strictly requires contiguous memory for DNN inputs!
+                        
+                        net.setInput(img)
+                        preds = net.forward().flatten()
+                        
+                        # Apply Softmax to convert raw logits to proper probabilities (0.0 to 1.0)
+                        exp_preds = np.exp(preds - np.max(preds))
+                        probs = exp_preds / np.sum(exp_preds)
+                        
+                        # Grab the top 5 highest confidence predictions
+                        classIds = np.argsort(probs)[-5:][::-1]
+                        new_tags = []
+                        for classId in classIds:
+                            confidence = probs[classId]
+                            if confidence > object_threshold:
+                                label = classes[classId].split(',')[0].strip().lower().replace(" ", "_")
+                                new_tags.append(f"object:{label}")
+                                
+                        if new_tags:
+                            for tag in new_tags:
+                                if tag not in current_tags:
+                                    current_tags = f"{current_tags} {tag}".strip()
+                            photo.tags = current_tags
+                            s.commit()
+                    except Exception as e:
+                        print(f"ERROR: Failed to classify {file_path.name}: {e}")
+                        traceback.print_exc()
+                        
+                    cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (photo.id,))
+                    processed_count += 1
+                    if processed_count % 50 == 0:
+                        conn.commit()
+            conn.commit()
     except Exception as e:
-        print(f"Object Scanner Error: {e}")
+        print(f"CRITICAL: Object Scanner Error: {e}")
+        traceback.print_exc()
     finally:
         object_scanner_running = False
+        INDEXER_STATE["object_scanner_current_file"] = ""
 
 @app.post("/scan-objects")
 def scan_objects():
@@ -1660,7 +1968,22 @@ def stop_scan_objects():
     if not object_scanner_running:
         raise HTTPException(status_code=400, detail="Object scanner is not running.")
     object_scanner_running = False
+    INDEXER_STATE["object_scanner_stopped"] = True
     return {"message": "Stopping object scanner."}
+
+@app.post("/reset-object-scanner-progress")
+def reset_object_scanner_progress():
+    try:
+        ai_db_path = get_ai_db_path()
+        if ai_db_path.exists():
+            with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("CREATE TABLE IF NOT EXISTS processed_objects (file_id INTEGER PRIMARY KEY)")
+                conn.execute("DELETE FROM processed_objects")
+                conn.commit()
+        return {"message": "Object scanner progress has been reset."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not reset object scanner progress: {e}")
 
 class TagUpdateRequest(BaseModel):
     file_ids: list[int]
@@ -1727,6 +2050,45 @@ def delete_object_tag_globally(tag_name: str):
         
         s.commit()
     return {"status": "success", "deleted_tag": tag_to_delete}
+
+@app.post("/system/backup")
+def backup_databases(payload: dict = Body(...)):
+    dest_dir = payload.get("destination")
+    if not dest_dir:
+        raise HTTPException(status_code=400, detail="Destination directory is required.")
+        
+    dest_path = Path(dest_dir)
+    if not dest_path.exists() or not dest_path.is_dir():
+        raise HTTPException(status_code=400, detail="Invalid destination directory.")
+        
+    ai_db_path = get_ai_db_path()
+    cfg = load_config()
+    db_path_str = cfg.get("database_path") or "archive.db"
+    main_db_path = Path(db_path_str)
+    if not main_db_path.is_absolute():
+        if getattr(sys, 'frozen', False):
+            main_db_path = Path(sys.executable).parent / main_db_path
+        else:
+            main_db_path = Path(__file__).resolve().parent.parent.parent / main_db_path
+
+    if getattr(sys, 'frozen', False):
+        config_path = Path(sys.executable).parent / "config.yaml"
+    else:
+        config_path = Path(__file__).resolve().parent.parent.parent / "config.yaml"
+
+    try:
+        if main_db_path.exists():
+            with sqlite3.connect(main_db_path) as src, sqlite3.connect(dest_path / main_db_path.name) as dst:
+                src.backup(dst)
+        if ai_db_path.exists():
+            with sqlite3.connect(ai_db_path) as src, sqlite3.connect(dest_path / ai_db_path.name) as dst:
+                src.backup(dst)
+        if config_path.exists():
+            shutil.copy2(config_path, dest_path / config_path.name)
+            
+        return {"success": True, "message": "Databases and config successfully backed up."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Backup failed: {e}")
 
 @app.get("/tags/objects")
 def get_object_tags():

@@ -45,6 +45,9 @@ def init_ai_database(ai_db_path="ai_metadata.db"):
     # or querying all faces belonging to a specific person.
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_faces_file_id ON faces(file_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_faces_person_id ON faces(person_id)')
-    
+
+    # Ensure processed_objects table exists for backwards compatibility with older indices
+    cursor.execute('CREATE TABLE IF NOT EXISTS processed_objects (file_id INTEGER PRIMARY KEY)')
+
     conn.commit()
     conn.close()

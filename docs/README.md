@@ -69,5 +69,10 @@ If you move or copy your `config.yaml` file to a different computer (or change m
 * **Architecture & Implementation:** See `ARCHITECTURE.md`
 
 ---
+## Third-Party Licenses & Acknowledgments
+* This project bundles the **MobileNetV2** model and **ImageNet** class list, exported from PyTorch/Torchvision. Torchvision is licensed under the BSD 3-Clause License. Copyright (c) Soumith Chintala 2016.
+* Face Detection and Recognition models (**YuNet**, **SFace**) are provided by the OpenCV Zoo, licensed under the Apache 2.0 License.
+
+---
 **Developer:** Winny Mathew Kurian | **Email:** WiZarD.Devel@gmail.com | **License:** MIT
 *This project was architected and prototyped with assistance from GenAI systems.*
