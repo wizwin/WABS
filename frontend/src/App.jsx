@@ -308,36 +308,14 @@ const [editingNames, setEditingNames] = useState({});
 const [dbFilename, setDbFilename] = useState('archive.db');
 const [thumbUpdateTimestamps, setThumbUpdateTimestamps] = useState({});
 const [actionInProgress, setActionInProgress] = useState(false);
-const [combinedOptions, setCombinedOptions] = useState({ index: true, tag: true, face: true });
-
-const startCombinedScan = async () => {
-    setActionInProgress(true);
-    try {
-        setIndexer(prev => ({ ...prev, combined_scanner_running: true, combined_scanner_stopped: false }));
-        await axios.post(`${API}/scan-combined`, combinedOptions);
-        showToastMessage("Combined scan started.");
-        await loadDashboard();
-    } catch (error) {
-        setIndexer(prev => ({ ...prev, combined_scanner_running: false }));
-        alert(error?.response?.data?.detail || "Error starting combined scan");
-    } finally {
-        setActionInProgress(false);
-    }
-};
-
-const stopCombinedScan = async () => {
-    setActionInProgress(true);
-    try {
-        setIndexer(prev => ({ ...prev, combined_scanner_stopped: true }));
-        await axios.post(`${API}/stop-scan-combined`);
-        showToastMessage("Stopping combined scan.");
-        await loadDashboard();
-    } catch (error) {
-        alert(error?.response?.data?.detail || "Error stopping combined scan");
-    } finally {
-        setActionInProgress(false);
-    }
-};
+const [combinedOptions, setCombinedOptions] = useState(() => {
+  try {
+    const saved = sessionStorage.getItem('wabs_combined_options');
+    return saved ? JSON.parse(saved) : { tag: false, face: false };
+  } catch (e) {
+    return { tag: false, face: false };
+  }
+});
 const [tagsPage, setTagsPage] = useState(1);
 const [tagSearchQuery, setTagSearchQuery] = useState('');
 const [unknownPeoplePage, setUnknownPeoplePage] = useState(1);
@@ -350,6 +328,10 @@ const [settingsTab, setSettingsTab] = useState('general');
 const findSimilarAbortController = useRef(null);
 const [personFilesPage, setPersonFilesPage] = useState(1);
 const [fullTimelineData, setFullTimelineData] = useState([]);
+
+useEffect(() => {
+  sessionStorage.setItem('wabs_combined_options', JSON.stringify(combinedOptions));
+}, [combinedOptions]);
 
 useEffect(() => {
   if (checkedFiles.size === 0 && showSelectedOnly) {
@@ -478,7 +460,9 @@ function doSearch(value, cat = filterCategory){
 
   searchTimeout.current = setTimeout(async () => {
     if(!value){
-      setPage('explorer')
+      if (page !== 'search') {
+        setPage('explorer')
+      }
       setSelected(null)
       await loadFiles(0, false, cat)
       return
@@ -509,9 +493,7 @@ async function goToSearch(cat = filterCategory){
     setHasMore(r.data.length === 50)
     setLoadingMore(false)
   } else {
-    setFiles([])
-    setOffset(0)
-    setHasMore(false)
+    await loadFiles(0, false, cat)
   }
   setPage('search')
 }
@@ -1021,7 +1003,8 @@ async function stopObjectScan() {
 }
 
 async function indexerAction(action){
- if ((action === 'start' || action === 'update' || action === 'reindex') && indexer.running) {
+ const isAnyRunning = indexer.running || indexer.combined_scanner_running;
+ if ((action === 'start' || action === 'update' || action === 'reindex') && isAnyRunning) {
    return;
  }
 
@@ -1029,7 +1012,7 @@ async function indexerAction(action){
  try {
  if(action === 'reindex'){
    if(!window.confirm('Are you sure you want to completely re-index the archive? This will wipe the current database and may take a considerable amount of time for large backups.')) return;
-   await axios.post(`${API}/indexer/reindex`)
+   await axios.post(`${API}/indexer/reindex`, combinedOptions)
    setFiles([])
    setSearchCache([])
    setSelected(null)
@@ -1037,6 +1020,8 @@ async function indexerAction(action){
    setOffset(0)
    setHasMore(false)
    setStats({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0})
+ } else if (action === 'start' || action === 'update') {
+   await axios.post(`${API}/indexer/${action}`, combinedOptions)
  } else {
    await axios.post(`${API}/indexer/${action}`)
  }
@@ -1639,11 +1624,39 @@ return(
     <DashboardIcon fontSize="small" /> Dashboard
     </ActionButton>
 
-    <ActionButton className="" onClick={()=>{ setQuery(''); setPage('explorer'); setSelected(null); loadFiles(0, false)}}>
+    <ActionButton className="" onClick={()=>{ 
+      let cat = filterCategory;
+      if (cat === 'duplicates') {
+        cat = 'all';
+        setFilterCategory('all');
+        setQuery('');
+        setSearchCache([]);
+      }
+      setPage('explorer');
+      setSelected(null);
+      loadFiles(0, false, cat);
+    }}>
     <FolderIcon fontSize="small" /> Explorer
     </ActionButton>
 
-    <ActionButton className="" onClick={()=>goToSearch()}>
+    <ActionButton className="" onClick={()=>{ 
+      let cat = filterCategory;
+      if (cat === 'duplicates') {
+        cat = 'all';
+        setFilterCategory('all');
+        setQuery('');
+        setSearchCache([]);
+      }
+      setPage('search');
+      setSelected(null);
+      if (query && searchCache.length > 0) {
+        setFiles(searchCache);
+        setOffset(searchCache.length);
+        setHasMore(searchCache.length > 0 && searchCache.length % 50 === 0);
+      } else {
+        goToSearch(cat);
+      }
+    }}>
     <SearchIcon fontSize="small" /> Search
     </ActionButton>
 
@@ -2652,37 +2665,51 @@ page==='dashboard' &&
 <div style={{background:'#111827',padding:'18px',borderRadius:'16px',border:'1px solid #24324a', minWidth: 0}}>
 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: 0 }}><AnalyticsIcon style={{ color: '#3b82f6' }} /> Indexing Status</h2>
 <p><b>Status:</b> {indexer.status}</p>
-<p><b>Running:</b> {indexer.running ? 'Yes' : 'No'}</p>
+<p><b>Running:</b> {indexer.running || indexer.combined_scanner_running ? 'Yes' : 'No'}</p>
 <p><b>Paused:</b> {indexer.paused ? 'Yes' : 'No'}</p>
 <p><b>Indexed:</b> {indexer.indexed}</p>
-<p><b>Progress:</b> {indexer.current} / {indexer.total}</p>
-<ProgressBar current={indexer.current} total={indexer.total} color="#3b82f6" />
-<div style={{marginTop: '12px', display: 'flex', gap: '6px', alignItems: 'center'}}>
-  <b style={{whiteSpace: 'nowrap'}}>Current File:</b>
-  <span style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', flex: 1, minWidth: 0, color: '#94a3b8', fontSize: '13px'}}>{indexer.current_file || '—'}</span>
-</div>
+{(indexer.running || indexer.combined_scanner_running) && (
+  <>
+    <p><b>Progress:</b> {indexer.current} / {indexer.total}</p>
+    <ProgressBar current={indexer.current} total={indexer.total} color="#3b82f6" />
+    <div style={{marginTop: '12px', display: 'flex', gap: '6px', alignItems: 'center'}}>
+      <b style={{whiteSpace: 'nowrap'}}>Current File:</b>
+      <span style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', flex: 1, minWidth: 0, color: '#94a3b8', fontSize: '13px'}}>{indexer.current_file || '—'}</span>
+    </div>
+  </>
+)}
 </div>
 <div style={{background:'#111827',padding:'18px',borderRadius:'16px',border:'1px solid #24324a', minWidth: 0}}>
 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: 0 }}><SettingsApplicationsIcon style={{ color: '#3b82f6' }} /> Indexer Controls</h2>
 
 <h3 style={{ margin: '16px 0 10px 0', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Core Database</h3>
+
+<div style={{display:'flex', gap:'16px', marginBottom:'16px', flexWrap:'wrap'}}>
+  <label style={{display:'flex',alignItems:'center',gap:'8px', color:'#f8fafc', fontSize:'13px'}}>
+    <input type='checkbox' checked={combinedOptions.tag} onChange={(e) => setCombinedOptions({...combinedOptions, tag: e.target.checked})} /> Classify Objects & Scenes
+  </label>
+  <label style={{display:'flex',alignItems:'center',gap:'8px', color:'#f8fafc', fontSize:'13px'}}>
+    <input type='checkbox' checked={combinedOptions.face} onChange={(e) => setCombinedOptions({...combinedOptions, face: e.target.checked})} /> Scan for Faces
+  </label>
+</div>
+
 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(90px, 1fr))',gap:'8px'}}>
-<ActionButton disabled={actionInProgress || indexer.running} onClick={()=>indexerAction('start')}>
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running} onClick={()=>indexerAction('start')}>
 Start
 </ActionButton>
-<ActionButton disabled={actionInProgress || indexer.running} onClick={()=>indexerAction('update')}>
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running} onClick={()=>indexerAction('update')}>
 Update
 </ActionButton>
-<ActionButton disabled={actionInProgress || indexer.running} onClick={()=>indexerAction('reindex')} style={{ color: indexer.running ? undefined : '#f59e0b' }}>
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running} onClick={()=>indexerAction('reindex')} style={{ color: (indexer.running || indexer.combined_scanner_running) ? undefined : '#f59e0b' }}>
 Re-index
 </ActionButton>
-<ActionButton disabled={actionInProgress || !indexer.running || indexer.paused || indexer.stopped} onClick={()=>indexerAction('pause')}>
+<ActionButton disabled={actionInProgress || (!indexer.running && !indexer.combined_scanner_running) || indexer.paused || indexer.stopped || indexer.combined_scanner_stopped} onClick={()=>indexerAction('pause')}>
 Pause
 </ActionButton>
-<ActionButton disabled={actionInProgress || (indexer.running && !indexer.paused) || indexer.stopped} onClick={()=>indexerAction('resume')}>
+<ActionButton disabled={actionInProgress || ((indexer.running || indexer.combined_scanner_running) && !indexer.paused) || indexer.stopped || indexer.combined_scanner_stopped} onClick={()=>indexerAction('resume')}>
 Resume
 </ActionButton>
-<ActionButton disabled={actionInProgress || !indexer.running || indexer.stopped} onClick={()=>indexerAction('stop')} style={{ color: (!indexer.running || indexer.stopped) ? undefined : '#ef4444' }}>
+<ActionButton disabled={actionInProgress || (!indexer.running && !indexer.combined_scanner_running) || indexer.stopped || indexer.combined_scanner_stopped} onClick={()=>indexerAction('stop')} style={{ color: ((!indexer.running && !indexer.combined_scanner_running) || indexer.stopped || indexer.combined_scanner_stopped) ? undefined : '#ef4444' }}>
 Stop
 </ActionButton>
 </div>
@@ -2732,63 +2759,6 @@ Scan for Faces (People)
 <ActionButton disabled={actionInProgress} onClick={startObjectScan} style={{ width: '100%' }}>
 Classify Objects & Scenes
 </ActionButton>
-)}
-</div>
-
-<h3 style={{ margin: '20px 0 10px 0', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Combined Operations</h3>
-<div style={{display:'flex', flexDirection:'column', gap: '8px', background: '#0f172a', padding: '16px', borderRadius: '12px', border: '1px solid #334155', minWidth: 0}}>
-{indexer.combined_scanner_running ? (
-  (() => {
-    let current, total, file, color, title;
-
-    if (indexer.running && indexer.total > 0) {
-        title = 'Indexing...';
-        current = indexer.current;
-        total = indexer.total;
-        file = indexer.current_file;
-        color = '#3b82f6';
-    } else if (indexer.face_scanner_running) {
-        title = 'Scanning Faces...';
-        current = indexer.face_scanner_current;
-        total = indexer.face_scanner_total;
-        file = indexer.face_scanner_current_file;
-        color = '#8b5cf6';
-    } else if (indexer.object_scanner_running) {
-        title = 'Classifying Objects...';
-        current = indexer.object_scanner_current;
-        total = indexer.object_scanner_total;
-        file = indexer.object_scanner_current_file;
-        color = '#f59e0b';
-    } else {
-        title = 'Initializing...';
-        current = 1; // indeterminate
-        total = 1;
-        file = 'Preparing...';
-        color = '#94a3b8';
-    }
-
-    return <>
-      <ActionButton disabled={actionInProgress || indexer.combined_scanner_stopped} onClick={stopCombinedScan} style={{ width: '100%', color: '#ef4444' }}>
-        {indexer.combined_scanner_stopped ? 'Stopping Combined Scan...' : 'Stop Combined Scan'}
-      </ActionButton>
-      <div style={{marginTop: '8px'}}><span style={{ fontSize: '13px', color: '#cbd5e1' }}>Current Step: {title}</span><ProgressBar current={current} total={total} color={color} /><div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{file || ''}</div></div>
-    </>;
-  })()
-) : (
-<>
-  <label style={{display:'flex',alignItems:'center',gap:'10px', color:'#f8fafc', fontSize:'14px'}}>
-    <input type='checkbox' checked={combinedOptions.index} onChange={(e) => setCombinedOptions({...combinedOptions, index: e.target.checked})} /> Index New Files
-  </label>
-  <label style={{display:'flex',alignItems:'center',gap:'10px', color:'#f8fafc', fontSize:'14px'}}>
-    <input type='checkbox' checked={combinedOptions.tag} onChange={(e) => setCombinedOptions({...combinedOptions, tag: e.target.checked})} /> Classify Objects & Scenes
-  </label>
-  <label style={{display:'flex',alignItems:'center',gap:'10px', color:'#f8fafc', fontSize:'14px'}}>
-    <input type='checkbox' checked={combinedOptions.face} onChange={(e) => setCombinedOptions({...combinedOptions, face: e.target.checked})} /> Scan for Faces
-  </label>
-  <ActionButton disabled={actionInProgress} onClick={startCombinedScan} style={{ width: '100%', marginTop: '8px' }}>
-    Start Combined Scan
-  </ActionButton>
-</>
 )}
 </div>
 

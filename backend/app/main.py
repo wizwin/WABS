@@ -925,6 +925,10 @@ def timeline(category: str = "all"):
         rows = q.all()
         return [{"date": r[0], "count": r[1]} for r in rows if r[0]]
 
+class IndexRequest(BaseModel):
+    tag: bool = False
+    face: bool = False
+
 @app.get("/indexer/status")
 def indexer_status():
     status = dict(STATE)
@@ -935,51 +939,85 @@ def indexer_status():
     return status
 
 @app.post("/indexer/start")
-def indexer_start():
-    if STATE.get("running"):
+def indexer_start(req: IndexRequest = None):
+    global combined_scanner_thread, combined_scanner_running, combined_scanner_stopped
+    if req is None:
+        req = IndexRequest()
+    if cv2 is None and (req.tag or req.face):
+        raise HTTPException(status_code=500, detail="OpenCV is required for face and object recognition.")
+    if STATE.get("running") or combined_scanner_running:
         return {"started": True, "ignored": True}
     STATE["update_only"] = False
-    start_indexing()
-    return {"started": STATE["running"]}
+
+    if req.tag or req.face:
+        combined_scanner_running = True
+        combined_scanner_stopped = False
+        combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face})
+        combined_scanner_thread.start()
+    else:
+        start_indexing()
+    return {"started": STATE.get("running", True)}
 
 @app.post("/indexer/pause")
 def indexer_pause():
-    if STATE["running"] and not STATE["paused"]:
+    if (STATE.get("running") or combined_scanner_running) and not STATE.get("paused"):
         STATE["paused"] = True
         STATE["status"] = "Paused"
     return STATE
 
 @app.post("/indexer/resume")
 def indexer_resume():
-    if not STATE.get("running"):
+    if not STATE.get("running") and not combined_scanner_running:
         # App was closed or stopped. Resume intelligently continues from the DB state.
         STATE["update_only"] = True
         start_indexing()
         return {"resumed_from_db": True}
-    if STATE.get("running") and STATE.get("paused"):
+    if (STATE.get("running") or combined_scanner_running) and STATE.get("paused"):
         STATE["paused"] = False
-        STATE["status"] = "Indexing"
+        STATE["status"] = "Indexing & Scanning..." if combined_scanner_running else "Indexing"
     return STATE
 
 @app.post("/indexer/stop")
 def indexer_stop():
-    if STATE["running"]:
+    if STATE.get("running") or combined_scanner_running:
         STATE["stopped"] = True
         STATE["paused"] = False
         STATE["status"] = "Stopping..."
+
+    global combined_scanner_stopped, face_scanner_running, object_scanner_running
+    combined_scanner_stopped = True
+    face_scanner_running = False
+    object_scanner_running = False
     return STATE
 
 @app.post("/indexer/update")
-def indexer_update():
-    if STATE.get("running"):
+def indexer_update(req: IndexRequest = None):
+    global combined_scanner_thread, combined_scanner_running, combined_scanner_stopped
+    if req is None:
+        req = IndexRequest()
+    if cv2 is None and (req.tag or req.face):
+        raise HTTPException(status_code=500, detail="OpenCV is required for face and object recognition.")
+    if STATE.get("running") or combined_scanner_running:
         return {"updating": False, "ignored": True}
     STATE["update_only"] = True
-    start_indexing()
+
+    if req.tag or req.face:
+        combined_scanner_running = True
+        combined_scanner_stopped = False
+        combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face})
+        combined_scanner_thread.start()
+    else:
+        start_indexing()
     return {"updating": True}
 
 @app.post("/indexer/reindex")
-def indexer_reindex():
-    if STATE.get("running"):
+def indexer_reindex(req: IndexRequest = None):
+    global combined_scanner_thread, combined_scanner_running, combined_scanner_stopped
+    if req is None:
+        req = IndexRequest()
+    if cv2 is None and (req.tag or req.face):
+        raise HTTPException(status_code=500, detail="OpenCV is required for face and object recognition.")
+    if STATE.get("running") or combined_scanner_running:
         return {"reindexing": False, "ignored": True}
     with SessionLocal() as s:
         s.query(FileIndex).delete()
@@ -998,7 +1036,14 @@ def indexer_reindex():
     STATE["current"] = 0
     STATE["total"] = 0
     STATE["update_only"] = False
-    start_indexing()
+
+    if req.tag or req.face:
+        combined_scanner_running = True
+        combined_scanner_stopped = False
+        combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face})
+        combined_scanner_thread.start()
+    else:
+        start_indexing()
     return {"reindexing": True}
 
 @app.get("/choose-path")
@@ -1271,6 +1316,11 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                 existing_files = {r.path: r for r in session.query(FileIndex).all()}
                 
                 for idx, file_str in enumerate(files_to_process):
+                    while STATE.get("paused"):
+                        time.sleep(0.5)
+                        if combined_scanner_stopped or (run_index and STATE.get("stopped")):
+                            break
+
                     if combined_scanner_stopped or (run_index and STATE.get("stopped")):
                         break
                         
@@ -2161,41 +2211,6 @@ class TagUpdateRequest(BaseModel):
 combined_scanner_running = False
 combined_scanner_stopped = False
 combined_scanner_thread = None
-
-class CombinedScanRequest(BaseModel):
-    index: bool
-    tag: bool
-    face: bool
-
-@app.post("/scan-combined")
-def scan_combined(req: CombinedScanRequest):
-    if cv2 is None and (req.tag or req.face):
-        raise HTTPException(status_code=500, detail="OpenCV is required for face and object recognition.")
-    global combined_scanner_thread, combined_scanner_running, combined_scanner_stopped
-    if combined_scanner_running or STATE.get("running") or face_scanner_running or object_scanner_running:
-        raise HTTPException(status_code=400, detail="A scan is already in progress.")
-    combined_scanner_running = True
-    combined_scanner_stopped = False
-    combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": req.index, "run_object": req.tag, "run_face": req.face})
-    combined_scanner_thread.start()
-    return {"message": "Combined scanning started in the background."}
-
-@app.post("/stop-scan-combined")
-def stop_scan_combined():
-    global combined_scanner_running, combined_scanner_stopped, face_scanner_running, object_scanner_running
-    if not combined_scanner_running:
-        raise HTTPException(status_code=400, detail="Combined scanner is not running.")
-    combined_scanner_stopped = True
-    
-    if STATE.get("running"):
-        STATE["stopped"] = True
-        STATE["paused"] = False
-        STATE["status"] = "Stopping..."
-        
-    face_scanner_running = False
-    object_scanner_running = False
-    
-    return {"message": "Stopping combined scanner."}
 
 @app.post("/tags/add")
 def add_tags(req: TagUpdateRequest):
