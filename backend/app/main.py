@@ -31,12 +31,12 @@ except ImportError:
 try:
     from backend.app.database import SessionLocal, FileIndex
     from backend.app.config import load_config, save_config
-    from backend.app.indexer import start as start_indexing, STATE as INDEXER_STATE
+    from backend.app.indexer import start as start_indexing, STATE as STATE
     from backend.app.ai_database import init_ai_database
 except ModuleNotFoundError:
     from database import SessionLocal, FileIndex
     from config import load_config, save_config
-    from indexer import start as start_indexing, STATE as INDEXER_STATE
+    from indexer import start as start_indexing, STATE as STATE
 
 app = FastAPI()
 
@@ -125,8 +125,8 @@ def startup_event():
     try:
         with SessionLocal() as s:
             count = s.query(FileIndex).count()
-            INDEXER_STATE["indexed"] = count
-            INDEXER_STATE["current"] = count
+            STATE["indexed"] = count
+            STATE["current"] = count
     except Exception as e:
         print(f"CRITICAL: Startup database connection failed: {e}")
         traceback.print_exc()
@@ -927,57 +927,59 @@ def timeline(category: str = "all"):
 
 @app.get("/indexer/status")
 def indexer_status():
-    status = dict(INDEXER_STATE)
+    status = dict(STATE)
     status["face_scanner_running"] = face_scanner_running
     status["object_scanner_running"] = object_scanner_running
+    status["combined_scanner_running"] = combined_scanner_running
+    status["combined_scanner_stopped"] = combined_scanner_stopped
     return status
 
 @app.post("/indexer/start")
 def indexer_start():
-    if INDEXER_STATE.get("running"):
+    if STATE.get("running"):
         return {"started": True, "ignored": True}
-    INDEXER_STATE["update_only"] = False
+    STATE["update_only"] = False
     start_indexing()
-    return {"started": INDEXER_STATE["running"]}
+    return {"started": STATE["running"]}
 
 @app.post("/indexer/pause")
 def indexer_pause():
-    if INDEXER_STATE["running"] and not INDEXER_STATE["paused"]:
-        INDEXER_STATE["paused"] = True
-        INDEXER_STATE["status"] = "Paused"
-    return INDEXER_STATE
+    if STATE["running"] and not STATE["paused"]:
+        STATE["paused"] = True
+        STATE["status"] = "Paused"
+    return STATE
 
 @app.post("/indexer/resume")
 def indexer_resume():
-    if not INDEXER_STATE.get("running"):
+    if not STATE.get("running"):
         # App was closed or stopped. Resume intelligently continues from the DB state.
-        INDEXER_STATE["update_only"] = True
+        STATE["update_only"] = True
         start_indexing()
         return {"resumed_from_db": True}
-    if INDEXER_STATE.get("running") and INDEXER_STATE.get("paused"):
-        INDEXER_STATE["paused"] = False
-        INDEXER_STATE["status"] = "Indexing"
-    return INDEXER_STATE
+    if STATE.get("running") and STATE.get("paused"):
+        STATE["paused"] = False
+        STATE["status"] = "Indexing"
+    return STATE
 
 @app.post("/indexer/stop")
 def indexer_stop():
-    if INDEXER_STATE["running"]:
-        INDEXER_STATE["stopped"] = True
-        INDEXER_STATE["paused"] = False
-        INDEXER_STATE["status"] = "Stopping..."
-    return INDEXER_STATE
+    if STATE["running"]:
+        STATE["stopped"] = True
+        STATE["paused"] = False
+        STATE["status"] = "Stopping..."
+    return STATE
 
 @app.post("/indexer/update")
 def indexer_update():
-    if INDEXER_STATE.get("running"):
+    if STATE.get("running"):
         return {"updating": False, "ignored": True}
-    INDEXER_STATE["update_only"] = True
+    STATE["update_only"] = True
     start_indexing()
     return {"updating": True}
 
 @app.post("/indexer/reindex")
 def indexer_reindex():
-    if INDEXER_STATE.get("running"):
+    if STATE.get("running"):
         return {"reindexing": False, "ignored": True}
     with SessionLocal() as s:
         s.query(FileIndex).delete()
@@ -992,10 +994,10 @@ def indexer_reindex():
         except Exception as e:
             print(f"Failed to clear thumbnails directory: {e}")
 
-    INDEXER_STATE["indexed"] = 0
-    INDEXER_STATE["current"] = 0
-    INDEXER_STATE["total"] = 0
-    INDEXER_STATE["update_only"] = False
+    STATE["indexed"] = 0
+    STATE["current"] = 0
+    STATE["total"] = 0
+    STATE["update_only"] = False
     start_indexing()
     return {"reindexing": True}
 
@@ -1129,204 +1131,362 @@ def _cosine_similarity(vec1, vec2):
         return 0.0
     return dot_product / (norm_a * norm_b)
 
-def _scan_and_cluster_faces_worker():
-    global face_scanner_running
+def _process_unified_scanners(run_index: bool = False, run_face: bool = False, run_object: bool = False):
+    global face_scanner_running, object_scanner_running, combined_scanner_running
+    global combined_scanner_stopped
+    
+    if run_face:
+        face_scanner_running = True
+    if run_object:
+        object_scanner_running = True
+        STATE["object_scanner_stopped"] = False
+
     try:
         import numpy as np
-        yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
-        sface_path = get_bundled_model_path("face_recognition_sface_2021dec.onnx")
-
-        if not Path(yunet_path).exists() or not Path(sface_path).exists():
-            print("Face recognition models not found. Ensure .onnx files are in the backend folder.")
-            return
-
+        import os
+        import time
+        try:
+            from backend.app.indexer import classify, extract_metadata_for_file, build_tags
+        except ModuleNotFoundError:
+            from indexer import classify, extract_metadata_for_file, build_tags
+            
         cfg = load_config()
         ai_db_path = get_ai_db_path()
 
-        face_sensitivity = cfg.get("face_sensitivity", "medium")
-        if face_sensitivity == "high":
-            face_threshold = 0.55
-        elif face_sensitivity == "low":
-            face_threshold = 0.85
-        else:
-            face_threshold = 0.70
+        # --- Object Setup ---
+        net, classes, object_threshold = None, None, 0.15
+        if run_object:
+            model_path = get_bundled_model_path("mobilenetv2-small.onnx")
+            classes_path = get_bundled_model_path("imagenet_classes.txt")
+            if Path(model_path).exists() and Path(classes_path).exists():
+                net = cv2.dnn.readNetFromONNX(model_path)
+                with open(classes_path, 'rt') as f:
+                    classes = [line.strip() for line in f.readlines()]
+            object_sensitivity = cfg.get("object_sensitivity", "medium")
+            object_threshold = 0.10 if object_sensitivity == "high" else 0.30 if object_sensitivity == "low" else 0.15
 
-        face_clustering_sensitivity = cfg.get("face_clustering_sensitivity", "medium")
-        if face_clustering_sensitivity == "high":
-            cluster_threshold = 0.65
-        elif face_clustering_sensitivity == "low":
-            cluster_threshold = 0.45
-        else:
-            cluster_threshold = 0.55
+        # --- Face Setup ---
+        detector, recognizer, clusters, p_count = None, None, {}, 0
+        face_threshold, cluster_threshold = 0.70, 0.55
+        if run_face:
+            yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
+            sface_path = get_bundled_model_path("face_recognition_sface_2021dec.onnx")
 
-        detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
-        detector.setScoreThreshold(face_threshold)
-        recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
+            if Path(yunet_path).exists() and Path(sface_path).exists():
+                detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
+                face_sensitivity = cfg.get("face_sensitivity", "medium")
+                face_threshold = 0.55 if face_sensitivity == "high" else 0.85 if face_sensitivity == "low" else 0.70
+                detector.setScoreThreshold(face_threshold)
+                recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
+            else:
+                print("Face recognition models not found. Ensure .onnx files are in the backend folder.")
+                return
 
-        with sqlite3.connect(ai_db_path, timeout=15) as conn:
-            conn.execute("PRAGMA journal_mode=WAL;")
+            cluster_sensitivity = cfg.get("face_clustering_sensitivity", "medium")
+            cluster_threshold = 0.65 if cluster_sensitivity == "high" else 0.45 if cluster_sensitivity == "low" else 0.55
+
+        # --- DB Initialization ---
+        face_processed_ids = set()
+        object_processed_ids = set()
+
         with sqlite3.connect(ai_db_path, timeout=15) as conn:
             conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
-            cursor.execute('''CREATE TABLE IF NOT EXISTS people (
+            if run_face:
+                cursor.execute('''CREATE TABLE IF NOT EXISTS people (
                                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                                 name TEXT DEFAULT 'Unknown Person'
                               )''')
-            cursor.execute('''CREATE TABLE IF NOT EXISTS faces (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                person_id INTEGER,
-                                file_id INTEGER,
-                                embedding_json TEXT,
-                                FOREIGN KEY(person_id) REFERENCES people(id)
-                              )''')
-            cursor.execute('''CREATE TABLE IF NOT EXISTS processed_files (
-                                file_id INTEGER PRIMARY KEY
-                              )''')
-            cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) SELECT DISTINCT file_id FROM faces")
+                cursor.execute('''CREATE TABLE IF NOT EXISTS faces (
+                                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                    person_id INTEGER,
+                                    file_id INTEGER,
+                                    embedding_json TEXT,
+                                    FOREIGN KEY(person_id) REFERENCES people(id)
+                                )''')
+                cursor.execute('''CREATE TABLE IF NOT EXISTS processed_files (
+                                    file_id INTEGER PRIMARY KEY
+                                )''')
+                cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) SELECT DISTINCT file_id FROM faces")
+                cursor.execute("SELECT file_id FROM processed_files")
+                face_processed_ids = set(r[0] for r in cursor.fetchall())
+                
+                cursor.execute("SELECT person_id, embedding_json FROM faces WHERE embedding_json != '[]'")
+                for p_id, emb_str in cursor.fetchall():
+                    if p_id not in clusters:
+                        clusters[p_id] = []
+                    if len(clusters[p_id]) < 15:
+                        clusters[p_id].append(json.loads(emb_str))
+                cursor.execute("SELECT COUNT(id) FROM people")
+                p_row = cursor.fetchone()
+                p_count = p_row[0] if p_row else 0
+
+            if run_object:
+                cursor.execute('''CREATE TABLE IF NOT EXISTS processed_objects (file_id INTEGER PRIMARY KEY)''')
+                cursor.execute("SELECT COUNT(*) FROM processed_objects")
+                if cursor.fetchone()[0] == 0:
+                    with SessionLocal() as s:
+                        tagged_photos = s.query(FileIndex.id).filter(FileIndex.category == 'photo', FileIndex.tags.like('%object:%')).all()
+                        for (p_id,) in tagged_photos:
+                            cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (p_id,))
+                cursor.execute("SELECT file_id FROM processed_objects")
+                object_processed_ids = set(r[0] for r in cursor.fetchall())
             conn.commit()
 
-            cursor.execute("SELECT DISTINCT file_id FROM faces")
-            cursor.execute("SELECT file_id FROM processed_files")
-            processed_ids = set(r[0] for r in cursor.fetchall())
-
-            # Fetch up to 15 diverse faces per person to enable Multi-Exemplar matching
-            cursor.execute("SELECT person_id, embedding_json FROM faces WHERE embedding_json != '[]'")
-            all_faces = cursor.fetchall()
-            
-            clusters = {}
-            for p_id, emb_str in all_faces:
-                if p_id not in clusters:
-                    clusters[p_id] = []
-                if len(clusters[p_id]) < 15:  # Cap at 15 exemplars per person for high performance
-                    clusters[p_id].append(json.loads(emb_str))
-
-            cursor.execute("SELECT COUNT(id) FROM people")
-            p_count = cursor.fetchone()[0]
-
+        # --- Build File List ---
+        files_to_process = []
+        if run_index:
+            backup_configs = cfg.get("backup_configs", [])
+            roots = [Path(c.get("backup_path", "")) for c in backup_configs if c.get("backup_path")]
+            valid_roots = [r for r in roots if r.exists() and r.is_dir()]
+            for root_path in valid_roots:
+                for dirpath, _, filenames in os.walk(str(root_path)):
+                    for f in filenames:
+                        files_to_process.append(os.path.join(dirpath, f))
+        else:
             with SessionLocal() as s:
                 photos = s.query(FileIndex).filter(FileIndex.category == 'photo').all()
+                files_to_process = [f.path for f in photos]
 
-            INDEXER_STATE["face_scanner_total"] = len(photos)
-            INDEXER_STATE["face_scanner_current"] = 0
-            processed_count = 0
-
-            for photo in photos:
-                if not face_scanner_running:
-                    break
-                    
-                INDEXER_STATE["face_scanner_current"] += 1
-                INDEXER_STATE["face_scanner_current_file"] = photo.filename or "Unknown file"
-
-                try:
-                    if photo.id in processed_ids:
+        total_files = len(files_to_process)
+        if run_index:
+            STATE["total"] = total_files
+            STATE["current"] = 0
+            STATE["indexed"] = 0
+            STATE["status"] = "Indexing & Scanning..."
+            STATE["running"] = True
+        if run_face:
+            STATE["face_scanner_total"] = total_files
+            STATE["face_scanner_current"] = 0
+        if run_object:
+            STATE["object_scanner_total"] = total_files
+            STATE["object_scanner_current"] = 0
+            
+        processed_count = 0
+        
+        with sqlite3.connect(ai_db_path, timeout=15) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            cursor = conn.cursor()
+            with SessionLocal() as session:
+                existing_files = {r.path: r for r in session.query(FileIndex).all()}
+                
+                for idx, file_str in enumerate(files_to_process):
+                    if combined_scanner_stopped or (run_index and STATE.get("stopped")):
+                        break
+                        
+                    file = Path(file_str)
+                    if not file.exists():
                         continue
-                    
-                    file_path = _resolve_path(Path(photo.path))
-                    if not file_path.exists():
+                        
+                    if run_index:
+                        STATE["current"] += 1
+                        STATE["current_file"] = str(file)
+                    if run_face and face_scanner_running:
+                        STATE["face_scanner_current"] += 1
+                        STATE["face_scanner_current_file"] = file.name
+                    if run_object and not STATE.get("object_scanner_stopped"):
+                        STATE["object_scanner_current"] += 1
+                        STATE["object_scanner_current_file"] = file.name
+
+                    # --- 1. Indexing Phase ---
+                    db_item = existing_files.get(file_str)
+                    if run_index:
+                        try:
+                            modified_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(file.stat().st_mtime))
+                            file_size = str(file.stat().st_size)
+                            
+                            if not db_item:
+                                category = classify(file.suffix)
+                                metadata, extra_tags = extract_metadata_for_file(file, category)
+                                tags = build_tags(metadata, category, file.suffix, file)
+                                if extra_tags: tags = ",".join(set(tags.split(",") + extra_tags))
+                                
+                                db_item = FileIndex(
+                                    path=str(file), filename=file.name, category=category,
+                                    size=file_size, modified=modified_time, extension=file.suffix,
+                                    tags=tags, metadata_json=json.dumps(metadata)
+                                )
+                                session.add(db_item)
+                                session.commit()
+                                STATE["indexed"] += 1
+                                existing_files[file_str] = db_item
+                            else:
+                                if db_item.size != file_size or db_item.modified != modified_time:
+                                    category = classify(file.suffix)
+                                    metadata, extra_tags = extract_metadata_for_file(file, category)
+                                    tags = build_tags(metadata, category, file.suffix, file)
+                                    if extra_tags: tags = ",".join(set(tags.split(",") + extra_tags))
+                                    db_item.size = file_size
+                                    db_item.modified = modified_time
+                                    db_item.metadata_json = json.dumps(metadata)
+                                    db_item.tags = tags
+                                    session.commit()
+                                    STATE["indexed"] += 1
+                        except Exception as e:
+                            print(f"Index error on {file.name}: {e}")
+                            session.rollback()
+                            continue
+
+                    # Skip AI phase if the file is not an image
+                    if not db_item or db_item.category != 'photo':
                         continue
+
+                    # --- 2. AI Phase ---
+                    obj_stopped = STATE.get("object_scanner_stopped", False)
+                    needs_face = run_face and face_scanner_running and db_item.id not in face_processed_ids
+                    needs_object = run_object and not obj_stopped and db_item.id not in object_processed_ids
                     
+                    if not needs_face and not needs_object:
+                        continue
+                        
+                    filename_lower = db_item.filename.lower() if db_item.filename else ""
+                    if "screenshot" in filename_lower or "meme" in filename_lower:
+                        if needs_face: cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item.id,))
+                        if needs_object: cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item.id,))
+                        processed_count += 1
+                        if processed_count % 50 == 0: conn.commit()
+                        continue
+
+                    # --- OPTIMIZATION: Read file ONCE from disk for both ML models ---
                     try:
-                        # Use numpy to safely load paths with spaces/Unicode on Windows
-                        img_array = np.fromfile(str(file_path), np.uint8)
+                        img_array = np.fromfile(str(file), np.uint8)
                         img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                     except Exception:
-                        img = cv2.imread(str(file_path))
+                        continue
 
                     if img is None:
-                        cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (photo.id,))
+                        if needs_face: cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item.id,))
+                        if needs_object: cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item.id,))
                         processed_count += 1
-                        if processed_count % 50 == 0:
-                            conn.commit()
+                        if processed_count % 50 == 0: conn.commit()
                         continue
-
-                    height, width, _ = img.shape
-                    target_dim = 800
-                    scale = 1.0
-                    if max(height, width) > target_dim:
-                        scale = target_dim / max(height, width)
-                        new_w, new_h = int(width * scale), int(height * scale)
-                        det_img = cv2.resize(img, (new_w, new_h))
-                        detector.setInputSize((new_w, new_h))
-                    else:
-                        det_img = img
-                        detector.setInputSize((width, height))
-
-                    try:
-                        success, faces = detector.detect(det_img)
-                    except Exception as e:
-                        print(f"Skipping large/invalid image {file_path.name}: {e}")
-                        cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (photo.id,))
-                        processed_count += 1
-                        if processed_count % 50 == 0:
-                            conn.commit()
-                        continue
-                    
-                    # Second pass fallback for extreme close-up selfies
-                    if faces is None:
-                        target_dim = 320
-                        scale = 1.0
-                        if max(height, width) > target_dim:
-                            scale = target_dim / max(height, width)
-                            new_w, new_h = int(width * scale), int(height * scale)
-                            det_img = cv2.resize(img, (new_w, new_h))
-                            detector.setInputSize((new_w, new_h))
-                        else:
-                            det_img = img
-                            detector.setInputSize((width, height))
+                        
+                    # --- Run Object Classifier ---
+                    if needs_object and net is not None:
                         try:
+                            o_img = cv2.resize(img, (224, 224))
+                            o_img = cv2.cvtColor(o_img, cv2.COLOR_BGR2RGB)
+                            o_img = o_img.astype(np.float32) / 255.0
+                            o_img -= np.array([0.485, 0.456, 0.406])
+                            o_img /= np.array([0.229, 0.224, 0.225])
+                            o_img = o_img.transpose(2, 0, 1)
+                            o_img = np.expand_dims(o_img, axis=0)
+                            o_img = np.ascontiguousarray(o_img)
+                            
+                            net.setInput(o_img)
+                            preds = net.forward().flatten()
+                            exp_preds = np.exp(preds - np.max(preds))
+                            probs = exp_preds / np.sum(exp_preds)
+                            
+                            classIds = np.argsort(probs)[-5:][::-1]
+                            new_tags = []
+                            for classId in classIds:
+                                if probs[classId] > object_threshold:
+                                    label = classes[classId].split(',')[0].strip().lower().replace(" ", "_")
+                                    new_tags.append(f"object:{label}")
+                                    
+                            if new_tags:
+                                current_tags = db_item.tags or ""
+                                for tag in new_tags:
+                                    if tag not in current_tags:
+                                        current_tags = f"{current_tags} {tag}".strip()
+                                db_item.tags = current_tags
+                                session.commit()
+                        except Exception as e:
+                            print(f"ERROR: Failed to classify {file.name}: {e}")
+                            
+                        cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item.id,))
+                        object_processed_ids.add(db_item.id)
+
+                    # --- Run Face Detector ---
+                    if needs_face and detector is not None:
+                        try:
+                            height, width, _ = img.shape
+                            target_dim = 800
+                            scale = 1.0
+                            if max(height, width) > target_dim:
+                                scale = target_dim / max(height, width)
+                                new_w, new_h = int(width * scale), int(height * scale)
+                                det_img = cv2.resize(img, (new_w, new_h))
+                                detector.setInputSize((new_w, new_h))
+                            else:
+                                det_img = img
+                                detector.setInputSize((width, height))
+                                
                             success, faces = detector.detect(det_img)
-                        except Exception:
-                            pass
-
-                    if faces is not None:
-                        if scale != 1.0:
-                            faces[:, :14] /= scale
-                        for face in faces:
-                            try:
-                                face_align = recognizer.alignCrop(img, face)
-                                face_feature = recognizer.feature(face_align)
-                                embedding = face_feature[0].tolist()
-
-                                best_match_id = None
-                                best_sim = -1.0
-                                for person_id, rep_embs in clusters.items():
-                                    for rep_emb in rep_embs:
-                                        sim = _cosine_similarity(embedding, rep_emb)
-                                        if sim > cluster_threshold and sim > best_sim:
-                                            best_sim = sim
-                                            best_match_id = person_id
-
-                                if best_match_id is None:
-                                    p_count += 1
-                                    cursor.execute("INSERT INTO people (name) VALUES (?)", (f"Unknown Person #{p_count}",))
-                                    best_match_id = cursor.lastrowid
-                                    clusters[best_match_id] = [embedding]
+                            
+                            if faces is None:
+                                target_dim = 320
+                                scale = 1.0
+                                if max(height, width) > target_dim:
+                                    scale = target_dim / max(height, width)
+                                    new_w, new_h = int(width * scale), int(height * scale)
+                                    det_img = cv2.resize(img, (new_w, new_h))
+                                    detector.setInputSize((new_w, new_h))
                                 else:
-                                    if len(clusters[best_match_id]) < 15:
-                                        clusters[best_match_id].append(embedding)
-                                
-                                cursor.execute("INSERT INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
-                                               (best_match_id, photo.id, json.dumps(embedding)))
-                            except Exception as e:
-                                print(f"Face processing error on {file_path}: {e}")
-                                
-                    # Mark as processed whether faces were found or not!
-                    cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (photo.id,))
+                                    det_img = img
+                                    detector.setInputSize((width, height))
+                                try:
+                                    success, faces = detector.detect(det_img)
+                                except Exception:
+                                    pass
+
+                            if faces is not None:
+                                if scale != 1.0:
+                                    faces[:, :14] /= scale
+                                for face in faces:
+                                    face_align = recognizer.alignCrop(img, face)
+                                    face_feature = recognizer.feature(face_align)
+                                    embedding = face_feature[0].tolist()
+
+                                    best_match_id = None
+                                    best_sim = -1.0
+                                    for person_id, rep_embs in clusters.items():
+                                        for rep_emb in rep_embs:
+                                            sim = _cosine_similarity(embedding, rep_emb)
+                                            if sim > cluster_threshold and sim > best_sim:
+                                                best_sim = sim
+                                                best_match_id = person_id
+
+                                    if best_match_id is None:
+                                        p_count += 1
+                                        cursor.execute("INSERT INTO people (name) VALUES (?)", (f"Unknown Person #{p_count}",))
+                                        best_match_id = cursor.lastrowid
+                                        clusters[best_match_id] = [embedding]
+                                    else:
+                                        if len(clusters[best_match_id]) < 15:
+                                            clusters[best_match_id].append(embedding)
+                                    
+                                    cursor.execute("INSERT INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
+                                                    (best_match_id, db_item.id, json.dumps(embedding)))
+                        except Exception as e:
+                            print(f"Face processing error on {file.name}: {e}")
+                            
+                        cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item.id,))
+                        face_processed_ids.add(db_item.id)
+
                     processed_count += 1
                     if processed_count % 50 == 0:
                         conn.commit()
-                except Exception as loop_e:
-                    print(f"Unexpected error in face scanner loop for file {photo.id}: {loop_e}")
-            
-            # Final commit for any remaining uncommitted rows
             conn.commit()
-                            
+
     except Exception as e:
-        print(f"CRITICAL: Face Worker Error: {e}")
+        print(f"CRITICAL: Unified Worker Error: {e}")
         traceback.print_exc()
     finally:
-        face_scanner_running = False
-        INDEXER_STATE["face_scanner_current_file"] = ""
+        if run_index:
+            STATE["running"] = False
+            STATE["stopped"] = False
+            STATE["status"] = "Idle"
+        if run_face:
+            face_scanner_running = False
+            STATE["face_scanner_current_file"] = ""
+        if run_object:
+            object_scanner_running = False
+            STATE["object_scanner_stopped"] = False
+            STATE["object_scanner_current_file"] = ""
+        combined_scanner_running = False
+        combined_scanner_stopped = False
 
 @app.post("/scan-faces")
 def scan_faces():
@@ -1336,7 +1496,7 @@ def scan_faces():
     if face_scanner_running:
         raise HTTPException(status_code=400, detail="Face scanning is already in progress.")
     face_scanner_running = True
-    face_scanner_thread = threading.Thread(target=_scan_and_cluster_faces_worker)
+    face_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": True, "run_object": False})
     face_scanner_thread.start()
     return {"message": "Face scanning and clustering started in the background."}
 
@@ -1488,6 +1648,11 @@ def get_person_thumbnail(person_id: int):
             
         yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
         sface_path = get_bundled_model_path("face_recognition_sface_2021dec.onnx")
+
+        if not Path(yunet_path).exists() or not Path(sface_path).exists():
+            print("Face recognition models not found. Ensure .onnx files are in the backend folder.")
+            return
+
         detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
         detector.setScoreThreshold(0.5)
         recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
@@ -1863,16 +2028,16 @@ def _scan_and_tag_objects_worker():
 
                 photos = s.query(FileIndex).filter(FileIndex.category == 'photo').all()
                 
-                INDEXER_STATE["object_scanner_total"] = len(photos)
-                INDEXER_STATE["object_scanner_current"] = 0
+                STATE["object_scanner_total"] = len(photos)
+                STATE["object_scanner_current"] = 0
                 processed_count = 0
 
                 for photo in photos:
                     if not object_scanner_running:
                         break
                         
-                    INDEXER_STATE["object_scanner_current"] += 1
-                    INDEXER_STATE["object_scanner_current_file"] = photo.filename or "Unknown file"
+                    STATE["object_scanner_current"] += 1
+                    STATE["object_scanner_current_file"] = photo.filename or "Unknown file"
                     
                     if photo.id in processed_ids:
                         continue
@@ -1950,8 +2115,8 @@ def _scan_and_tag_objects_worker():
         traceback.print_exc()
     finally:
         object_scanner_running = False
-        INDEXER_STATE["object_scanner_stopped"] = False
-        INDEXER_STATE["object_scanner_current_file"] = ""
+        STATE["object_scanner_stopped"] = False
+        STATE["object_scanner_current_file"] = ""
 
 @app.post("/scan-objects")
 def scan_objects():
@@ -1959,7 +2124,7 @@ def scan_objects():
     if object_scanner_running:
         raise HTTPException(status_code=400, detail="Object scanning is already in progress.")
     object_scanner_running = True
-    INDEXER_STATE["object_scanner_stopped"] = False
+    STATE["object_scanner_stopped"] = False
     object_scanner_thread = threading.Thread(target=_scan_and_tag_objects_worker)
     object_scanner_thread.start()
     return {"message": "Object scanning started in the background."}
@@ -1970,7 +2135,7 @@ def stop_scan_objects():
     if not object_scanner_running:
         raise HTTPException(status_code=400, detail="Object scanner is not running.")
     object_scanner_running = False
-    INDEXER_STATE["object_scanner_stopped"] = True
+    STATE["object_scanner_stopped"] = True
     return {"message": "Stopping object scanner."}
 
 @app.post("/reset-object-scanner-progress")
@@ -1990,6 +2155,47 @@ def reset_object_scanner_progress():
 class TagUpdateRequest(BaseModel):
     file_ids: list[int]
     tags: list[str]
+
+
+
+combined_scanner_running = False
+combined_scanner_stopped = False
+combined_scanner_thread = None
+
+class CombinedScanRequest(BaseModel):
+    index: bool
+    tag: bool
+    face: bool
+
+@app.post("/scan-combined")
+def scan_combined(req: CombinedScanRequest):
+    if cv2 is None and (req.tag or req.face):
+        raise HTTPException(status_code=500, detail="OpenCV is required for face and object recognition.")
+    global combined_scanner_thread, combined_scanner_running, combined_scanner_stopped
+    if combined_scanner_running or STATE.get("running") or face_scanner_running or object_scanner_running:
+        raise HTTPException(status_code=400, detail="A scan is already in progress.")
+    combined_scanner_running = True
+    combined_scanner_stopped = False
+    combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": req.index, "run_object": req.tag, "run_face": req.face})
+    combined_scanner_thread.start()
+    return {"message": "Combined scanning started in the background."}
+
+@app.post("/stop-scan-combined")
+def stop_scan_combined():
+    global combined_scanner_running, combined_scanner_stopped, face_scanner_running, object_scanner_running
+    if not combined_scanner_running:
+        raise HTTPException(status_code=400, detail="Combined scanner is not running.")
+    combined_scanner_stopped = True
+    
+    if STATE.get("running"):
+        STATE["stopped"] = True
+        STATE["paused"] = False
+        STATE["status"] = "Stopping..."
+        
+    face_scanner_running = False
+    object_scanner_running = False
+    
+    return {"message": "Stopping combined scanner."}
 
 @app.post("/tags/add")
 def add_tags(req: TagUpdateRequest):

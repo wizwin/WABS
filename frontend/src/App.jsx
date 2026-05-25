@@ -308,6 +308,36 @@ const [editingNames, setEditingNames] = useState({});
 const [dbFilename, setDbFilename] = useState('archive.db');
 const [thumbUpdateTimestamps, setThumbUpdateTimestamps] = useState({});
 const [actionInProgress, setActionInProgress] = useState(false);
+const [combinedOptions, setCombinedOptions] = useState({ index: true, tag: true, face: true });
+
+const startCombinedScan = async () => {
+    setActionInProgress(true);
+    try {
+        setIndexer(prev => ({ ...prev, combined_scanner_running: true, combined_scanner_stopped: false }));
+        await axios.post(`${API}/scan-combined`, combinedOptions);
+        showToastMessage("Combined scan started.");
+        await loadDashboard();
+    } catch (error) {
+        setIndexer(prev => ({ ...prev, combined_scanner_running: false }));
+        alert(error?.response?.data?.detail || "Error starting combined scan");
+    } finally {
+        setActionInProgress(false);
+    }
+};
+
+const stopCombinedScan = async () => {
+    setActionInProgress(true);
+    try {
+        setIndexer(prev => ({ ...prev, combined_scanner_stopped: true }));
+        await axios.post(`${API}/stop-scan-combined`);
+        showToastMessage("Stopping combined scan.");
+        await loadDashboard();
+    } catch (error) {
+        alert(error?.response?.data?.detail || "Error stopping combined scan");
+    } finally {
+        setActionInProgress(false);
+    }
+};
 const [tagsPage, setTagsPage] = useState(1);
 const [tagSearchQuery, setTagSearchQuery] = useState('');
 const [unknownPeoplePage, setUnknownPeoplePage] = useState(1);
@@ -1461,12 +1491,13 @@ useEffect(() => {
       errorRetries++;
       if (errorRetries >= 5) {
         console.error("Max polling retries reached. Assuming backend is offline.");
-        setIndexer(prev => ({ 
-          ...prev, 
-          running: false, 
-          hasher_running: false, 
-          face_scanner_running: false, 
-          object_scanner_running: false 
+        setIndexer(prev => ({
+          ...prev,
+          running: false,
+          hasher_running: false,
+          face_scanner_running: false,
+          object_scanner_running: false,
+          combined_scanner_running: false
         }));
         showToastMessage("Connection lost. Stopped monitoring background tasks.");
         return; // Stop polling and gracefully unlock UI
@@ -1477,11 +1508,11 @@ useEffect(() => {
     if (isMounted) timeoutId = setTimeout(poll, delay);
   };
 
-  if (indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running) {
+  if (indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.combined_scanner_running) {
     timeoutId = setTimeout(poll, 1000);
   }
   return () => { isMounted = false; clearTimeout(timeoutId); };
-}, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, page]);
+}, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, indexer.combined_scanner_running, page]);
 
 function getOfflinePlaceholder(text, bgColor, textColor) {
   const safeText = String(text).replace(/[<>&'"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','\'':'&apos;','"':'&quot;'}[c]));
@@ -1600,7 +1631,7 @@ return(
       <AppIcon size={40} />
       <div>
         <h2 style={{ margin: 0, fontSize: '20px', color: '#f8fafc' }}>WABS</h2>
-        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta.4</div>
+        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta.5</div>
       </div>
     </div>
 
@@ -2618,7 +2649,7 @@ page==='dashboard' &&
 </div>
 
 <div style={{display:'grid',gridTemplateColumns:'1.3fr 1fr',gap:'18px',marginTop:'24px'}}>
-<div style={{background:'#111827',padding:'18px',borderRadius:'16px',border:'1px solid #24324a'}}>
+<div style={{background:'#111827',padding:'18px',borderRadius:'16px',border:'1px solid #24324a', minWidth: 0}}>
 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: 0 }}><AnalyticsIcon style={{ color: '#3b82f6' }} /> Indexing Status</h2>
 <p><b>Status:</b> {indexer.status}</p>
 <p><b>Running:</b> {indexer.running ? 'Yes' : 'No'}</p>
@@ -2626,9 +2657,12 @@ page==='dashboard' &&
 <p><b>Indexed:</b> {indexer.indexed}</p>
 <p><b>Progress:</b> {indexer.current} / {indexer.total}</p>
 <ProgressBar current={indexer.current} total={indexer.total} color="#3b82f6" />
-<p style={{wordBreak:'break-word', marginTop: '8px'}}><b>Current File:</b> {indexer.current_file || '—'}</p>
+<div style={{marginTop: '12px', display: 'flex', gap: '6px', alignItems: 'center'}}>
+  <b style={{whiteSpace: 'nowrap'}}>Current File:</b>
+  <span style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', flex: 1, minWidth: 0, color: '#94a3b8', fontSize: '13px'}}>{indexer.current_file || '—'}</span>
 </div>
-<div style={{background:'#111827',padding:'18px',borderRadius:'16px',border:'1px solid #24324a'}}>
+</div>
+<div style={{background:'#111827',padding:'18px',borderRadius:'16px',border:'1px solid #24324a', minWidth: 0}}>
 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: 0 }}><SettingsApplicationsIcon style={{ color: '#3b82f6' }} /> Indexer Controls</h2>
 
 <h3 style={{ margin: '16px 0 10px 0', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Core Database</h3>
@@ -2655,7 +2689,7 @@ Stop
 
 <h3 style={{ margin: '20px 0 10px 0', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Background Analysis</h3>
 <div style={{display:'grid',gap:'8px'}}>
-<div style={{display:'flex', flexDirection:'column'}}>
+<div style={{display:'flex', flexDirection:'column', minWidth: 0}}>
 {indexer.hasher_running ? (
 <>
 <ActionButton disabled={actionInProgress || indexer.hasher_stopped} onClick={stopVerifyDuplicates} style={{ width: '100%', color: '#ef4444' }}>
@@ -2670,7 +2704,7 @@ Verify Hashes (Duplicates)
 </ActionButton>
 )}
 </div>
-<div style={{display:'flex', flexDirection:'column'}}>
+<div style={{display:'flex', flexDirection:'column', minWidth: 0}}>
 {indexer.face_scanner_running ? (
 <>
 <ActionButton disabled={actionInProgress || indexer.face_scanner_stopped} onClick={stopFaceScan} style={{ width: '100%', color: '#ef4444' }}>
@@ -2685,7 +2719,7 @@ Scan for Faces (People)
 </ActionButton>
 )}
 </div>
-<div style={{display:'flex', flexDirection:'column'}}>
+<div style={{display:'flex', flexDirection:'column', minWidth: 0}}>
 {indexer.object_scanner_running ? (
 <>
 <ActionButton disabled={actionInProgress || indexer.object_scanner_stopped} onClick={stopObjectScan} style={{ width: '100%', color: '#ef4444' }}>
@@ -2700,6 +2734,64 @@ Classify Objects & Scenes
 </ActionButton>
 )}
 </div>
+
+<h3 style={{ margin: '20px 0 10px 0', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Combined Operations</h3>
+<div style={{display:'flex', flexDirection:'column', gap: '8px', background: '#0f172a', padding: '16px', borderRadius: '12px', border: '1px solid #334155', minWidth: 0}}>
+{indexer.combined_scanner_running ? (
+  (() => {
+    let current, total, file, color, title;
+
+    if (indexer.running && indexer.total > 0) {
+        title = 'Indexing...';
+        current = indexer.current;
+        total = indexer.total;
+        file = indexer.current_file;
+        color = '#3b82f6';
+    } else if (indexer.face_scanner_running) {
+        title = 'Scanning Faces...';
+        current = indexer.face_scanner_current;
+        total = indexer.face_scanner_total;
+        file = indexer.face_scanner_current_file;
+        color = '#8b5cf6';
+    } else if (indexer.object_scanner_running) {
+        title = 'Classifying Objects...';
+        current = indexer.object_scanner_current;
+        total = indexer.object_scanner_total;
+        file = indexer.object_scanner_current_file;
+        color = '#f59e0b';
+    } else {
+        title = 'Initializing...';
+        current = 1; // indeterminate
+        total = 1;
+        file = 'Preparing...';
+        color = '#94a3b8';
+    }
+
+    return <>
+      <ActionButton disabled={actionInProgress || indexer.combined_scanner_stopped} onClick={stopCombinedScan} style={{ width: '100%', color: '#ef4444' }}>
+        {indexer.combined_scanner_stopped ? 'Stopping Combined Scan...' : 'Stop Combined Scan'}
+      </ActionButton>
+      <div style={{marginTop: '8px'}}><span style={{ fontSize: '13px', color: '#cbd5e1' }}>Current Step: {title}</span><ProgressBar current={current} total={total} color={color} /><div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{file || ''}</div></div>
+    </>;
+  })()
+) : (
+<>
+  <label style={{display:'flex',alignItems:'center',gap:'10px', color:'#f8fafc', fontSize:'14px'}}>
+    <input type='checkbox' checked={combinedOptions.index} onChange={(e) => setCombinedOptions({...combinedOptions, index: e.target.checked})} /> Index New Files
+  </label>
+  <label style={{display:'flex',alignItems:'center',gap:'10px', color:'#f8fafc', fontSize:'14px'}}>
+    <input type='checkbox' checked={combinedOptions.tag} onChange={(e) => setCombinedOptions({...combinedOptions, tag: e.target.checked})} /> Classify Objects & Scenes
+  </label>
+  <label style={{display:'flex',alignItems:'center',gap:'10px', color:'#f8fafc', fontSize:'14px'}}>
+    <input type='checkbox' checked={combinedOptions.face} onChange={(e) => setCombinedOptions({...combinedOptions, face: e.target.checked})} /> Scan for Faces
+  </label>
+  <ActionButton disabled={actionInProgress} onClick={startCombinedScan} style={{ width: '100%', marginTop: '8px' }}>
+    Start Combined Scan
+  </ActionButton>
+</>
+)}
+</div>
+
 </div>
 </div>
 </div>
@@ -3054,7 +3146,7 @@ page==='about' &&
     <div style={{background:'#8b5cf61a', padding:'10px', borderRadius:'10px', color:'#8b5cf6', display:'flex'}}><InfoIcon /></div>
     <div>
       <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Version Info</h3>
-      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta.4</strong></p>
+      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta.5</strong></p>
     </div>
   </div>
 
