@@ -11,3 +11,4 @@ pyinstaller
 pyyaml
 numpy
 scikit-learn
+python-docx

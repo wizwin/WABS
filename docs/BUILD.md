@@ -58,7 +58,7 @@ Now open your browser and navigate to the localhost URL provided by Vite to view
 
 ---
 
-## Building a Release (Local Windows / Linux)
+## Building a Release (Local Windows / Linux / Raspberry Pi)
 
 WABS is packaged into a single standalone executable using `PyInstaller`. You do not need to use VSCode to build the release; any standard terminal or command prompt will work.
 
@@ -127,7 +127,7 @@ WABS includes a GitHub Actions workflow (`build.yml`) that automatically generat
 2. Click on **Releases** > **Draft a new release**.
 3. Create a new tag (e.g., `v1.0.0`) and enter a title/description.
 4. Click **Publish release**.
-5. The GitHub Action will run in the background. Once complete, it will automatically attach the compiled `WABS-Windows.exe` and `WABS-Linux` binaries directly to the release page!
+5. The GitHub Action will run in the background. Once complete, it will automatically attach the compiled `WABS-Windows.exe`, `WABS-Linux`, and `WABS-RaspberryPi` binaries directly to the release page!
 
 **Option 2: Manual Trigger**
 1. Go to the **Actions** tab in your GitHub repository.

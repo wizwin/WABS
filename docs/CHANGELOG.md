@@ -1,5 +1,24 @@
 # WABS Changelog
 
+## v1.0.0-beta.5
+**Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.5
+
+### 🚀 Major New Features
+*   **Combined Scan:** Added combined scan to optimize performance of indexing and scanning of faces and objects.
+*   **Document Thumbnails:** Added thumbnail support for `.doc` and `.docx` files.
+*   **Smart Search UI:** Improved the user interface for Smart Search.
+*   **People Management:** Improved renaming people and handling person mismatches.
+
+### 🛠 Build & CI
+*   **Raspberry Pi Build:** Added a Raspberry Pi build target in GitHub Actions.
+*   **Build Selection:** Added UI to pick the build target when running workflows manually.
+
+### 🐞 Bug Fixes
+*   **Duplicates Navigation:** Fixed UI bugs when navigating away from the Duplicates page.
+*   **Batch Processing:** Fixed issues with re-applying batch processing.
+*   **UI Scaling:** Fixed UI scaling issues when resizing the details pane.
+*   **Selection Display:** Fixed an issue where the app was not showing selected files.
+
 ## v1.0.0-beta.4
 **Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.4
 

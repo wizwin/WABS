@@ -6,7 +6,18 @@ on:
       - 'v*' # Automatically run when a tag starting with 'v' is pushed (e.g., v1.0.0-beta)
   release:
     types: [published] # Triggers when you publish a new Release in GitHub!
-  workflow_dispatch: # Allows manual trigger from the GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      target_os:
+        description: 'Target OS to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - windows-latest
+          - ubuntu-latest
+          - ubuntu-24.04-arm
 
 permissions:
   contents: write # Required to allow GitHub to attach files to the Release
@@ -14,6 +25,7 @@ permissions:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    if: github.event_name != 'workflow_dispatch' || inputs.target_os == 'all' || inputs.target_os == matrix.os
     strategy:
       matrix:
         include:
@@ -22,6 +34,9 @@ jobs:
             path_sep: ";"
           - os: ubuntu-latest
             artifact_name: WABS-Linux
+            path_sep: ":"
+          - os: ubuntu-24.04-arm
+            artifact_name: WABS-RaspberryPi
             path_sep: ":"
     steps:
       - name: Checkout Code

@@ -29,6 +29,11 @@ except ImportError:
     fitz = None
 
 try:
+    import docx
+except ImportError:
+    docx = None
+
+try:
     from backend.app.database import SessionLocal, FileIndex
     from backend.app.config import load_config, save_config
     from backend.app.indexer import start as start_indexing, STATE as STATE
@@ -680,6 +685,18 @@ def preview(item_id:int):
                 if fitz is not None:
                     try:
                         doc = fitz.open(str(file_path))
+                        
+                        if doc.needs_pass:
+                            doc.close()
+                            placeholder = """
+<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300' viewBox='0 0 400 300'>
+  <rect width='400' height='300' fill='#111827'/>
+  <text x='50%' y='45%' fill='#94a3b8' font-family='Segoe UI,Arial' font-size='22' text-anchor='middle'>Preview unavailable</text>
+  <text x='50%' y='60%' fill='#64748b' font-family='Segoe UI,Arial' font-size='16' text-anchor='middle'>ENCRYPTED PDF</text>
+</svg>
+"""
+                            return Response(content=placeholder, media_type='image/svg+xml')
+
                         page = doc.load_page(0)
                         pix = page.get_pixmap(matrix=fitz.Matrix(0.5, 0.5))
                         pix.save(str(cached_thumb))
@@ -689,6 +706,27 @@ def preview(item_id:int):
                     except Exception as e:
                         print(f"ERROR: PDF thumbnail error for {file_path}: {e}")
                         traceback.print_exc()
+            elif file_path.suffix.lower() == ".docx" and docx is not None:
+                try:
+                    doc = docx.Document(str(file_path))
+                    lines = []
+                    for p in doc.paragraphs:
+                        if p.text.strip():
+                            lines.append(p.text.strip())
+                        if len(lines) >= 11:
+                            break
+                    
+                    svg_lines = ""
+                    y = 28
+                    for line in lines:
+                        safe_line = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')[:50]
+                        svg_lines += f"<text x='16' y='{y}' fill='#cbd5e1' font-family='monospace' font-size='13'>{safe_line}</text>\n"
+                        y += 24
+                        
+                    text_svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300' viewBox='0 0 400 300'>\n  <rect width='400' height='300' fill='#0f172a'/>\n{svg_lines}</svg>"
+                    return Response(content=text_svg, media_type='image/svg+xml')
+                except Exception as e:
+                    print(f"ERROR: DOCX thumbnail error for {file_path}: {e}")
             else:
                 text_extensions = [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".py", ".js", ".html", ".css", ".c", ".cpp", ".h", ".java", ".cs", ".go", ".rs", ".rb", ".php", ".sh", ".bat", ".sql"]
                 if file_path.suffix.lower() in text_extensions:
@@ -1020,7 +1058,12 @@ def indexer_reindex(req: IndexRequest = None):
     if STATE.get("running") or combined_scanner_running:
         return {"reindexing": False, "ignored": True}
     with SessionLocal() as s:
+        from sqlalchemy import text
         s.query(FileIndex).delete()
+        try:
+            s.execute(text("DELETE FROM sqlite_sequence WHERE name='files'"))
+        except Exception:
+            pass
         s.commit()
 
     cfg = load_config()
@@ -1031,6 +1074,23 @@ def indexer_reindex(req: IndexRequest = None):
             shutil.rmtree(thumb_dir)
         except Exception as e:
             print(f"Failed to clear thumbnails directory: {e}")
+
+    ai_db_path = get_ai_db_path()
+    if ai_db_path.exists():
+        try:
+            with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("DELETE FROM faces")
+                conn.execute("DELETE FROM people")
+                conn.execute("DELETE FROM processed_files")
+                conn.execute("DELETE FROM processed_objects")
+                try:
+                    conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('faces', 'people', 'processed_files', 'processed_objects')")
+                except Exception:
+                    pass
+                conn.commit()
+        except Exception as e:
+            print(f"Failed to clear AI database: {e}")
 
     STATE["indexed"] = 0
     STATE["current"] = 0
@@ -1357,8 +1417,10 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     tags=tags, metadata_json=json.dumps(metadata)
                                 )
                                 session.add(db_item)
-                                session.commit()
+                                session.flush()
                                 STATE["indexed"] += 1
+                                if STATE["indexed"] % 50 == 0:
+                                    session.commit()
                                 existing_files[file_str] = db_item
                             else:
                                 if db_item.size != file_size or db_item.modified != modified_time:
@@ -1370,11 +1432,11 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     db_item.modified = modified_time
                                     db_item.metadata_json = json.dumps(metadata)
                                     db_item.tags = tags
-                                    session.commit()
                                     STATE["indexed"] += 1
+                                    if STATE["indexed"] % 50 == 0:
+                                        session.commit()
                         except Exception as e:
                             print(f"Index error on {file.name}: {e}")
-                            session.rollback()
                             continue
 
                     # Skip AI phase if the file is not an image
@@ -1394,7 +1456,9 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         if needs_face: cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item.id,))
                         if needs_object: cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item.id,))
                         processed_count += 1
-                        if processed_count % 50 == 0: conn.commit()
+                        if processed_count % 50 == 0:
+                            conn.commit()
+                            session.commit()
                         continue
 
                     # --- OPTIMIZATION: Read file ONCE from disk for both ML models ---
@@ -1408,11 +1472,14 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         if needs_face: cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item.id,))
                         if needs_object: cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item.id,))
                         processed_count += 1
-                        if processed_count % 50 == 0: conn.commit()
+                        if processed_count % 50 == 0:
+                            conn.commit()
+                            session.commit()
                         continue
                         
                     # --- Run Object Classifier ---
                     if needs_object and net is not None:
+                    if needs_object and (net is not None or ort_session is not None):
                         try:
                             o_img = cv2.resize(img, (224, 224))
                             o_img = cv2.cvtColor(o_img, cv2.COLOR_BGR2RGB)
@@ -1425,6 +1492,12 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             
                             net.setInput(o_img)
                             preds = net.forward().flatten()
+                            if ort_session is not None:
+                                input_name = ort_session.get_inputs()[0].name
+                                preds = ort_session.run(None, {input_name: o_img})[0].flatten()
+                            else:
+                                net.setInput(o_img)
+                                preds = net.forward().flatten()
                             exp_preds = np.exp(preds - np.max(preds))
                             probs = exp_preds / np.sum(exp_preds)
                             
@@ -1441,7 +1514,6 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     if tag not in current_tags:
                                         current_tags = f"{current_tags} {tag}".strip()
                                 db_item.tags = current_tags
-                                session.commit()
                         except Exception as e:
                             print(f"ERROR: Failed to classify {file.name}: {e}")
                             
@@ -1518,6 +1590,9 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     processed_count += 1
                     if processed_count % 50 == 0:
                         conn.commit()
+                        session.commit()
+
+            session.commit()
             conn.commit()
 
     except Exception as e:
@@ -1613,7 +1688,8 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.60):
         # Fetch all unknown persons and their embeddings
         cursor.execute("""
             SELECT p.id, p.name, f.embedding_json, 
-                   (SELECT COUNT(id) FROM faces WHERE person_id = p.id) as photo_count
+                   (SELECT COUNT(id) FROM faces WHERE person_id = p.id) as photo_count,
+                   f.file_id
             FROM people p
             JOIN faces f ON p.id = f.person_id
             WHERE p.name LIKE 'Unknown Person%' AND f.embedding_json != '[]'
@@ -1622,7 +1698,7 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.60):
         unknown_faces = cursor.fetchall()
         
         similar_profiles = {}
-        for unk_person_id, unk_name, unk_embedding_json, photo_count in unknown_faces:
+        for unk_person_id, unk_name, unk_embedding_json, photo_count, file_id in unknown_faces:
             if not unk_embedding_json:
                 continue
             unk_embedding = json.loads(unk_embedding_json)
@@ -1636,7 +1712,7 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.60):
                 if unk_person_id not in similar_profiles or max_sim > similar_profiles[unk_person_id]["similarity"]:
                     similar_profiles[unk_person_id] = {
                         "id": unk_person_id, "name": unk_name, "similarity": round(float(max_sim), 3),
-                        "face_count": photo_count, "thumbnail": f"/people/{unk_person_id}/thumbnail"
+                        "face_count": photo_count, "thumbnail": f"/people/{unk_person_id}/thumbnail?v={file_id}_{photo_count}"
                     }
         results = list(similar_profiles.values())
         results.sort(key=lambda x: x["similarity"], reverse=True)
@@ -2045,6 +2121,12 @@ def _scan_and_tag_objects_worker():
             return
 
         net = cv2.dnn.readNetFromONNX(model_path)
+        ort_session = None
+        net = None
+        if ort is not None:
+            ort_session = create_ort_session(model_path)
+        else:
+            net = cv2.dnn.readNetFromONNX(model_path)
         with open(classes_path, 'rt') as f:
             classes = [line.strip() for line in f.readlines()]
             
@@ -2098,6 +2180,7 @@ def _scan_and_tag_objects_worker():
                         processed_count += 1
                         if processed_count % 50 == 0:
                             conn.commit()
+                            s.commit()
                         continue
 
                     current_tags = photo.tags or ""
@@ -2117,6 +2200,7 @@ def _scan_and_tag_objects_worker():
                         processed_count += 1
                         if processed_count % 50 == 0:
                             conn.commit()
+                            s.commit()
                         continue
                         
                     try:
@@ -2131,6 +2215,15 @@ def _scan_and_tag_objects_worker():
                         
                         net.setInput(img)
                         preds = net.forward().flatten()
+                        if ort is not None:
+                            input_name = net.get_inputs()[0].name
+                            preds = net.run(None, {input_name: img})[0].flatten()
+                        if ort_session is not None:
+                            input_name = ort_session.get_inputs()[0].name
+                            preds = ort_session.run(None, {input_name: img})[0].flatten()
+                        else:
+                            net.setInput(img)
+                            preds = net.forward().flatten()
                         
                         # Apply Softmax to convert raw logits to proper probabilities (0.0 to 1.0)
                         exp_preds = np.exp(preds - np.max(preds))
@@ -2150,7 +2243,6 @@ def _scan_and_tag_objects_worker():
                                 if tag not in current_tags:
                                     current_tags = f"{current_tags} {tag}".strip()
                             photo.tags = current_tags
-                            s.commit()
                     except Exception as e:
                         print(f"ERROR: Failed to classify {file_path.name}: {e}")
                         traceback.print_exc()
@@ -2159,6 +2251,9 @@ def _scan_and_tag_objects_worker():
                     processed_count += 1
                     if processed_count % 50 == 0:
                         conn.commit()
+                        s.commit()
+                
+                s.commit()
             conn.commit()
     except Exception as e:
         print(f"CRITICAL: Object Scanner Error: {e}")

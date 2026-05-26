@@ -33,6 +33,16 @@ Once the terminal window opens and the backend starts, open your web browser and
 2. **Index Files:** Go to the **Dashboard** and click **Start** under Indexer Controls.
 3. **Explore:** Use the **Explorer** and **Search** tabs to navigate and manage your data.
 
+### Clearing AI Data Manually (Faces & Tags)
+If you want to completely reset the AI's detected faces, people, and object tags, you can manually clear the AI database:
+1. **Stop** the WABS application (close the terminal/command prompt window).
+2. Open your file explorer and navigate to the folder you configured as your **Database Path** in WABS.
+3. Locate and delete the `ai_metadata.db` file. *(Note: Do not delete your main `archive.db` file as that contains your core file index).*
+4. **Restart** WABS. The application will automatically create a fresh, empty AI database on startup.
+5. You can now go to the Dashboard and start the AI scanners to re-process your archive from scratch.
+
+*(Note: You can also clear just the object tags directly from the UI by navigating to the **Tags** page and clicking **Clear All Object Tags**).*
+
 ### Advanced Search Operators
 WABS supports powerful search operators to help you precisely filter your archive. You can combine multiple operators with spaces (e.g., `type:video length:>1h`).
 * **`name:`** Exact filename match (e.g., `name:vacation.mp4`)

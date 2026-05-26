@@ -276,6 +276,7 @@ const [sortOrder,setSortOrder]=useState('desc')
 const [filterCategory, setFilterCategory] = useState('all')
 const [viewMode, setViewMode] = useState('grid')
 const [checkedFiles, setCheckedFiles] = useState(new Set())
+const globalFileCache = useRef(new Map())
 const [showSelectedOnly, setShowSelectedOnly] = useState(false)
 const lastCheckedPath = useRef(null)
 const [activeDate, setActiveDate] = useState('')
@@ -320,6 +321,7 @@ const [tagsPage, setTagsPage] = useState(1);
 const [tagSearchQuery, setTagSearchQuery] = useState('');
 const [unknownPeoplePage, setUnknownPeoplePage] = useState(1);
 const [namedPeoplePage, setNamedPeoplePage] = useState(1);
+const [namedPersonSearchQuery, setNamedPersonSearchQuery] = useState('');
 const [similarUnknowns, setSimilarUnknowns] = useState(null);
 const [isFindingSimilar, setIsFindingSimilar] = useState(false);
 const [checkedSimilar, setCheckedSimilar] = useState(new Set());
@@ -332,6 +334,18 @@ const [fullTimelineData, setFullTimelineData] = useState([]);
 useEffect(() => {
   sessionStorage.setItem('wabs_combined_options', JSON.stringify(combinedOptions));
 }, [combinedOptions]);
+
+useEffect(() => {
+  if (Array.isArray(files)) files.forEach(f => globalFileCache.current.set(f.path, f));
+}, [files]);
+
+useEffect(() => {
+  if (Array.isArray(personFiles)) personFiles.forEach(f => globalFileCache.current.set(f.path, f));
+}, [personFiles]);
+
+useEffect(() => {
+  if (Array.isArray(searchCache)) searchCache.forEach(f => globalFileCache.current.set(f.path, f));
+}, [searchCache]);
 
 useEffect(() => {
   if (checkedFiles.size === 0 && showSelectedOnly) {
@@ -730,7 +744,7 @@ const deletePerson = async (e, id, name) => {
     return;
   }
   if (name && !name.startsWith('Unknown Person')) {
-    if (window.confirm(`Remove name "${name}"? This will move them back to the Unknown Persons list.`)) { 
+    if (window.confirm(`Remove name "${name}"? This will move them back to the Unknown People list.`)) { 
       try { 
         await axios.post(`${API}/people/${id}/rename`, { name: `Unknown Person #${id}` }); 
         loadPeople(); 
@@ -799,7 +813,7 @@ async function assignPhotosToPerson(personId, filePaths) {
     return;
   }
   if (!personId) return;
-  const fileIds = filePaths.map(p => files.find(f => f.path === p)?.id).filter(id => id);
+  const fileIds = filePaths.map(p => globalFileCache.current.get(p)?.id).filter(id => id);
   try {
     for (const id of fileIds) {
       await axios.post(`${API}/people/${personId}/add-photo`, { file_id: id });
@@ -817,7 +831,7 @@ async function assignPhotosToPerson(personId, filePaths) {
 function locateSelectedFileInExplorer() {
     if (checkedFiles.size !== 1) return;
     const path = Array.from(checkedFiles)[0];
-    const file = personFiles.find(f => f.path === path);
+    let file = globalFileCache.current.get(path);
     if (!file) return;
 
     // Search for the specific day to provide timeline context
@@ -874,7 +888,7 @@ async function addTagsToSelected(tagsStr) {
   if (!tagsStr) return;
   const tags = tagsStr.split(',').map(t => t.trim().replace(/\s+/g, '_').toLowerCase()).filter(t => t);
   if (tags.length === 0) return;
-  const fileIds = Array.from(checkedFiles).map(p => files.find(f => f.path === p)?.id).filter(id => id);
+  const fileIds = Array.from(checkedFiles).map(p => globalFileCache.current.get(p)?.id).filter(id => id);
   try {
     await axios.post(`${API}/tags/add`, { file_ids: fileIds, tags });
     showToastMessage(`Added tags to ${fileIds.length} files.`);
@@ -897,7 +911,7 @@ async function removeTagsFromSelected(tagsStr) {
   if (!tagsStr) return;
   const tags = tagsStr.split(',').map(t => t.trim().replace(/\s+/g, '_').toLowerCase()).filter(t => t);
   if (tags.length === 0) return;
-  const fileIds = Array.from(checkedFiles).map(p => files.find(f => f.path === p)?.id).filter(id => id);
+  const fileIds = Array.from(checkedFiles).map(p => globalFileCache.current.get(p)?.id).filter(id => id);
   try {
     await axios.post(`${API}/tags/remove`, { file_ids: fileIds, tags });
     showToastMessage(`Removed tags from ${fileIds.length} files.`);
@@ -1093,8 +1107,18 @@ const toggleCheck = (e, path) => {
 };
 
 const selectAll = () => {
-  if (checkedFiles.size === files.length) setCheckedFiles(new Set());
-  else setCheckedFiles(new Set(files.map(f => f.path)));
+  const visiblePaths = sortedFiles.map(f => f.path);
+  const allVisibleChecked = visiblePaths.length > 0 && visiblePaths.every(p => checkedFiles.has(p));
+  
+  if (allVisibleChecked) {
+    const next = new Set(checkedFiles);
+    visiblePaths.forEach(p => next.delete(p));
+    setCheckedFiles(next);
+  } else {
+    const next = new Set(checkedFiles);
+    visiblePaths.forEach(p => next.add(p));
+    setCheckedFiles(next);
+  }
 };
 
 const selectVerifiedDuplicates = () => {
@@ -1129,7 +1153,7 @@ const selectVerifiedDuplicates = () => {
 
 async function deleteSelected() {
   if (filterCategory === 'duplicates' && !settings.allow_unverified_deletion) {
-    const filesToDelete = files.filter(f => checkedFiles.has(f.path));
+    const filesToDelete = Array.from(checkedFiles).map(p => globalFileCache.current.get(p)).filter(Boolean);
     const hasUnverified = filesToDelete.some(f => !f.metadata?.sha256);
     if (hasUnverified) {
       alert('Deletion Blocked: One or more selected files lack a verified SHA-256 sum.\n\nBecause your cold storage backup might be offline, we cannot guarantee these are true duplicates yet. You can override this protection in the Settings menu.');
@@ -1237,6 +1261,7 @@ async function verifyDuplicates() {
 const handleFilterChange = (e) => {
   const newCat = e.target.value;
   setFilterCategory(newCat);
+  setShowSelectedOnly(false);
   if (newCat === 'duplicates') {
     setSortBy('size');
     setSortOrder('desc');
@@ -1253,6 +1278,7 @@ const handleCategoryClick = (category) => {
   setFilterCategory(category);
   setPage('explorer');
   setSelected(null);
+  setShowSelectedOnly(false);
   if (category === 'duplicates') {
     setSortBy('size');
     setSortOrder('desc');
@@ -1261,7 +1287,7 @@ const handleCategoryClick = (category) => {
 };
 
 const sortedFiles = useMemo(() => {
-  let baseFiles = showSelectedOnly ? files.filter(f => checkedFiles.has(f.path)) : files;
+  let baseFiles = showSelectedOnly ? Array.from(checkedFiles).map(p => globalFileCache.current?.get(p) || files.find(f => f.path === p)).filter(Boolean) : (files || []);
 
   if (filterCategory === 'duplicates' && !showSelectedOnly) {
     const sizeGroups = {};
@@ -1634,6 +1660,7 @@ return(
       }
       setPage('explorer');
       setSelected(null);
+      setShowSelectedOnly(false);
       loadFiles(0, false, cat);
     }}>
     <FolderIcon fontSize="small" /> Explorer
@@ -1649,6 +1676,7 @@ return(
       }
       setPage('search');
       setSelected(null);
+      setShowSelectedOnly(false);
       if (query && searchCache.length > 0) {
         setFiles(searchCache);
         setOffset(searchCache.length);
@@ -1660,7 +1688,7 @@ return(
     <SearchIcon fontSize="small" /> Search
     </ActionButton>
 
-    <ActionButton className="" onClick={()=>{ setPage('people'); setSelected(null); setCheckedPeople(new Set()); setUnknownPeoplePage(1); setNamedPeoplePage(1); loadPeople(); }}>
+    <ActionButton className="" onClick={()=>{ setPage('people'); setSelected(null); setCheckedPeople(new Set()); setUnknownPeoplePage(1); setNamedPeoplePage(1); setNamedPersonSearchQuery(''); loadPeople(); }}>
     <FaceIcon fontSize="small" /> People
     </ActionButton>
 
@@ -1686,7 +1714,7 @@ return(
 </>
 )}
 
-<div className='workspace'>
+<div className='workspace' style={{ minWidth: 0 }}>
 
 <div className='topbar' style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
 
@@ -1831,7 +1859,7 @@ return(
   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginRight: '10px', cursor: 'pointer', fontWeight: '500' }}>
     <input 
       type="checkbox" 
-      checked={checkedFiles.size > 0 && checkedFiles.size === files.length} 
+      checked={checkedFiles.size > 0 && sortedFiles.length > 0 && sortedFiles.every(f => checkedFiles.has(f.path))} 
       onChange={selectAll} 
     />
     Select All
@@ -1921,11 +1949,16 @@ return(
 
 {checkedFiles.size > 0 && (
   <div style={{ padding: '10px 18px', background: '#1e293b', borderBottom: '1px solid #1f2937', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-    <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedFiles.size} file(s) selected</span>
+    <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto', whiteSpace: 'nowrap' }}>{showSelectedOnly ? `Showing ${checkedFiles.size} selected file(s)` : `${checkedFiles.size} file(s) selected`}</span>
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', borderColor: showSelectedOnly ? '#3b82f6' : undefined, color: showSelectedOnly ? '#38bdf8' : undefined }} onClick={() => setShowSelectedOnly(!showSelectedOnly)}>{showSelectedOnly ? 'Show All Files' : 'Show Selected Only'}</ActionButton>
 
     <div style={{ display: 'flex', gap: '6px', alignItems: 'center', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
       <ActionButton className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={openSelected}>Open</ActionButton>
+      {checkedFiles.size === 1 && (
+        <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', whiteSpace: 'nowrap' }} onClick={locateSelectedFileInExplorer}>
+          <PlaceIcon fontSize="small" /> Locate in Explorer
+        </ActionButton>
+      )}
       <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={copySelected}>Copy</ActionButton>
       {!isSelectionReadOnly && (
         <>
@@ -1982,16 +2015,24 @@ return(
 )}
 
     {page === 'search' && (
-      <div style={{ padding: '10px 18px', background: '#0f172a', borderBottom: '1px solid #1f2937' }}>
-        <h3 style={{ marginTop: '8px', marginBottom: '16px', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Smart Searches</h3>
-        <div style={{display:'flex', flexWrap: 'wrap', gap:'10px', paddingBottom: '8px'}}>
+      <div style={{ padding: '10px 18px', background: '#0f172a', borderBottom: '1px solid #1f2937', display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+        <h3 style={{ marginTop: '8px', marginBottom: '16px', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px', flexShrink: 0 }}>Smart Searches</h3>
+        <style>
+          {`
+            .smart-search-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+            .smart-search-scrollbar::-webkit-scrollbar-track { background: transparent; border-radius: 8px; }
+            .smart-search-scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 8px; }
+            .smart-search-scrollbar::-webkit-scrollbar-thumb:hover { background: #64748b; }
+          `}
+        </style>
+                <div className="smart-search-scrollbar" style={{display:'flex', gap:'10px', padding: '4px 4px 8px 4px', overflowX: 'auto', scrollbarWidth: 'thin', scrollbarColor: '#475569 transparent', width: '100%', boxSizing: 'border-box'}}>
           {(settings.smart_searches || []).map(search => (
-            <ActionButton key={search.id} className="btn btn-secondary" style={{ padding: '6px 12px', background: '#1e293b', color: '#38bdf8', borderColor: '#3b82f6', fontSize: '13px' }} onClick={() => doSearch(search.query)}>
+            <ActionButton key={search.id} className="btn btn-secondary" style={{ padding: '6px 12px', background: '#1e293b', color: '#38bdf8', borderColor: '#3b82f6', fontSize: '13px', flexShrink: 0, whiteSpace: 'nowrap' }} onClick={() => doSearch(search.query)}>
               {search.name}
             </ActionButton>
           ))}
           {(!settings.smart_searches || settings.smart_searches.length === 0) && (
-              <p style={{ color: '#94a3b8', margin: 0, fontSize: '13px' }}>No smart searches configured. Add some in the Settings page!</p>
+              <p style={{ color: '#94a3b8', margin: 0, fontSize: '13px', whiteSpace: 'nowrap' }}>No smart searches configured. Add some in the Settings page!</p>
           )}
         </div>
       </div>
@@ -2187,14 +2228,23 @@ page==='people' &&
     {people.filter(p => !(p.name || '').startsWith('Unknown Person')).length > 0 && (
       <>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '24px', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
-          <h2 style={{ margin: 0, color: '#f8fafc', fontSize: '20px' }}>Named Persons</h2>
-          {people.filter(p => !(p.name || '').startsWith('Unknown Person')).length > 100 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+            <h2 style={{ margin: 0, color: '#f8fafc', fontSize: '20px' }}>Named People</h2>
+            <input
+              type="text"
+              placeholder="Search by name..."
+              value={namedPersonSearchQuery}
+              onChange={(e) => { setNamedPersonSearchQuery(e.target.value); setNamedPeoplePage(1); }}
+              style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #334155', background: '#1e293b', color: '#f8fafc', width: '100%', maxWidth: '250px', outline: 'none' }}
+            />
+          </div>
+          {people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length > 50 && (
             <div style={{ display: 'flex', gap: '16px' }}>
               <ActionButton disabled={namedPeoplePage === 1} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setNamedPeoplePage(prev => Math.max(1, prev - 1))}>
                 Previous
               </ActionButton>
-              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person')).length / 100)}</span>
-              <ActionButton disabled={namedPeoplePage >= Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person')).length / 100)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
+              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)}</span>
+              <ActionButton disabled={namedPeoplePage >= Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
                 Next
               </ActionButton>
             </div>
@@ -2202,7 +2252,7 @@ page==='people' &&
         </div>
         
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
-        {people.filter(p => !(p.name || '').startsWith('Unknown Person')).sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '') : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || ''))).slice((namedPeoplePage - 1) * 100, namedPeoplePage * 100).map(p => (
+        {people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '') : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || ''))).slice((namedPeoplePage - 1) * 50, namedPeoplePage * 50).map(p => (
           <div key={p.id} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
              <input 
                type="checkbox" 
@@ -2255,14 +2305,18 @@ page==='people' &&
           </div>
         ))}
         </div>
+
+        {people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length === 0 && namedPersonSearchQuery && (
+          <p style={{ color: '#94a3b8', marginTop: '16px' }}>No named people match your search.</p>
+        )}
         
-        {people.filter(p => !(p.name || '').startsWith('Unknown Person')).length > 100 && (
+        {people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length > 50 && (
           <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '32px', marginBottom: '24px' }}>
             <ActionButton disabled={namedPeoplePage === 1} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setNamedPeoplePage(prev => Math.max(1, prev - 1))}>
               Previous
             </ActionButton>
-            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person')).length / 100)}</span>
-            <ActionButton disabled={namedPeoplePage >= Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person')).length / 100)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
+            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)}</span>
+            <ActionButton disabled={namedPeoplePage >= Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
               Next
             </ActionButton>
           </div>
@@ -2274,14 +2328,14 @@ page==='people' &&
     {people.filter(p => (p.name || '').startsWith('Unknown Person')).length > 0 && (
       <>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '32px', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
-          <h2 style={{ margin: 0, color: '#f8fafc', fontSize: '20px' }}>Unknown Persons</h2>
-          {people.filter(p => (p.name || '').startsWith('Unknown Person')).length > 100 && (
+          <h2 id="unknown-people-section" style={{ margin: 0, color: '#f8fafc', fontSize: '20px' }}>Unknown People</h2>
+          {people.filter(p => (p.name || '').startsWith('Unknown Person')).length > 50 && (
             <div style={{ display: 'flex', gap: '16px' }}>
               <ActionButton disabled={unknownPeoplePage === 1} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setUnknownPeoplePage(prev => Math.max(1, prev - 1))}>
                 Previous
               </ActionButton>
-              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 100)}</span>
-              <ActionButton disabled={unknownPeoplePage >= Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 100)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
+              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 50)}</span>
+              <ActionButton disabled={unknownPeoplePage >= Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 50)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
                 Next
               </ActionButton>
             </div>
@@ -2289,7 +2343,7 @@ page==='people' &&
         </div>
         
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
-        {people.filter(p => (p.name || '').startsWith('Unknown Person')).sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }) : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }))).slice((unknownPeoplePage - 1) * 100, unknownPeoplePage * 100).map(p => (
+        {people.filter(p => (p.name || '').startsWith('Unknown Person')).sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }) : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }))).slice((unknownPeoplePage - 1) * 50, unknownPeoplePage * 50).map(p => (
           <div key={p.id} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
              <input 
                type="checkbox" 
@@ -2343,13 +2397,13 @@ page==='people' &&
         ))}
         </div>
 
-        {people.filter(p => (p.name || '').startsWith('Unknown Person')).length > 100 && (
+        {people.filter(p => (p.name || '').startsWith('Unknown Person')).length > 50 && (
           <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '32px', marginBottom: '24px' }}>
             <ActionButton disabled={unknownPeoplePage === 1} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setUnknownPeoplePage(prev => Math.max(1, prev - 1))}>
               Previous
             </ActionButton>
-            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 100)}</span>
-            <ActionButton disabled={unknownPeoplePage >= Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 100)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
+            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 50)}</span>
+            <ActionButton disabled={unknownPeoplePage >= Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 50)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
               Next
             </ActionButton>
           </div>
@@ -2472,23 +2526,23 @@ page==='person_files' &&
 
 {checkedFiles.size > 0 && (
   <div style={{ padding: '10px 18px', background: '#1e293b', borderBottom: '1px solid #1f2937', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-    <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedFiles.size} photo(s) selected</span>
+    <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto', whiteSpace: 'nowrap' }}>{checkedFiles.size} photo(s) selected</span>
     {checkedFiles.size === 1 && (
-      <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => {
-         const fileId = personFiles.find(f => f.path === Array.from(checkedFiles)[0])?.id;
+      <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', whiteSpace: 'nowrap' }} onClick={() => {
+         const fileId = globalFileCache.current.get(Array.from(checkedFiles)[0])?.id;
          if (fileId) setPersonThumbnail(currentPerson.id, fileId);
       }}>Set as Cover Photo</ActionButton>
     )}
     {checkedFiles.size === 1 && (
-        <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={locateSelectedFileInExplorer}>
+        <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', whiteSpace: 'nowrap' }} onClick={locateSelectedFileInExplorer}>
             <PlaceIcon fontSize="small" /> Locate in Explorer
         </ActionButton>
     )}
-    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={() => {
-         const fileIds = Array.from(checkedFiles).map(path => personFiles.find(f => f.path === path)?.id).filter(id => id);
+    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', whiteSpace: 'nowrap' }} onClick={() => {
+         const fileIds = Array.from(checkedFiles).map(path => globalFileCache.current.get(path)?.id).filter(id => id);
          removePersonPhotosBulk(currentPerson.id, fileIds);
     }}>Remove from Person</ActionButton>
-    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedFiles(new Set())}>Clear Selection</ActionButton>
+    <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', whiteSpace: 'nowrap' }} onClick={() => setCheckedFiles(new Set())}>Clear Selection</ActionButton>
   </div>
 )}
 
@@ -2605,7 +2659,7 @@ page==='tags' &&
     const tagName = tag.replace('object:', '').replace(/_/g, ' ');
     return (
       <div key={tag} style={{ position: 'relative', display: 'inline-block' }}>
-        <ActionButton className="btn btn-secondary" style={{ padding: '8px 16px', background: '#1e293b', color: '#38bdf8', borderColor: '#3b82f6', fontSize: '14px', paddingRight: '32px' }} onClick={() => { doSearch(tag); }}>
+        <ActionButton className="btn btn-secondary" style={{ padding: '8px 16px', background: '#1e293b', color: '#38bdf8', borderColor: '#3b82f6', fontSize: '14px', paddingRight: '32px' }} onClick={() => { setFilterCategory('all'); doSearch(tag, 'all'); }}>
           {tagName}
         </ActionButton>
         <ActionButton disabled={indexer.object_scanner_running} style={{ position: 'absolute', top: '50%', right: '6px', transform: 'translateY(-50%)', background: 'transparent', color: '#ef4444', borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', padding: 0, minWidth: 0 }} onClick={() => deleteTagGlobally(tag)} title={`Delete tag "${tagName}" globally`}>
@@ -2656,8 +2710,8 @@ page==='dashboard' &&
 <h3 style={{ marginTop: '32px', marginBottom: '16px' }}>Maintenance & Analysis</h3>
 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
 <StatCard title="Duplicates" value={stats.duplicates || 0} icon={<FileCopyIcon />} color="#f43f5e" onClick={() => handleCategoryClick('duplicates')} />
-<StatCard title="Known People" value={stats.known_faces || 0} icon={<FaceIcon />} color="#10b981" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); setNamedPeoplePage(1); loadPeople(); }} />
-<StatCard title="Unknown People" value={stats.unknown_faces || 0} icon={<FaceIcon />} color="#94a3b8" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); loadPeople(); }} />
+<StatCard title="Known People" value={stats.known_faces || 0} icon={<FaceIcon />} color="#10b981" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); setNamedPeoplePage(1); setNamedPersonSearchQuery(''); loadPeople(); }} />
+<StatCard title="Unknown People" value={stats.unknown_faces || 0} icon={<FaceIcon />} color="#94a3b8" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); setNamedPersonSearchQuery(''); loadPeople(); setTimeout(() => document.getElementById('unknown-people-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 300); }} />
 <StatCard title="Object Tags" value={objectTags.length || 0} icon={<CategoryIcon />} color="#38bdf8" onClick={() => { setPage('tags'); setSelected(null); setTagsPage(1); setTagSearchQuery(''); }} />
 </div>
 
