@@ -314,7 +314,7 @@ const [thumbUpdateTimestamps, setThumbUpdateTimestamps] = useState({});
 const [actionInProgress, setActionInProgress] = useState(false);
 const [combinedOptions, setCombinedOptions] = useState(() => {
   try {
-    const saved = sessionStorage.getItem('wabs_combined_options');
+    const saved = localStorage.getItem('wabs_combined_options');
     return saved ? JSON.parse(saved) : { tag: false, face: false };
   } catch (e) {
     return { tag: false, face: false };
@@ -334,7 +334,7 @@ const findSimilarAbortController = useRef(null);
 const [fullTimelineData, setFullTimelineData] = useState([]);
 
 useEffect(() => {
-  sessionStorage.setItem('wabs_combined_options', JSON.stringify(combinedOptions));
+  localStorage.setItem('wabs_combined_options', JSON.stringify(combinedOptions));
 }, [combinedOptions]);
 
 useEffect(() => {
@@ -676,6 +676,14 @@ async function loadSettings(){
  if(r.data.sidebar_width) setSidebarWidth(r.data.sidebar_width)
  if(r.data.timeline_width) setTimelineWidth(r.data.timeline_width)
  if(r.data.details_width) setDetailsWidth(r.data.details_width)
+
+ // Sync the saved AI scanning options directly from the backend configuration
+ if (data.run_face_scan !== undefined || data.run_object_scan !== undefined) {
+   setCombinedOptions(prev => ({
+     face: data.run_face_scan ?? prev.face,
+     tag: data.run_object_scan ?? prev.tag
+   }));
+ }
 }
 
 const showToastMessage = (message) => {
@@ -2990,10 +2998,10 @@ page==='dashboard' &&
 
 <div style={{display:'flex', gap:'16px', marginBottom:'16px', flexWrap:'wrap'}}>
   <label style={{display:'flex',alignItems:'center',gap:'8px', color:'#f8fafc', fontSize:'13px'}}>
-    <input type='checkbox' checked={combinedOptions.tag} onChange={(e) => setCombinedOptions({...combinedOptions, tag: e.target.checked})} /> Classify Objects & Scenes
+    <input type='checkbox' checked={combinedOptions.tag} onChange={(e) => { const next = {...combinedOptions, tag: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Classify Objects & Scenes
   </label>
   <label style={{display:'flex',alignItems:'center',gap:'8px', color:'#f8fafc', fontSize:'13px'}}>
-    <input type='checkbox' checked={combinedOptions.face} onChange={(e) => setCombinedOptions({...combinedOptions, face: e.target.checked})} /> Scan for Faces
+    <input type='checkbox' checked={combinedOptions.face} onChange={(e) => { const next = {...combinedOptions, face: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Scan for Faces
   </label>
 </div>
 

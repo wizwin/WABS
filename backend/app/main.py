@@ -967,6 +967,18 @@ class IndexRequest(BaseModel):
     tag: bool = False
     face: bool = False
 
+@app.post("/indexer/set-options")
+def indexer_set_options(req: IndexRequest):
+    try:
+        cfg = load_config()
+        cfg["run_face_scan"] = req.face
+        cfg["run_object_scan"] = req.tag
+        save_config(cfg)
+        return {"saved": True}
+    except Exception as e:
+        print(f"Warning: could not save scan options to config: {e}")
+        raise HTTPException(status_code=500, detail="Could not save options")
+
 @app.get("/indexer/status")
 def indexer_status():
     status = dict(STATE)
@@ -981,6 +993,7 @@ def indexer_start(req: IndexRequest = None):
     global combined_scanner_thread, combined_scanner_running, combined_scanner_stopped
     if req is None:
         req = IndexRequest()
+
     if cv2 is None and (req.tag or req.face):
         raise HTTPException(status_code=500, detail="OpenCV is required for face and object recognition.")
     if STATE.get("running") or combined_scanner_running:
@@ -1033,6 +1046,7 @@ def indexer_update(req: IndexRequest = None):
     global combined_scanner_thread, combined_scanner_running, combined_scanner_stopped
     if req is None:
         req = IndexRequest()
+
     if cv2 is None and (req.tag or req.face):
         raise HTTPException(status_code=500, detail="OpenCV is required for face and object recognition.")
     if STATE.get("running") or combined_scanner_running:
@@ -1053,6 +1067,7 @@ def indexer_reindex(req: IndexRequest = None):
     global combined_scanner_thread, combined_scanner_running, combined_scanner_stopped
     if req is None:
         req = IndexRequest()
+
     if cv2 is None and (req.tag or req.face):
         raise HTTPException(status_code=500, detail="OpenCV is required for face and object recognition.")
     if STATE.get("running") or combined_scanner_running:
@@ -1153,6 +1168,8 @@ def settings():
         "face_clustering_sensitivity": "medium",
         "object_sensitivity": "medium",
         "min_unknown_photos": 1,
+        "run_face_scan": False,
+        "run_object_scan": False,
     }
 
     # Recursively merge defaults into the loaded config to prevent crashes from missing keys
