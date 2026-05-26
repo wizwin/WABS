@@ -1479,7 +1479,6 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         
                     # --- Run Object Classifier ---
                     if needs_object and net is not None:
-                    if needs_object and (net is not None or ort_session is not None):
                         try:
                             o_img = cv2.resize(img, (224, 224))
                             o_img = cv2.cvtColor(o_img, cv2.COLOR_BGR2RGB)
@@ -1489,15 +1488,9 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             o_img = o_img.transpose(2, 0, 1)
                             o_img = np.expand_dims(o_img, axis=0)
                             o_img = np.ascontiguousarray(o_img)
-                            
+
                             net.setInput(o_img)
                             preds = net.forward().flatten()
-                            if ort_session is not None:
-                                input_name = ort_session.get_inputs()[0].name
-                                preds = ort_session.run(None, {input_name: o_img})[0].flatten()
-                            else:
-                                net.setInput(o_img)
-                                preds = net.forward().flatten()
                             exp_preds = np.exp(preds - np.max(preds))
                             probs = exp_preds / np.sum(exp_preds)
                             
@@ -1771,7 +1764,7 @@ def get_person_thumbnail(person_id: int):
         img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         if img is None:
             return preview(file_id)
-            
+
         yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
         sface_path = get_bundled_model_path("face_recognition_sface_2021dec.onnx")
 
@@ -2121,12 +2114,6 @@ def _scan_and_tag_objects_worker():
             return
 
         net = cv2.dnn.readNetFromONNX(model_path)
-        ort_session = None
-        net = None
-        if ort is not None:
-            ort_session = create_ort_session(model_path)
-        else:
-            net = cv2.dnn.readNetFromONNX(model_path)
         with open(classes_path, 'rt') as f:
             classes = [line.strip() for line in f.readlines()]
             
@@ -2215,20 +2202,11 @@ def _scan_and_tag_objects_worker():
                         
                         net.setInput(img)
                         preds = net.forward().flatten()
-                        if ort is not None:
-                            input_name = net.get_inputs()[0].name
-                            preds = net.run(None, {input_name: img})[0].flatten()
-                        if ort_session is not None:
-                            input_name = ort_session.get_inputs()[0].name
-                            preds = ort_session.run(None, {input_name: img})[0].flatten()
-                        else:
-                            net.setInput(img)
-                            preds = net.forward().flatten()
                         
                         # Apply Softmax to convert raw logits to proper probabilities (0.0 to 1.0)
                         exp_preds = np.exp(preds - np.max(preds))
                         probs = exp_preds / np.sum(exp_preds)
-                        
+
                         # Grab the top 5 highest confidence predictions
                         classIds = np.argsort(probs)[-5:][::-1]
                         new_tags = []
