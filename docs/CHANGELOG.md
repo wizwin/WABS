@@ -5,15 +5,24 @@
 
 ### 🚀 Major New Features
 *   **Combined Scan:** Added combined scan to optimize performance of indexing and scanning of faces and objects.
+*   **Portable Data Export:** Added JSON Export/Import tools for Known People and Object/Custom Tags. Includes a Smart Path Fallback Matcher so tags survive drive letter changes and migrations.
+*   **People Timeline:** Added chronological Timeline View and "Full Archive Timeline" jump integration directly into the People Photos page.
 *   **Document Thumbnails:** Added thumbnail support for `.doc` and `.docx` files.
 *   **Smart Search UI:** Improved the user interface for Smart Search.
 *   **People Management:** Improved renaming people and handling person mismatches.
+
+### ✨ UI/UX Enhancements
+*   **Data Management:** Completely redesigned the Data Management section in Settings with clean, descriptive UI cards.
 
 ### 🛠 Build & CI
 *   **Raspberry Pi Build:** Added a Raspberry Pi build target in GitHub Actions.
 *   **Build Selection:** Added UI to pick the build target when running workflows manually.
 
-### 🐞 Bug Fixes
+### 🐞 Bug Fixes & Performance
+*   **OOM Memory Optimizations:** Resolved severe backend Out-Of-Memory crashes and SQLite lock contentions when scanning massive archives (>90,000 files) by implementing batched `.yield_per()` queries and ID-level tracking.
+*   **Connection Stability:** Fixed backend HTTP connection drops (`[WinError 10054]`) during rapid frontend scrolling using `AbortController` network cancellation.
+*   **Database Limits:** Fixed fatal SQLite `OperationalError` crashes during bulk tagging by circumventing the hard 999 `IN(...)` variable limit.
+*   **Pagination:** Added robust pagination to the People Photos API to prevent browser freezing on profiles with thousands of matched faces.
 *   **Duplicates Navigation:** Fixed UI bugs when navigating away from the Duplicates page.
 *   **Batch Processing:** Fixed issues with re-applying batch processing.
 *   **UI Scaling:** Fixed UI scaling issues when resizing the details pane.

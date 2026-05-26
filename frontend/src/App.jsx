@@ -295,6 +295,9 @@ const [showToast, setShowToast] = useState(false);
 const [suggestionsData, setSuggestionsData] = useState({ type: 'none', suggestions: [], lastWord: '' });
 const suggestionTimeout = useRef(null);
 const searchContainerRef = useRef(null);
+const suggestionAbortController = useRef(null);
+const searchAbortController = useRef(null);
+const loadFilesAbortController = useRef(null);
 const [focusedSuggestionIndex, setFocusedSuggestionIndex] = useState(-1);
 const [people, setPeople] = useState([]);
 const [currentPerson, setCurrentPerson] = useState(null);
@@ -328,7 +331,6 @@ const [checkedSimilar, setCheckedSimilar] = useState(new Set());
 const [similarityThreshold, setSimilarityThreshold] = useState(0.60);
 const [settingsTab, setSettingsTab] = useState('general');
 const findSimilarAbortController = useRef(null);
-const [personFilesPage, setPersonFilesPage] = useState(1);
 const [fullTimelineData, setFullTimelineData] = useState([]);
 
 useEffect(() => {
@@ -369,20 +371,32 @@ const isSelectionReadOnly = useMemo(() => {
 }, [checkedFiles, settings]);
 
 async function loadFiles(nextOffset = 0, append = false, cat = filterCategory){
-  const r = await axios.get(`${API}/files?category=${cat}&offset=${nextOffset}&limit=50`)
-  if(append){
-    setFiles(prev => {
-      const existing = new Set(prev.map(f => f.path));
-      const additions = r.data.filter(f => !existing.has(f.path));
-      return [...prev, ...additions];
-    });
-  } else {
-    setFiles(r.data)
+  if (loadFilesAbortController.current) {
+    loadFilesAbortController.current.abort();
   }
-  setOffset(nextOffset + r.data.length)
-  setHasMore(r.data.length === 50)
-  if(!append){
-    setSearchCache([])
+  loadFilesAbortController.current = new AbortController();
+  try {
+    const r = await axios.get(`${API}/files?category=${cat}&offset=${nextOffset}&limit=50`, {
+      signal: loadFilesAbortController.current.signal
+    })
+    if(append){
+      setFiles(prev => {
+        const existing = new Set(prev.map(f => f.path));
+        const additions = r.data.filter(f => !existing.has(f.path));
+        return [...prev, ...additions];
+      });
+    } else {
+      setFiles(r.data)
+    }
+    setOffset(nextOffset + r.data.length)
+    setHasMore(r.data.length === 50)
+    if(!append){
+      setSearchCache([])
+    }
+  } catch (err) {
+    if (!axios.isCancel(err)) {
+      console.warn('Load files failed', err);
+    }
   }
 }
 
@@ -398,6 +412,11 @@ const handleSearchChange = (e) => {
       setSuggestionsData({ type: 'none', suggestions: [], lastWord: '' });
       return;
     }
+
+    if (suggestionAbortController.current) {
+      suggestionAbortController.current.abort();
+    }
+    suggestionAbortController.current = new AbortController();
 
     const words = value.trimStart().split(/\s+/);
     const lastWord = words[words.length - 1].toLowerCase();
@@ -428,10 +447,14 @@ const handleSearchChange = (e) => {
 
     try {
       const safeQuery = value.replace(/,/g, ' ');
-      const r = await axios.get(`${API}/search/suggestions?q=${encodeURIComponent(safeQuery)}&limit=5`);
+      const r = await axios.get(`${API}/search/suggestions?q=${encodeURIComponent(safeQuery)}&limit=5`, {
+        signal: suggestionAbortController.current.signal
+      });
       setSuggestionsData(r.data);
     } catch (err) {
-      console.warn('Suggestions failed', err);
+      if (!axios.isCancel(err)) {
+        console.warn('Suggestions failed', err);
+      }
     }
   }, 300);
 };
@@ -482,30 +505,58 @@ function doSearch(value, cat = filterCategory){
       return
     }
 
+    if (searchAbortController.current) {
+      searchAbortController.current.abort();
+    }
+    searchAbortController.current = new AbortController();
+
     setLoadingMore(true)
     setSelected(null)
     const safeQuery = value.replace(/,/g, ' ');
-    const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=50`)
-    setSearchCache(r.data)
-    setFiles(r.data)
-    setOffset(r.data.length)
-    setHasMore(r.data.length === 50)
-    setPage('search')
-    setLoadingMore(false)
+    try {
+      const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=50`, {
+        signal: searchAbortController.current.signal
+      })
+      setSearchCache(r.data)
+      setFiles(r.data)
+      setOffset(r.data.length)
+      setHasMore(r.data.length === 50)
+      setPage('search')
+      setLoadingMore(false)
+    } catch (err) {
+      if (!axios.isCancel(err)) {
+        setLoadingMore(false)
+        console.warn('Search failed', err);
+      }
+    }
   }, 600)
 }
 
 async function goToSearch(cat = filterCategory){
   setSelected(null)
   if(query){
+    if (searchAbortController.current) {
+      searchAbortController.current.abort();
+    }
+    searchAbortController.current = new AbortController();
+
     setLoadingMore(true)
     const safeQuery = query.replace(/,/g, ' ');
-    const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=50`)
-    setSearchCache(r.data)
-    setFiles(r.data)
-    setOffset(r.data.length)
-    setHasMore(r.data.length === 50)
-    setLoadingMore(false)
+    try {
+      const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=50`, {
+        signal: searchAbortController.current.signal
+      })
+      setSearchCache(r.data)
+      setFiles(r.data)
+      setOffset(r.data.length)
+      setHasMore(r.data.length === 50)
+      setLoadingMore(false)
+    } catch (err) {
+      if (!axios.isCancel(err)) {
+        setLoadingMore(false)
+        console.warn('Search failed', err);
+      }
+    }
   } else {
     await loadFiles(0, false, cat)
   }
@@ -519,20 +570,46 @@ async function loadMore(){
   if(page === 'explorer'){
     await loadFiles(offset, true, filterCategory)
   } else if(page === 'search'){
+    if (searchAbortController.current) {
+      searchAbortController.current.abort();
+    }
+    searchAbortController.current = new AbortController();
+
     const safeQuery = query.replace(/,/g, ' ');
-    const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${offset}&limit=50`)
-    setFiles(prev => {
-      const existing = new Set(prev.map(f => f.path));
-      const additions = r.data.filter(f => !existing.has(f.path));
-      return [...prev, ...additions];
-    });
-    setSearchCache(prev => {
-      const existing = new Set(prev.map(f => f.path));
-      const additions = r.data.filter(f => !existing.has(f.path));
-      return [...prev, ...additions];
-    });
-    setOffset(offset + r.data.length)
-    setHasMore(r.data.length === 50)
+    try {
+      const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${offset}&limit=50`, {
+        signal: searchAbortController.current.signal
+      })
+      setFiles(prev => {
+        const existing = new Set(prev.map(f => f.path));
+        const additions = r.data.filter(f => !existing.has(f.path));
+        return [...prev, ...additions];
+      });
+      setSearchCache(prev => {
+        const existing = new Set(prev.map(f => f.path));
+        const additions = r.data.filter(f => !existing.has(f.path));
+        return [...prev, ...additions];
+      });
+      setOffset(offset + r.data.length)
+      setHasMore(r.data.length === 50)
+    } catch (err) {
+      if (!axios.isCancel(err)) {
+        console.warn('Load more search failed', err);
+      }
+    }
+    } else if(page === 'person_files' && currentPerson) {
+      try {
+        const r = await axios.get(`${API}/people/${currentPerson.id}/photos?offset=${offset}&limit=50`);
+        setPersonFiles(prev => {
+          const existing = new Set(prev.map(f => f.path));
+          const additions = r.data.filter(f => !existing.has(f.path));
+          return [...prev, ...additions];
+        });
+        setOffset(offset + r.data.length);
+        setHasMore(r.data.length === 50);
+      } catch (err) {
+        console.warn('Load more person photos failed', err);
+      }
   }
   setLoadingMore(false)
 }
@@ -667,14 +744,23 @@ async function clearCache() {
 
 async function loadDashboard(){
  const timestamp = Date.now();
- const [statsRes, indexerRes, tagsRes] = await Promise.all([
+ const [statsRes, indexerRes] = await Promise.all([
    axios.get(`${API}/stats?t=${timestamp}`),
-   axios.get(`${API}/indexer/status?t=${timestamp}`),
-   axios.get(`${API}/tags/objects?t=${timestamp}`).catch(() => ({ data: [] }))
+   axios.get(`${API}/indexer/status?t=${timestamp}`)
  ])
  setStats(prev => ({...prev, ...statsRes.data}))
  setIndexer(indexerRes.data)
- if(tagsRes && tagsRes.data) setObjectTags(tagsRes.data)
+}
+
+async function loadTags() {
+  try {
+    const tagsRes = await axios.get(`${API}/tags/objects?t=${Date.now()}`);
+    if (tagsRes && tagsRes.data) {
+      setObjectTags(tagsRes.data);
+    }
+  } catch (err) {
+    console.warn('Failed to load tags', err);
+  }
 }
 
 async function loadPeople() {
@@ -695,10 +781,11 @@ async function loadPeople() {
 
 async function openPersonPhotos(person) {
   try {
-    const r = await axios.get(`${API}/people/${person.id}/photos`);
+    const r = await axios.get(`${API}/people/${person.id}/photos?offset=0&limit=50`);
     setPersonFiles(r.data);
     setCurrentPerson(person);
-    setPersonFilesPage(1);
+    setOffset(r.data.length);
+    setHasMore(r.data.length === 50);
     setPage('person_files');
   } catch (err) {
     console.warn('Failed to load person photos', err);
@@ -856,8 +943,15 @@ function locateSelectedFileInExplorer() {
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
     setLoadingMore(true);
     
+    if (searchAbortController.current) {
+        searchAbortController.current.abort();
+    }
+    searchAbortController.current = new AbortController();
+
     const safeQuery = q.replace(/,/g, ' ');
-    axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=all&offset=0&limit=50`).then(r => {
+    axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=all&offset=0&limit=50`, {
+        signal: searchAbortController.current.signal
+    }).then(r => {
         let newFiles = r.data;
         if (!newFiles.some(f => f.path === file.path)) {
             newFiles = [...newFiles, file];
@@ -877,7 +971,11 @@ function locateSelectedFileInExplorer() {
                 document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }
         }, 300);
-    }).catch(() => setLoadingMore(false));
+    }).catch((err) => {
+        if (!axios.isCancel(err)) {
+            setLoadingMore(false);
+        }
+    });
 }
 
 async function addTagsToSelected(tagsStr) {
@@ -898,6 +996,7 @@ async function addTagsToSelected(tagsStr) {
     if (page === 'explorer') loadFiles(0, false, filterCategory);
     else if (page === 'search') doSearch(query, filterCategory);
     loadDashboard();
+    loadTags();
   } catch(err) {
     alert('Error adding tags: ' + (err?.response?.data?.detail || err.message));
   }
@@ -921,6 +1020,7 @@ async function removeTagsFromSelected(tagsStr) {
     if (page === 'explorer') loadFiles(0, false, filterCategory);
     else if (page === 'search') doSearch(query, filterCategory);
     loadDashboard();
+    loadTags();
   } catch(err) {
     alert('Error removing tags: ' + (err?.response?.data?.detail || err.message));
   }
@@ -937,6 +1037,7 @@ async function deleteTagGlobally(tag) {
     await axios.delete(`${API}/tags/objects/${encodeURIComponent(tag)}`);
     showToastMessage(`Tag "${tagName}" removed from all files.`);
     loadDashboard(); // This re-fetches object tags
+    loadTags();
   } catch(err) {
     alert('Error deleting tag: ' + (err?.response?.data?.detail || err.message));
   }
@@ -953,6 +1054,7 @@ async function clearAllObjectTags() {
     await axios.post(`${API}/reset-object-scanner-progress`);
     showToastMessage(`All object tags have been cleared.`);
     loadDashboard(); // This re-fetches object tags
+    loadTags();
   } catch(err) {
     alert('Error clearing all tags: ' + (err?.response?.data?.detail || err.message));
   }
@@ -1034,6 +1136,7 @@ async function indexerAction(action){
    setOffset(0)
    setHasMore(false)
    setStats({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0})
+   setObjectTags([])
  } else if (action === 'start' || action === 'update') {
    await axios.post(`${API}/indexer/${action}`, combinedOptions)
  } else {
@@ -1218,6 +1321,108 @@ async function backupDatabase() {
   }
 }
 
+async function exportKnownPeople() {
+  try {
+    const r = await axios.get(`${API}/system/export-people`);
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(r.data, null, 2));
+    const dlAnchorElem = document.createElement('a');
+    dlAnchorElem.setAttribute("href", dataStr);
+    dlAnchorElem.setAttribute("download", `wabs_known_people_${new Date().toISOString().split('T')[0]}.json`);
+    document.body.appendChild(dlAnchorElem);
+    dlAnchorElem.click();
+    dlAnchorElem.remove();
+    showToastMessage('Known people exported successfully.');
+  } catch(err) {
+    alert('Error exporting people: ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
+function importKnownPeople() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const payload = JSON.parse(event.target.result);
+        if (!Array.isArray(payload)) throw new Error("Invalid JSON format");
+        setActionInProgress(true);
+        let importedPeople = 0;
+        let importedFaces = 0;
+        const chunkSize = 50;
+        for (let i = 0; i < payload.length; i += chunkSize) {
+          showToastMessage(`Importing people... ${Math.round((i / payload.length) * 100)}%`);
+          const chunk = payload.slice(i, i + chunkSize);
+          const r = await axios.post(`${API}/system/import-people`, chunk);
+          importedPeople += r.data.imported_people;
+          importedFaces += r.data.imported_faces;
+        }
+        showToastMessage(`Imported ${importedPeople} people and ${importedFaces} faces.`);
+        loadPeople();
+      } catch (err) {
+        alert('Error importing people: ' + (err?.response?.data?.detail || err.message));
+      } finally {
+        setActionInProgress(false);
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+async function exportTags() {
+  try {
+    const r = await axios.get(`${API}/system/export-tags`);
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(r.data, null, 2));
+    const dlAnchorElem = document.createElement('a');
+    dlAnchorElem.setAttribute("href", dataStr);
+    dlAnchorElem.setAttribute("download", `wabs_tags_${new Date().toISOString().split('T')[0]}.json`);
+    document.body.appendChild(dlAnchorElem);
+    dlAnchorElem.click();
+    dlAnchorElem.remove();
+    showToastMessage('Tags exported successfully.');
+  } catch(err) {
+    alert('Error exporting tags: ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
+function importTags() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const payload = JSON.parse(event.target.result);
+        if (!Array.isArray(payload)) throw new Error("Invalid JSON format");
+        setActionInProgress(true);
+        let totalImported = 0;
+        const chunkSize = 2000;
+        for (let i = 0; i < payload.length; i += chunkSize) {
+          showToastMessage(`Importing tags... ${Math.round((i / payload.length) * 100)}%`);
+          const chunk = payload.slice(i, i + chunkSize);
+          const r = await axios.post(`${API}/system/import-tags`, chunk);
+          totalImported += r.data.imported_files;
+        }
+        showToastMessage(`Successfully imported tags for ${totalImported} files.`);
+        loadTags();
+      } catch (err) {
+        alert('Error importing tags: ' + (err?.response?.data?.detail || err.message));
+      } finally {
+        setActionInProgress(false);
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
 async function handleShutdown() {
   if (window.confirm('Are you sure you want to shut down the WABS server?')) {
     try {
@@ -1366,6 +1571,21 @@ const groupedFiles = useMemo(() => {
   return groups;
 }, [sortedFiles]);
 
+const groupedPersonFiles = useMemo(() => {
+  const groups = {};
+  personFiles.forEach(file => {
+    let key = 'Unknown Date';
+    if (file.modified) {
+      const d = new Date(file.modified);
+      if (!isNaN(d.getTime())) {
+        key = d.toLocaleDateString('default', { month: 'short', year: 'numeric' });
+      }
+    }
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(file);
+  });
+  return groups;
+}, [personFiles]);
 
 const updateUIPreferences = (updates) => {
   setSettings(prev => {
@@ -1432,7 +1652,7 @@ useEffect(() => {
 
 useEffect(() => {
   const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
-  if (showFull && (page === 'explorer' || page === 'search')) {
+  if (showFull && (page === 'explorer' || page === 'search' || page === 'person_files')) {
     axios.get(`${API}/timeline?category=${filterCategory}`).then(r => {
       const groups = new Map();
       r.data.forEach(item => {
@@ -1457,11 +1677,11 @@ const timelineItems = useMemo(() => {
   const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
   if (showFull && fullTimelineData.length > 0) {
     let items = [...fullTimelineData];
-    if (sortBy === 'date' && sortOrder === 'desc') items.reverse();
+    if (page === 'person_files' || (sortBy === 'date' && sortOrder === 'desc')) items.reverse();
     return items.map(t => t.key);
   }
-  return Object.keys(groupedFiles);
-}, [settings.show_full_timeline, settings.ui_preferences?.show_full_timeline, fullTimelineData, groupedFiles, sortBy, sortOrder]);
+  return page === 'person_files' ? Object.keys(groupedPersonFiles) : Object.keys(groupedFiles);
+}, [settings.show_full_timeline, settings.ui_preferences?.show_full_timeline, fullTimelineData, groupedFiles, groupedPersonFiles, sortBy, sortOrder, page]);
 
 useEffect(() => {
   syncActiveDate(document.querySelector('.content'));
@@ -1484,18 +1704,27 @@ useEffect(()=>{
  loadSettings()
  loadDashboard()
  loadPeople()
+ loadTags()
 },[])
 
 useEffect(() => {
   let isMounted = true;
   let timeoutId;
   let errorRetries = 0;
+  let pollCount = 0;
 
   const poll = async () => {
     if (!isMounted) return;
     try {
       await loadDashboard();
       if (page === 'people') await loadPeople();
+      
+      pollCount++;
+      // Refresh tags every 3 seconds while scanning to update the UI without causing heavy DB locks
+      if (pollCount % 3 === 0) {
+        await loadTags();
+      }
+
       errorRetries = 0; // Reset counter on successful poll
     } catch (e) {
       console.warn("Polling error:", e);
@@ -1521,6 +1750,9 @@ useEffect(() => {
 
   if (indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.combined_scanner_running) {
     timeoutId = setTimeout(poll, 1000);
+  } else {
+    // Perform one final fetch when scanners stop to ensure all UI counters are fully up to date
+    loadTags();
   }
   return () => { isMounted = false; clearTimeout(timeoutId); };
 }, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, indexer.combined_scanner_running, page]);
@@ -1797,7 +2029,7 @@ return(
   )}
 </div>
 
-{(page === 'explorer' || page === 'search') && (
+{(page === 'explorer' || page === 'search' || page === 'person_files') && (
   <div style={{ display: 'flex', gap: '8px' }}>
     <ActionButton
       className=""
@@ -2418,6 +2650,37 @@ page==='people' &&
 
 {
 page==='person_files' &&
+<div className='explorer'>
+{showTimeline && (
+<>
+<div className='timeline' style={{ width: timelineWidth }}>
+  {timelineItems.map(dateKey => (
+    <TimelineItem
+      key={dateKey}
+      dateKey={dateKey}
+      isActiveDate={activeDate === dateKey}
+      onClick={() => {
+        const el = document.getElementById(`date-group-${dateKey}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
+          if (showFull) {
+            const tData = fullTimelineData.find(t => t.key === dateKey);
+            if (tData) {
+              setSortBy('date');
+              setSortOrder('desc');
+              doSearch(`person:"${currentPerson?.name || ''}" date:${tData.yearMonth}`);
+            }
+          }
+        }
+      }}
+    />
+  ))}
+</div>
+<div className={`resizer ${isResizing === 'timeline' ? 'active' : ''}`} onMouseDown={(e) => { e.preventDefault(); setIsResizing('timeline'); }} />
+</>
+)}
 <div style={{display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0}}>
 <div style={{padding: '18px', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '16px'}}>
     <ActionButton className="btn btn-secondary" onClick={() => { setPage('people'); setCheckedFiles(new Set()); setSimilarUnknowns(null); loadPeople(); }}>&larr; Back to People</ActionButton>
@@ -2546,50 +2809,37 @@ page==='person_files' &&
   </div>
 )}
 
-{Array.isArray(personFiles) && personFiles.length > 100 && (
-  <div style={{ padding: '10px 18px', display: 'flex', justifyContent: 'flex-end', gap: '16px', alignItems: 'center', borderBottom: '1px solid #1f2937' }}>
-    <ActionButton disabled={personFilesPage === 1} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setPersonFilesPage(prev => Math.max(1, prev - 1))}>
-      Previous
-    </ActionButton>
-    <span style={{ color: '#94a3b8', fontSize: '14px' }}>Page {personFilesPage} of {Math.ceil(personFiles.length / 100)}</span>
-    <ActionButton disabled={personFilesPage >= Math.ceil(personFiles.length / 100)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setPersonFilesPage(prev => prev + 1)}>
-      Next
-    </ActionButton>
-  </div>
-)}
-
-<div className="content" style={{paddingTop: '18px', paddingLeft: '18px', paddingRight: '18px', overflowY: 'auto'}}>
-    <div className={viewMode === 'grid' ? 'grid' : 'list'}>
-        {Array.isArray(personFiles) && personFiles.length === 0 ? <p>No photos found for this person.</p> : null}
-        {Array.isArray(personFiles) && personFiles.slice((personFilesPage - 1) * 100, personFilesPage * 100).map(item => (
-            <FileCard
-              key={item.path}
-              item={item}
-              viewMode={viewMode}
-              isChecked={checkedFiles.has(item.path)}
-              onToggleCheck={toggleCheck}
-              onClick={handleItemClick}
-              onContextMenu={openContainingFolder}
-              onSelectAndOpen={(i) => { setSelected(i); openFile(i.path); }}
-              renderThumb={renderThumb}
-              isAltGroup={false}
-              showVerified={false}
-              showUnverified={false}
-              isReadOnly={checkFileReadOnly(item.path)}
-            />
-        ))}
-    </div>
-    {Array.isArray(personFiles) && personFiles.length > 100 && (
-      <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '32px', marginBottom: '24px' }}>
-        <ActionButton disabled={personFilesPage === 1} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setPersonFilesPage(prev => Math.max(1, prev - 1))}>
-          Previous
-        </ActionButton>
-        <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {personFilesPage} of {Math.ceil(personFiles.length / 100)}</span>
-        <ActionButton disabled={personFilesPage >= Math.ceil(personFiles.length / 100)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setPersonFilesPage(prev => prev + 1)}>
-          Next
-        </ActionButton>
-      </div>
-    )}
+<div className="content" onScroll={handleScroll} style={{paddingTop: '18px', paddingLeft: '18px', paddingRight: '18px', overflowY: 'auto'}}>
+    {Array.isArray(personFiles) && personFiles.length === 0 ? (
+        <div className={viewMode === 'grid' ? 'grid' : 'list'}>
+            <p>No photos found for this person.</p>
+        </div>
+    ) : null}
+    {Object.entries(groupedPersonFiles).map(([dateKey, filesGroup]) => (
+        <div key={dateKey} id={`date-group-${dateKey}`}>
+            <h2 className="date-header" data-date={dateKey}>{dateKey}</h2>
+            <div className={viewMode === 'grid' ? 'grid' : 'list'}>
+                {filesGroup.map(item => (
+                    <FileCard
+                      key={item.path}
+                      item={item}
+                      viewMode={viewMode}
+                      isChecked={checkedFiles.has(item.path)}
+                      onToggleCheck={toggleCheck}
+                      onClick={handleItemClick}
+                      onContextMenu={openContainingFolder}
+                      onSelectAndOpen={(i) => { setSelected(i); openFile(i.path); }}
+                      renderThumb={renderThumb}
+                      isAltGroup={false}
+                      showVerified={false}
+                      showUnverified={false}
+                      isReadOnly={checkFileReadOnly(item.path)}
+                    />
+                ))}
+            </div>
+        </div>
+    ))}
+</div>
 </div>
 </div>
 }
@@ -2894,10 +3144,45 @@ page==='settings' &&
         </label>
 
         <h3 style={{ margin: '32px 0 16px 0' }}>Data Management</h3>
-        <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Create a safe, portable copy of your databases and configuration.</p>
-        <ActionButton disabled={actionInProgress} className="btn btn-secondary" onClick={backupDatabase}>
-          Export / Backup Data
-        </ActionButton>
+        <div style={{ display: 'grid', gap: '16px' }}>
+          <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+            <div>
+              <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Full Database Backup</h4>
+              <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Create a safe, portable copy of your archive.db, ai_metadata.db, and config.yaml.</p>
+            </div>
+            <ActionButton disabled={actionInProgress} className="btn btn-secondary" onClick={backupDatabase}>
+              Export / Backup Data
+            </ActionButton>
+          </div>
+          <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+            <div>
+              <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Known People (Faces)</h4>
+              <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Export or import named people and their face embeddings as a portable JSON file.</p>
+            </div>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <ActionButton disabled={actionInProgress} className="btn btn-secondary" onClick={exportKnownPeople}>
+                Export JSON
+              </ActionButton>
+              <ActionButton disabled={actionInProgress} className="btn btn-secondary" onClick={importKnownPeople}>
+                Import JSON
+              </ActionButton>
+            </div>
+          </div>
+          <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+            <div>
+              <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Object &amp; Custom Tags</h4>
+              <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Export or import all applied tags mapped to file paths as a portable JSON file.</p>
+            </div>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <ActionButton disabled={actionInProgress} className="btn btn-secondary" onClick={exportTags}>
+                Export JSON
+              </ActionButton>
+              <ActionButton disabled={actionInProgress} className="btn btn-secondary" onClick={importTags}>
+                Import JSON
+              </ActionButton>
+            </div>
+          </div>
+        </div>
 
         <h3 style={{ margin: '32px 0 16px 0' }}>Diagnostics</h3>
         <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'0', color:'#cbd5e1'}}>

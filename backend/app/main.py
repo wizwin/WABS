@@ -1350,8 +1350,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         files_to_process.append(os.path.join(dirpath, f))
         else:
             with SessionLocal() as s:
-                photos = s.query(FileIndex).filter(FileIndex.category == 'photo').all()
-                files_to_process = [f.path for f in photos]
+                photos = s.query(FileIndex.path).filter(FileIndex.category == 'photo').all()
+                files_to_process = [p[0] for p in photos]
 
         total_files = len(files_to_process)
         if run_index:
@@ -1373,7 +1373,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
             with SessionLocal() as session:
-                existing_files = {r.path: r for r in session.query(FileIndex).all()}
+                # Store only path-to-id mapping for fast lookups without massive RAM usage
+                path_to_id = {r[0]: r[1] for r in session.query(FileIndex.path, FileIndex.id).all()}
                 
                 for idx, file_str in enumerate(files_to_process):
                     while STATE.get("paused"):
@@ -1399,7 +1400,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         STATE["object_scanner_current_file"] = file.name
 
                     # --- 1. Indexing Phase ---
-                    db_item = existing_files.get(file_str)
+                    db_item_id = path_to_id.get(file_str)
+                    db_item = session.get(FileIndex, db_item_id) if db_item_id else None
                     if run_index:
                         try:
                             modified_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(file.stat().st_mtime))
@@ -1421,7 +1423,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                 STATE["indexed"] += 1
                                 if STATE["indexed"] % 50 == 0:
                                     session.commit()
-                                existing_files[file_str] = db_item
+                                path_to_id[file_str] = db_item.id
                             else:
                                 if db_item.size != file_size or db_item.modified != modified_time:
                                     category = classify(file.suffix)
@@ -1688,10 +1690,9 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.60):
             WHERE p.name LIKE 'Unknown Person%' AND f.embedding_json != '[]'
         """)
         
-        unknown_faces = cursor.fetchall()
         
         similar_profiles = {}
-        for unk_person_id, unk_name, unk_embedding_json, photo_count, file_id in unknown_faces:
+        for unk_person_id, unk_name, unk_embedding_json, photo_count, file_id in cursor:
             if not unk_embedding_json:
                 continue
             unk_embedding = json.loads(unk_embedding_json)
@@ -1833,7 +1834,7 @@ def get_person_thumbnail(person_id: int):
     return preview(file_id)
 
 @app.get("/people/{person_id}/photos")
-def get_person_photos(person_id: int):
+def get_person_photos(person_id: int, offset: int = 0, limit: int = 50):
     cfg = load_config()
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
@@ -1846,13 +1847,24 @@ def get_person_photos(person_id: int):
     with sqlite3.connect(ai_db_path, timeout=15) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT file_id FROM faces WHERE person_id = ?", (person_id,))
+        cursor.execute(
+            "SELECT file_id FROM faces WHERE person_id = ? GROUP BY file_id ORDER BY file_id DESC LIMIT ? OFFSET ?", 
+            (person_id, limit, offset)
+        )
         file_ids = [r[0] for r in cursor.fetchall()]
     if not file_ids:
         return []
     with SessionLocal() as s:
-        photos = s.query(FileIndex).filter(FileIndex.id.in_(file_ids)).all()
-        return [_build_item(p, cache_flag) for p in photos]
+        results = []
+        # Chunk queries to prevent SQLite IN() limitations and memory exhaustion
+        for i in range(0, len(file_ids), 900):
+            chunk = file_ids[i:i + 900]
+            photos = s.query(FileIndex).filter(FileIndex.id.in_(chunk)).all()
+            
+            # Ensure the response maintains the exact ordered pagination from SQLite
+            photo_dict = {p.id: _build_item(p, cache_flag) for p in photos}
+            results.extend([photo_dict[fid] for fid in chunk if fid in photo_dict])
+        return results
 
 @app.post("/people/{person_id}/set-thumbnail")
 def set_person_thumbnail(person_id: int, payload: dict = Body(...)):
@@ -2145,15 +2157,20 @@ def _scan_and_tag_objects_worker():
                 cursor.execute("SELECT file_id FROM processed_objects")
                 processed_ids = set(r[0] for r in cursor.fetchall())
 
-                photos = s.query(FileIndex).filter(FileIndex.category == 'photo').all()
+                # Fetch IDs instead of all objects to save memory on large datasets
+                photo_ids = [r[0] for r in s.query(FileIndex.id).filter(FileIndex.category == 'photo').all()]
                 
-                STATE["object_scanner_total"] = len(photos)
+                STATE["object_scanner_total"] = len(photo_ids)
                 STATE["object_scanner_current"] = 0
                 processed_count = 0
 
-                for photo in photos:
+                for photo_id in photo_ids:
                     if not object_scanner_running:
                         break
+                        
+                    photo = s.get(FileIndex, photo_id)
+                    if not photo:
+                        continue
                         
                     STATE["object_scanner_current"] += 1
                     STATE["object_scanner_current_file"] = photo.filename or "Unknown file"
@@ -2288,44 +2305,53 @@ combined_scanner_thread = None
 @app.post("/tags/add")
 def add_tags(req: TagUpdateRequest):
     with SessionLocal() as s:
-        files_to_update = s.query(FileIndex).filter(FileIndex.id.in_(req.file_ids)).all()
-        for f in files_to_update:
-            current_tags = set((f.tags or "").split())
-            for tag in req.tags:
-                formatted_tag = f"object:{tag}" if ":" not in tag else tag
-                current_tags.add(formatted_tag)
-            f.tags = " ".join(sorted(current_tags))
-        s.commit()
+        # Chunk processing to avoid SQLite IN() limits and memory spikes
+        for i in range(0, len(req.file_ids), 900):
+            chunk = req.file_ids[i:i + 900]
+            files_to_update = s.query(FileIndex).filter(FileIndex.id.in_(chunk)).all()
+            for f in files_to_update:
+                current_tags = set((f.tags or "").split())
+                for tag in req.tags:
+                    formatted_tag = f"object:{tag}" if ":" not in tag else tag
+                    current_tags.add(formatted_tag)
+                f.tags = " ".join(sorted(current_tags))
+            s.commit()
     return {"status": "success"}
 
 @app.post("/tags/remove")
 def remove_tags(req: TagUpdateRequest):
     with SessionLocal() as s:
-        files_to_update = s.query(FileIndex).filter(FileIndex.id.in_(req.file_ids)).all()
-        for f in files_to_update:
-            if not f.tags:
-                continue
-            current_tags = set((f.tags or "").split())
-            for tag in req.tags:
-                formatted_tag = f"object:{tag}" if ":" not in tag else tag
-                current_tags.discard(formatted_tag)
-            f.tags = " ".join(sorted(current_tags))
-        s.commit()
+        for i in range(0, len(req.file_ids), 900):
+            chunk = req.file_ids[i:i + 900]
+            files_to_update = s.query(FileIndex).filter(FileIndex.id.in_(chunk)).all()
+            for f in files_to_update:
+                if not f.tags:
+                    continue
+                current_tags = set((f.tags or "").split())
+                for tag in req.tags:
+                    formatted_tag = f"object:{tag}" if ":" not in tag else tag
+                    current_tags.discard(formatted_tag)
+                f.tags = " ".join(sorted(current_tags))
+            s.commit()
     return {"status": "success"}
 
 @app.delete("/tags/objects/all")
 def clear_all_object_tags():
     with SessionLocal() as s:
-        # Find all files that have any object tag
-        files_with_object_tags = s.query(FileIndex).filter(FileIndex.tags.like('%object:%')).all()
+        # Fetch IDs first to save memory
+        file_ids = [r[0] for r in s.query(FileIndex.id).filter(FileIndex.tags.like('%object:%')).all()]
         
-        for f in files_with_object_tags:
-            if f.tags:
-                # Split tags, filter out object tags, and rejoin
-                tags_list = [t for t in re.split(r'[\s,]+', f.tags) if not t.startswith('object:')]
-                f.tags = " ".join(filter(bool, tags_list))
-        
-        s.commit()
+        chunk_size = 1000
+        for i in range(0, len(file_ids), chunk_size):
+            chunk = file_ids[i:i + chunk_size]
+            files = s.query(FileIndex).filter(FileIndex.id.in_(chunk)).all()
+            for f in files:
+                if f.tags:
+                    # Split tags, filter out object tags, and rejoin
+                    tags_list = [t for t in re.split(r'[\s,]+', f.tags) if not t.startswith('object:')]
+                    f.tags = " ".join(filter(bool, tags_list))
+            s.commit()
+
     return {"status": "success", "message": "All object tags have been cleared."}
 
 @app.delete("/tags/objects/{tag_name}")
@@ -2335,16 +2361,18 @@ def delete_object_tag_globally(tag_name: str):
         tag_to_delete = f"object:{tag_to_delete}"
 
     with SessionLocal() as s:
-        # Find all files that have this tag using a LIKE query
-        files_with_tag = s.query(FileIndex).filter(FileIndex.tags.like(f'%{tag_to_delete}%')).all()
+        file_ids = [r[0] for r in s.query(FileIndex.id).filter(FileIndex.tags.like(f'%{tag_to_delete}%')).all()]
         
-        for f in files_with_tag:
-            if f.tags:
-                # Split on space or comma, remove all occurrences, and rejoin with spaces
-                tags_list = [t for t in re.split(r'[\s,]+', f.tags) if t != tag_to_delete]
-                f.tags = " ".join(filter(bool, tags_list))
-        
-        s.commit()
+        chunk_size = 1000
+        for i in range(0, len(file_ids), chunk_size):
+            chunk = file_ids[i:i + chunk_size]
+            files = s.query(FileIndex).filter(FileIndex.id.in_(chunk)).all()
+            for f in files:
+                if f.tags:
+                    tags_list = [t for t in re.split(r'[\s,]+', f.tags) if t != tag_to_delete]
+                    f.tags = " ".join(filter(bool, tags_list))
+            s.commit()
+
     return {"status": "success", "deleted_tag": tag_to_delete}
 
 @app.post("/system/backup")
@@ -2386,17 +2414,204 @@ def backup_databases(payload: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Backup failed: {e}")
 
+@app.get("/system/export-people")
+def export_people():
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+        return []
+         
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT id, name, thumbnail_file_id FROM people WHERE name NOT LIKE 'Unknown Person%'")
+        except sqlite3.OperationalError:
+            cursor.execute("SELECT id, name, NULL FROM people WHERE name NOT LIKE 'Unknown Person%'")
+        people_rows = cursor.fetchall()
+        
+        export_data = []
+        with SessionLocal() as s:
+            for pid, name, thumb_id in people_rows:
+                thumb_path = None
+                if thumb_id:
+                    thumb_file = s.get(FileIndex, thumb_id)
+                    if thumb_file:
+                        thumb_path = thumb_file.path
+                        
+                cursor.execute("SELECT file_id, embedding_json FROM faces WHERE person_id = ?", (pid,))
+                face_rows = cursor.fetchall()
+                
+                faces = []
+                for fid, emb_json in face_rows:
+                    f_item = s.get(FileIndex, fid)
+                    if f_item:
+                        faces.append({
+                            "path": f_item.path,
+                            "embedding": emb_json
+                        })
+                        
+                if faces:
+                    export_data.append({
+                        "name": name,
+                        "thumbnail_path": thumb_path,
+                        "faces": faces
+                    })
+    return export_data
+
+@app.post("/system/import-people")
+def import_people(payload: list = Body(...)):
+    ai_db_path = get_ai_db_path()
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS people (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            name TEXT DEFAULT 'Unknown Person',
+                            cover_face_id INTEGER
+                      )''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS faces (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            person_id INTEGER,
+                            file_id INTEGER,
+                            embedding_json TEXT,
+                            FOREIGN KEY(person_id) REFERENCES people(id)
+                        )''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS processed_files (file_id INTEGER PRIMARY KEY)''')
+        
+        imported_people = 0
+        imported_faces = 0
+        with SessionLocal() as s:
+            path_to_id = {}
+            fallback_map = {}
+            for r in s.query(FileIndex.path, FileIndex.id).all():
+                p, fid = r[0], r[1]
+                path_to_id[p] = fid
+                try:
+                    parts = Path(p).parts
+                    key = f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else parts[-1]
+                    if key not in fallback_map: fallback_map[key] = []
+                    fallback_map[key].append(fid)
+                except Exception:
+                    pass
+
+            def get_fid(path_str):
+                if not path_str: return None
+                if path_str in path_to_id: return path_to_id[path_str]
+                try:
+                    parts = Path(path_str).parts
+                    key = f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else parts[-1]
+                    matches = fallback_map.get(key, [])
+                    if len(matches) == 1: return matches[0]
+                except Exception:
+                    pass
+                return None
+
+            for p_data in payload:
+                name = p_data.get("name")
+                if not name: continue
+                cursor.execute("SELECT id FROM people WHERE name = ?", (name,))
+                row = cursor.fetchone()
+                if row: pid = row[0]
+                else:
+                    cursor.execute("INSERT INTO people (name) VALUES (?)", (name,))
+                    pid = cursor.lastrowid
+                    imported_people += 1
+                thumb_path = p_data.get("thumbnail_path")
+                thumb_fid = get_fid(thumb_path)
+                for face in p_data.get("faces", []):
+                    f_path = face.get("path")
+                    emb = face.get("embedding")
+                    fid = get_fid(f_path)
+                    if fid:
+                        cursor.execute("SELECT id FROM faces WHERE person_id = ? AND file_id = ?", (pid, fid))
+                        face_row = cursor.fetchone()
+                        if not face_row:
+                            cursor.execute("INSERT INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)", (pid, fid, emb))
+                            new_face_id = cursor.lastrowid
+                            cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (fid,))
+                            imported_faces += 1
+                            db_item = s.get(FileIndex, fid)
+                            if db_item:
+                                current_tags = db_item.tags or ""
+                                new_tag = f"person:{name}"
+                                if new_tag not in current_tags:
+                                    db_item.tags = f"{current_tags} {new_tag}".strip()
+                        else:
+                            new_face_id = face_row[0]
+                            
+                        if thumb_fid and fid == thumb_fid:
+                            cursor.execute("UPDATE people SET cover_face_id = ? WHERE id = ?", (new_face_id, pid))
+            s.commit()
+        conn.commit()
+    return {"success": True, "imported_people": imported_people, "imported_faces": imported_faces}
+
 @app.get("/tags/objects")
 def get_object_tags():
     with SessionLocal() as s:
-        rows = s.query(FileIndex.tags).filter(FileIndex.tags.like('%object:%')).all()
         unique_tags = set()
-        for r in rows:
+        # Use yield_per to stream results instead of loading all strings into memory
+        for r in s.query(FileIndex.tags).filter(FileIndex.tags.like('%object:%')).yield_per(1000):
             if r[0]:
                 for tag in r[0].split():
                     if tag.startswith('object:'):
                         unique_tags.add(tag)
         return sorted(list(unique_tags))
+
+@app.get("/system/export-tags")
+def export_tags():
+    with SessionLocal() as s:
+        # Stream all files that have any tags
+        files = s.query(FileIndex.path, FileIndex.tags).filter(FileIndex.tags != None, FileIndex.tags != '').yield_per(1000)
+        export_data = [{"path": path, "tags": tags} for path, tags in files]
+        return export_data
+
+@app.post("/system/import-tags")
+def import_tags(payload: list = Body(...)):
+    imported_count = 0
+    with SessionLocal() as s:
+        path_to_id = {}
+        fallback_map = {}
+        for r in s.query(FileIndex.path, FileIndex.id).all():
+            p, fid = r[0], r[1]
+            path_to_id[p] = fid
+            try:
+                parts = Path(p).parts
+                key = f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else parts[-1]
+                if key not in fallback_map: fallback_map[key] = []
+                fallback_map[key].append(fid)
+            except Exception:
+                pass
+
+        def get_fid(path_str):
+            if not path_str: return None
+            if path_str in path_to_id: return path_to_id[path_str]
+            try:
+                parts = Path(path_str).parts
+                key = f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else parts[-1]
+                matches = fallback_map.get(key, [])
+                if len(matches) == 1: return matches[0]
+            except Exception:
+                pass
+            return None
+        
+        chunk_size = 900
+        for i in range(0, len(payload), chunk_size):
+            chunk = payload[i:i + chunk_size]
+            for item in chunk:
+                path = item.get("path")
+                new_tags = item.get("tags")
+                if not path or not new_tags: 
+                    continue
+                
+                file_id = get_fid(path)
+                if file_id:
+                    db_item = s.get(FileIndex, file_id)
+                    if db_item:
+                        current_tags = set((db_item.tags or "").split())
+                        imported_tags = set(new_tags.split())
+                        db_item.tags = " ".join(sorted(current_tags.union(imported_tags)))
+                        imported_count += 1
+            s.commit()
+    return {"success": True, "imported_files": imported_count}
 
 # --- Serve React Frontend (Production) ---
 if hasattr(sys, '_MEIPASS'):

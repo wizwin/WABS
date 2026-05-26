@@ -43,6 +43,13 @@ If you want to completely reset the AI's detected faces, people, and object tags
 
 *(Note: You can also clear just the object tags directly from the UI by navigating to the **Tags** page and clicking **Clear All Object Tags**).*
 
+### Exporting & Importing AI Data (JSON)
+To safeguard your AI metadata against database wipes or migrations, you can export your data to portable JSON files:
+1. Go to **Settings** and scroll down to the **Data Management** section.
+2. Click **Export JSON** under **Known People (Faces)** or **Object & Custom Tags** to save your data.
+3. To restore, simply click **Import JSON** and select your saved file. 
+*Note: WABS uses a **Smart Path Fallback Matcher**, meaning your exported tags and faces will successfully import and remap to your files even if you have moved your archive to a completely different drive letter!*
+
 ### Advanced Search Operators
 WABS supports powerful search operators to help you precisely filter your archive. You can combine multiple operators with spaces (e.g., `type:video length:>1h`).
 * **`name:`** Exact filename match (e.g., `name:vacation.mp4`)
