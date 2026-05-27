@@ -122,6 +122,8 @@ from pydantic import BaseModel
 @app.on_event("startup")
 def startup_event():
     global LOGGING_ENABLED
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     try:
         cfg = load_config()
         LOGGING_ENABLED = cfg.get("enable_logging", False)
@@ -833,8 +835,14 @@ def delete_files(paths: list[str] = Body(..., embed=True)):
                 session.query(FileIndex).filter(FileIndex.path == path_str).delete()
                 deleted_count += 1
             except Exception as e:
+                if cfg.get("enable_logging"):
+                    import logging
+                    logging.error(f"Critical error: Failed to delete {path_str}: {e}", exc_info=True)
                 print(f"Failed to delete {path_str}: {e}")
         session.commit()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Deleted {deleted_count} files.")
     return {"deleted": deleted_count}
 
 @app.post("/copy-files")
@@ -851,7 +859,13 @@ def copy_files(paths: list[str] = Body(...), destination: str = Body(...)):
                 shutil.copy2(src, dest_path / src.name)
                 copied_count += 1
             except Exception as e:
+                if load_config().get("enable_logging"):
+                    import logging
+                    logging.error(f"Critical error: Failed to copy {path_str}: {e}", exc_info=True)
                 print(f"Failed to copy {path_str}: {e}")
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info(f"Successfully copied {copied_count} files to destination.")
     return {"copied": copied_count}
 
 @app.post("/move-files")
@@ -895,8 +909,14 @@ def move_files(paths: list[str] = Body(...), destination: str = Body(...)):
                     updates[path_str] = str(new_target)
                     moved_count += 1
                 except Exception as e:
+                    if cfg.get("enable_logging"):
+                        import logging
+                        logging.error(f"Critical error: Failed to move {path_str}: {e}", exc_info=True)
                     print(f"Failed to move {path_str}: {e}")
         session.commit()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Successfully moved {moved_count} files to destination.")
     return {"moved": moved_count, "updates": updates}
 
 @app.get("/stats")
@@ -1007,6 +1027,9 @@ def indexer_start(req: IndexRequest = None):
         combined_scanner_thread.start()
     else:
         start_indexing()
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Archive indexing started.")
     return {"started": STATE.get("running", True)}
 
 @app.post("/indexer/pause")
@@ -1039,6 +1062,9 @@ def indexer_stop():
     combined_scanner_stopped = True
     face_scanner_running = False
     object_scanner_running = False
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Archive indexing stopped.")
     return STATE
 
 @app.post("/indexer/update")
@@ -1060,6 +1086,9 @@ def indexer_update(req: IndexRequest = None):
         combined_scanner_thread.start()
     else:
         start_indexing()
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Archive indexing update started.")
     return {"updating": True}
 
 @app.post("/indexer/reindex")
@@ -1119,6 +1148,9 @@ def indexer_reindex(req: IndexRequest = None):
         combined_scanner_thread.start()
     else:
         start_indexing()
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Archive re-indexing started.")
     return {"reindexing": True}
 
 @app.get("/choose-path")
@@ -1188,22 +1220,33 @@ def save(data:dict):
     global LOGGING_ENABLED
     save_config(data)
     LOGGING_ENABLED = data.get("enable_logging", False)
+    # Log settings update
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Configuration file updated.")
     return {"saved":True}
 
 @app.post("/clear-cache")
 def clear_cache():
+    import logging
     cfg = load_config()
     thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
     if thumb_dir.exists() and thumb_dir.is_dir():
         try:
             shutil.rmtree(thumb_dir)
+            if cfg.get("enable_logging"):
+                logging.info("Cleared thumbnail cache.")
             return {"cleared": True}
         except Exception as e:
+            if cfg.get("enable_logging"):
+                logging.error(f"Critical error: Failed to clear cache: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to clear cache: {e}")
     return {"cleared": True, "message": "Cache was already empty"}
 
 @app.post("/shutdown")
 def shutdown(request: Request):
+    import logging
+    logging_enabled = load_config().get("enable_logging")
     # To achieve a graceful shutdown, we access the server instance stored in the app state
     # by run.py and set its `should_exit` flag. This is the production method.
     if hasattr(request.app.state, 'server'):
@@ -1211,6 +1254,8 @@ def shutdown(request: Request):
         # We run this in a thread to allow the HTTP response to be sent to the client first.
         def graceful_shutdown():
             time.sleep(0.5) # A small delay to ensure the response is sent.
+            if logging_enabled:
+                logging.info("Server is shutting down (Production method).")
             server.should_exit = True
         threading.Thread(target=graceful_shutdown).start()
         return {"shutdown": True, "message": "Server is shutting down..."}
@@ -1222,6 +1267,8 @@ def shutdown(request: Request):
             time.sleep(0.5) # A small delay to ensure the response is sent.
             # This sends a termination signal that Uvicorn's CLI runner will catch
             # and use to perform a graceful shutdown.
+            if logging_enabled:
+                logging.info("Server shutdown signal sent (Development method).")
             os.kill(os.getpid(), signal.SIGTERM)
         threading.Thread(target=dev_shutdown).start()
         return {"shutdown": True, "message": "Server shutdown signal sent..."}
@@ -2427,12 +2474,21 @@ def backup_databases(payload: dict = Body(...)):
         if config_path.exists():
             shutil.copy2(config_path, dest_path / config_path.name)
             
+        if load_config().get("enable_logging"):
+            import logging
+            logging.info("Successfully backed up databases and config.")
         return {"success": True, "message": "Databases and config successfully backed up."}
     except Exception as e:
+        if load_config().get("enable_logging"):
+            import logging
+            logging.error(f"Critical error: Backup failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Backup failed: {e}")
 
 @app.get("/system/export-people")
 def export_people():
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Exporting people data.")
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
         return []
@@ -2575,6 +2631,9 @@ def get_object_tags():
 
 @app.get("/system/export-tags")
 def export_tags():
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Exporting tags data.")
     with SessionLocal() as s:
         # Stream all files that have any tags
         files = s.query(FileIndex.path, FileIndex.tags).filter(FileIndex.tags != None, FileIndex.tags != '').yield_per(1000)
