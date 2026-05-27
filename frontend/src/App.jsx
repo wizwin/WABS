@@ -1773,14 +1773,14 @@ useEffect(() => {
     if (isMounted) timeoutId = setTimeout(poll, delay);
   };
 
-  if (indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.combined_scanner_running) {
+  if ((indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.combined_scanner_running) && !indexer.paused) {
     timeoutId = setTimeout(poll, 1000);
   } else {
     // Perform one final fetch when scanners stop to ensure all UI counters are fully up to date
     loadTags();
   }
   return () => { isMounted = false; clearTimeout(timeoutId); };
-}, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, indexer.combined_scanner_running, page]);
+}, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, indexer.combined_scanner_running, indexer.paused, page]);
 
 function getOfflinePlaceholder(text, bgColor, textColor) {
   const safeText = String(text).replace(/[<>&'"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','\'':'&apos;','"':'&quot;'}[c]));
