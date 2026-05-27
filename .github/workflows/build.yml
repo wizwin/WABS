@@ -23,21 +23,37 @@ permissions:
   contents: write # Required to allow GitHub to attach files to the Release
 
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Set up matrix
+        id: set-matrix
+        env:
+          TARGET_OS: ${{ inputs.target_os }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          MATRIX_JSON='[
+            {"os": "windows-latest", "artifact_name": "WABS-Windows.exe", "path_sep": ";"},
+            {"os": "ubuntu-latest", "artifact_name": "WABS-Linux", "path_sep": ":"},
+            {"os": "ubuntu-24.04-arm", "artifact_name": "WABS-RaspberryPi", "path_sep": ":"}
+          ]'
+          
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$TARGET_OS" != "all" ]]; then
+            MATRIX_JSON=$(echo "$MATRIX_JSON" | jq -c --arg target "$TARGET_OS" '[.[] | select(.os == $target)]')
+          else
+            MATRIX_JSON=$(echo "$MATRIX_JSON" | jq -c '.')
+          fi
+          
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: setup
     runs-on: ${{ matrix.os }}
-    if: github.event_name != 'workflow_dispatch' || inputs.target_os == 'all' || inputs.target_os == matrix.os
     strategy:
       matrix:
-        include:
-          - os: windows-latest
-            artifact_name: WABS-Windows.exe
-            path_sep: ";"
-          - os: ubuntu-latest
-            artifact_name: WABS-Linux
-            path_sep: ":"
-          - os: ubuntu-24.04-arm
-            artifact_name: WABS-RaspberryPi
-            path_sep: ":"
+        include: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v5
