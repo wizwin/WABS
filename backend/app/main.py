@@ -2439,6 +2439,45 @@ def delete_object_tag_globally(tag_name: str):
 
     return {"status": "success", "deleted_tag": tag_to_delete}
 
+@app.post("/system/free-memory")
+def free_memory():
+    import gc
+    import sqlite3
+    
+    # 1. Force Python garbage collection to drop unreferenced objects
+    gc.collect()
+    
+    # 2. Flush SQLite memory caches (FTS5 / Page Cache)
+    cfg = load_config()
+    db_path_str = cfg.get("database_path") or "archive.db"
+    main_db_path = Path(db_path_str)
+    if not main_db_path.is_absolute():
+        if getattr(sys, 'frozen', False):
+            main_db_path = Path(sys.executable).parent / main_db_path
+        else:
+            main_db_path = Path(__file__).resolve().parent.parent.parent / main_db_path
+
+    try:
+        if main_db_path.exists():
+            with sqlite3.connect(main_db_path) as db:
+                db.execute("PRAGMA shrink_memory")
+    except Exception:
+        pass
+        
+    ai_db_path = get_ai_db_path()
+    try:
+        if ai_db_path.exists():
+            with sqlite3.connect(ai_db_path) as db:
+                db.execute("PRAGMA shrink_memory")
+    except Exception:
+        pass
+
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info("System memory released via garbage collection and SQLite cache flush.")
+
+    return {"status": "Memory released"}
+
 @app.post("/system/backup")
 def backup_databases(payload: dict = Body(...)):
     dest_dir = payload.get("destination")

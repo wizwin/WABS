@@ -76,6 +76,8 @@ function ActionButton({ disabled, onClick, children, className = "btn btn-second
       onMouseUp={() => setIsActive(false)}
       style={{
         ...style,
+        pointerEvents: disabled ? 'none' : (style.pointerEvents || 'auto'),
+        opacity: disabled ? 0.5 : (style.opacity !== undefined ? style.opacity : 1),
         transition: animationsEnabled ? 'all 0.2s ease' : 'none', 
         transform: animationsEnabled && isActive && !disabled ? 'scale(0.95)' : animationsEnabled && isHovered && !disabled ? 'translateY(-2px)' : 'none', 
         boxShadow: animationsEnabled && isActive && !disabled ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered && !disabled ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none'
@@ -1149,6 +1151,21 @@ async function indexerAction(action){
    await axios.post(`${API}/indexer/${action}`, combinedOptions)
  } else {
    await axios.post(`${API}/indexer/${action}`)
+   
+   if (action === 'pause') {
+     // Safely release frontend memory footprint by flushing the global file cache
+     // and re-seeding it only with the currently active files to prevent crashes.
+     globalFileCache.current.clear();
+     if (Array.isArray(files)) files.forEach(f => globalFileCache.current.set(f.path, f));
+     if (Array.isArray(personFiles)) personFiles.forEach(f => globalFileCache.current.set(f.path, f));
+     if (Array.isArray(searchCache)) searchCache.forEach(f => globalFileCache.current.set(f.path, f));
+     
+     try {
+       await axios.post(`${API}/system/free-memory`);
+     } catch(err) {
+       // Silently ignore if the backend doesn't implement this endpoint yet
+     }
+   }
  }
  await loadDashboard()
  } finally {
@@ -2979,7 +2996,7 @@ page==='dashboard' &&
 <p><b>Status:</b> {indexer.status}</p>
 <p><b>Running:</b> {indexer.running || indexer.combined_scanner_running ? 'Yes' : 'No'}</p>
 <p><b>Paused:</b> {indexer.paused ? 'Yes' : 'No'}</p>
-<p><b>Indexed:</b> {indexer.indexed}</p>
+<p><b>Indexed:</b> {stats.total}</p>
 {(indexer.running || indexer.combined_scanner_running) && (
   <>
     <p><b>Progress:</b> {indexer.current} / {indexer.total}</p>
