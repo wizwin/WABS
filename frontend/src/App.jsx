@@ -310,6 +310,7 @@ const [detailsWidth, setDetailsWidth] = useState(260)
 const [isResizing, setIsResizing] = useState(null)
 const [showSearchHelp, setShowSearchHelp] = useState(false)
 const [isShutdown, setIsShutdown] = useState(false)
+const [isShuttingDown, setIsShuttingDown] = useState(false)
 const [toastMessage, setToastMessage] = useState('');
 const [showToast, setShowToast] = useState(false);
 const toastTimeoutRef = useRef(null);
@@ -1576,12 +1577,62 @@ function importTags() {
 
 async function handleShutdown() {
   if (window.confirm('Are you sure you want to shut down the WABS server?')) {
+    setIsShuttingDown(true);
     try {
+      const isAnyScannerRunning = indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running;
+      
+      if (isAnyScannerRunning) {
+        if (indexer.running || indexer.combined_scanner_running) {
+          try { await axios.post(`${API}/indexer/stop`); } catch(e) {}
+        }
+        if (indexer.face_scanner_running) {
+          try { await axios.post(`${API}/stop-scan-faces`); } catch(e) {}
+        }
+        if (indexer.object_scanner_running) {
+          try { await axios.post(`${API}/stop-scan-objects`); } catch(e) {}
+        }
+        if (indexer.hasher_running) {
+          try { await axios.post(`${API}/stop-verify-duplicates`); } catch(e) {}
+        }
+
+        // Wait for scanners to completely stop
+        for (let i = 0; i < 30; i++) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          try {
+            const r = await axios.get(`${API}/indexer/status?t=${Date.now()}`);
+            const status = r.data;
+            if (!status.running && !status.combined_scanner_running && !status.face_scanner_running && !status.object_scanner_running && !status.hasher_running) {
+              break;
+            }
+          } catch(e) {
+            break; // Stop polling if server unreachable
+          }
+        }
+      }
+
       await axios.post(`${API}/shutdown`)
-      setIsShutdown(true)
+      if (!window.wabsForceShutdown) {
+        setIsShuttingDown(false);
+        setIsShutdown(true)
+      }
     } catch (err) {
-      alert('Failed to send shutdown signal. Please close the application manually via Task Manager.');
+      if (!window.wabsForceShutdown) {
+        setIsShuttingDown(false);
+        alert('Failed to send shutdown signal. Please close the application manually via Task Manager.');
+      }
     }
+  }
+}
+
+async function handleForceShutdown() {
+  window.wabsForceShutdown = true;
+  try {
+    await axios.post(`${API}/shutdown`);
+    setIsShuttingDown(false);
+    setIsShutdown(true);
+  } catch (err) {
+    setIsShuttingDown(false);
+    alert('Failed to send force shutdown signal. Please close the application manually via Task Manager.');
   }
 }
 
@@ -2016,6 +2067,49 @@ return(
     <PowerSettingsNewIcon style={{ fontSize: '80px', color: '#ef4444' }} />
     <h1 style={{ marginTop: '24px', fontSize: '32px' }}>Server has been shut down.</h1>
     <p style={{ color: '#94a3b8', fontSize: '18px', marginTop: '8px' }}>You can now safely close this browser tab.</p>
+  </div>
+) : isShuttingDown ? (
+  <div style={{
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(15, 23, 42, 0.95)',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 9999,
+    color: '#f8fafc',
+    textAlign: 'center'
+  }}>
+    <HourglassEmptyIcon style={{ fontSize: '80px', color: '#38bdf8', animation: 'spin 2s linear infinite' }} />
+    <h1 style={{ marginTop: '24px', fontSize: '32px' }}>Shutting Down...</h1>
+    <p style={{ color: '#94a3b8', fontSize: '18px', marginTop: '8px' }}>Saving database and stopping background tasks. Please wait.</p>
+    <button 
+      onClick={handleForceShutdown}
+      style={{
+        marginTop: '32px',
+        padding: '12px 24px',
+        background: '#ef4444',
+        color: '#ffffff',
+        border: 'none',
+        borderRadius: '6px',
+        cursor: 'pointer',
+        fontSize: '16px',
+        fontWeight: 'bold',
+      }}>
+      Force Shutdown
+    </button>
+    <style>
+      {`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      `}
+    </style>
   </div>
 ) : (
 <>

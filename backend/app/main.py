@@ -45,6 +45,54 @@ except ModuleNotFoundError:
 
 app = FastAPI()
 
+@app.on_event("shutdown")
+def graceful_os_shutdown():
+    import time
+    import logging
+    try:
+        from backend.app import indexer
+    except ImportError:
+        try:
+            import indexer
+        except ImportError:
+            return
+
+    try:
+        if getattr(indexer, 'logging_enabled', False):
+            logging.info("OS Shutdown / App termination detected. Stopping scanners gracefully...")
+    except Exception:
+        pass
+
+    if hasattr(indexer, 'indexer_stopped'): indexer.indexer_stopped = True
+    if hasattr(indexer, 'face_scanner_stopped'): indexer.face_scanner_stopped = True
+    if hasattr(indexer, 'object_scanner_stopped'): indexer.object_scanner_stopped = True
+    if hasattr(indexer, 'hasher_stopped'): indexer.hasher_stopped = True
+    if hasattr(indexer, 'combined_scanner_stopped'): indexer.combined_scanner_stopped = True
+
+    for _ in range(30):
+        is_running = any([
+            getattr(indexer, 'running', False),
+            getattr(indexer, 'combined_scanner_running', False),
+            getattr(indexer, 'face_scanner_running', False),
+            getattr(indexer, 'object_scanner_running', False),
+            getattr(indexer, 'hasher_running', False),
+        ])
+        if not is_running:
+            break
+        time.sleep(1)
+
+if sys.platform == 'win32':
+    try:
+        import win32api
+        def console_ctrl_handler(ctrl_type):
+            if ctrl_type in (2, 5, 6): 
+                graceful_os_shutdown()
+                return True
+            return False
+        win32api.SetConsoleCtrlHandler(console_ctrl_handler, True)
+    except ImportError:
+        pass
+
 def get_log_path() -> Path:
     if getattr(sys, 'frozen', False):
         return Path(sys.executable).parent / "wabs.log"
@@ -1335,7 +1383,7 @@ def shutdown(request: Request):
         server = request.app.state.server
         # We run this in a thread to allow the HTTP response to be sent to the client first.
         def graceful_shutdown():
-            time.sleep(0.5) # A small delay to ensure the response is sent.
+            time.sleep(2.0) # A delay to ensure the response is sent and files are closed.
             if logging_enabled:
                 logging.info("Server is shutting down (Production method).")
             server.should_exit = True
@@ -1346,7 +1394,7 @@ def shutdown(request: Request):
         import os
         import signal
         def dev_shutdown():
-            time.sleep(0.5) # A small delay to ensure the response is sent.
+            time.sleep(2.0) # A delay to ensure the response is sent and files are closed.
             # This sends a termination signal that Uvicorn's CLI runner will catch
             # and use to perform a graceful shutdown.
             if logging_enabled:
