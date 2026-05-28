@@ -356,34 +356,41 @@ def background_lazy_hasher():
             return
             
         # 2. Fetch all files belonging to these duplicate size groups
-        files = session.query(FileIndex).filter(FileIndex.size.in_(dup_sizes)).all()
+        files = []
+        for i in range(0, len(dup_sizes), 900):
+            chunk = dup_sizes[i:i + 900]
+            chunk_files = session.query(FileIndex.id, FileIndex.path, FileIndex.metadata_json).filter(
+                FileIndex.size.in_(chunk),
+                func.json_extract(FileIndex.metadata_json, '$.sha256').is_(None)
+            ).all()
+            files.extend(chunk_files)
         
         updates = 0
-        for item in files:
+        mappings = []
+        for item_id, path, metadata_json in files:
             if STATE.get("hasher_stopped") or STATE.get("stopped"):
                 break
             try:
-                meta = json.loads(item.metadata_json or "{}")
-                if "sha256" in meta:
-                    continue
-                    
-                file_path = Path(item.path)
+                meta = json.loads(metadata_json or "{}")
+                file_path = Path(path)
                 if file_path.exists() and file_path.is_file():
                     hasher = hashlib.sha256()
                     with open(file_path, 'rb') as f:
                         for chunk in iter(lambda: f.read(4096 * 1024), b""): # Read in 4MB streaming chunks
                             hasher.update(chunk)
                     meta["sha256"] = hasher.hexdigest()
-                    item.metadata_json = json.dumps(meta)
-                    session.add(item)
+                    mappings.append({"id": item_id, "metadata_json": json.dumps(meta)})
                     updates += 1
                     
-                    if updates >= 10:
+                    if updates >= 500:
+                        session.bulk_update_mappings(FileIndex, mappings)
                         session.commit()
+                        mappings = []
                         updates = 0
             except Exception as e:
                 pass
-        if updates > 0:
+        if mappings:
+            session.bulk_update_mappings(FileIndex, mappings)
             session.commit()
     except Exception as e:
         print(f"Lazy hasher error: {e}")

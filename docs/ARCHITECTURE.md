@@ -13,7 +13,7 @@ WABS is built with a modern, decoupled client-server architecture but packaged i
 ### 1. The Indexer (`indexer.py`)
 A highly optimized background worker that recursively scans target directories.
 * **Metadata Extraction:** Utilizes `Pillow` for EXIF data, `OpenCV` (`cv2`) for video frames, and `PyMuPDF` (`fitz`) for PDF parsing.
-* **Batch Processing:** Uses SQLAlchemy bulk commits and `yield_per` to maintain low memory usage when indexing massive archives.
+* **Batch Processing:** Uses SQLAlchemy `bulk_update_mappings` and specific column queries to bypass ORM overhead, committing in large batches to maintain extremely low memory usage and high speed when indexing massive archives.
 * **AI Categorization:** Includes a background thread that asynchronously queries LLMs (like OpenAI GPT) to categorize unknown file extensions.
 
 ### 2. The API Server (`main.py`)
@@ -42,13 +42,14 @@ The final payload (IV + Ciphertext) is Base64 encoded and written to `config.yam
 
 ### 5. Database & Full-Text Search (`database.py`)
 To achieve instant search results across hundreds of thousands of files, WABS leverages SQLite's **FTS5 (Full-Text Search)** extension.
-* **Virtual Tables:** A shadow FTS5 table is automatically synced with the main files table via SQLite triggers (`INSERT`, `UPDATE`, `DELETE`), ensuring the search index is always up-to-date without application-level overhead.
+* **Virtual Tables & Tuning:** A shadow FTS5 table is synced with the main files table via heavily scoped SQLite triggers to avoid unnecessary disk I/O. The database engine operates in `WAL` mode for high concurrency.
+* **Advanced Tokenization:** Utilizes `porter` stemming and prefix indexing to guarantee lightning-fast partial and plural suffix searches.
 * **Vocab & Autocomplete:** Uses the `fts5vocab` table to power lightning-fast prefix matching for real-time search suggestions directly from the search bar.
 * **Fuzzy Spell-Check:** Integrates Python's `difflib` against the FTS vocab table to efficiently offer "Did you mean?" suggestions for misspelled queries.
 
 ### 6. Duplicate Verification (Lazy Hasher)
 To efficiently detect and verify duplicate files without bottlenecking the initial indexing process, WABS employs a background "Lazy Hasher" (`background_lazy_hasher`).
-* **Size-Based Pre-Filtering:** The system first queries the database to find files that share the exact same byte size. Only these potential duplicates are queued for hashing, preventing massive amounts of unnecessary disk read operations for unique files.
+* **Size-Based & JSON1 Pre-Filtering:** The system first queries the database to find files that share the exact same byte size. It utilizes SQLite's native `json_extract` to ignore already-hashed files at the database level, preventing massive amounts of unnecessary disk read operations for unique or verified files.
 * **Chunked SHA-256 Hashing:** The background worker reads the flagged files in streaming 4MB chunks, computing a cryptographic SHA-256 hash while maintaining a tiny memory footprint, even for massive ISOs or video files.
 * **Metadata Stamping:** Once computed, the hash is saved to the file's JSON metadata, allowing the frontend to confidently distinguish between unverified (size-match only) and verified (cryptographic match) duplicates.
 
@@ -56,5 +57,5 @@ To efficiently detect and verify duplicate files without bottlenecking the initi
 WABS incorporates lightweight, 100% offline computer vision models to automatically enrich the archive without relying on cloud APIs.
 * **ONNX Models & OpenCV:** Utilizes OpenCV's DNN module alongside bundled ONNX models (`YuNet` and `SFace` for facial recognition, `MobileNetV2` for object/scene classification). This approach avoids bloated ML dependencies, keeping the final executable small and performant.
 * **Sidecar AI Database:** All computationally expensive embeddings, clusters, and facial tracking data are stored in a completely separate `ai_metadata.db` file. This ensures the core index (`archive.db`) remains lightning-fast and clean.
-* **Face Clustering:** When faces are detected, they are converted into numerical embeddings and compared against known clusters using Cosine Similarity. "Unknown Person" profiles are dynamically generated and can be later renamed, merged, or deleted via the UI.
+* **Face Clustering:** When faces are detected, they are converted into numerical embeddings and compared against known clusters using fully vectorized `numpy` matrix multiplications. This eliminates Python loop overhead, allowing similarity searches across thousands of faces in milliseconds. "Unknown Person" profiles are dynamically generated and can be later renamed, merged, or deleted via the UI.
 * **Object Tagging:** Photos are passed through the MobileNetV2 classifier. Softmax probabilities are checked against user-defined "Sensitivity" thresholds before being injected into the file's searchable `tags` column as an `object:` prefix, instantly becoming available to the FTS5 search engine.

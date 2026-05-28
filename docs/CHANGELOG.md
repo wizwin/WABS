@@ -10,6 +10,7 @@
 *   **Document Thumbnails:** Added thumbnail support for `.doc` and `.docx` files.
 *   **Smart Search UI:** Improved the user interface for Smart Search.
 *   **People Management:** Improved renaming people and handling person mismatches.
+*   **Advanced JSON Search:** Added high-speed JSON prefix searches (`camera:`, `resolution:`, `fps:`, `artist:`, `album:`, `genre:`, and `meta:`) utilizing SQLite's JSON1 extension for native metadata querying.
 
 ### ✨ UI/UX Enhancements
 *   **Data Management:** Completely redesigned the Data Management section in Settings with clean, descriptive UI cards.
@@ -19,6 +20,7 @@
 *   **Build Selection:** Added UI to pick the build target when running workflows manually.
 
 ### 🐞 Bug Fixes & Performance
+*   **Database Cleanup & Optimization:** Added a dedicated routine in Settings to scan for missing files, remove dead links, purge orphaned AI profiles, and vacuum the SQLite databases to reclaim disk space.
 *   **OOM Memory Optimizations:** Resolved severe backend Out-Of-Memory crashes and SQLite lock contentions when scanning massive archives (>90,000 files) by implementing batched `.yield_per()` queries and ID-level tracking.
 *   **Connection Stability:** Fixed backend HTTP connection drops (`[WinError 10054]`) during rapid frontend scrolling using `AbortController` network cancellation.
 *   **Database Limits:** Fixed fatal SQLite `OperationalError` crashes during bulk tagging by circumventing the hard 999 `IN(...)` variable limit.
@@ -27,6 +29,11 @@
 *   **Batch Processing:** Fixed issues with re-applying batch processing.
 *   **UI Scaling:** Fixed UI scaling issues when resizing the details pane.
 *   **Selection Display:** Fixed an issue where the app was not showing selected files.
+*   **CPU Drain Fix:** Fixed a major bug where stopping the standalone face scan would fail to terminate the background loop, causing indefinite high CPU usage.
+*   **Vectorized AI Engine:** Completely replaced slow Python math loops with optimized `numpy` vector and matrix multiplications for face clustering and similarity searches, dropping computation times from minutes to milliseconds.
+*   **Massive Database Speedups:** Bypassed heavy SQLAlchemy ORM instantiation overhead in indexer, search, and duplicate hasher routines. Integrated `bulk_update_mappings` and raised batch commit thresholds from 50 to 500 for lightning-fast database writes.
+*   **FTS5 Search & SQLite Tuning:** Enabled WAL mode for improved concurrency, heavily optimized FTS5 trigger scoping to slash unnecessary disk I/O, and added Porter stemming and prefix tokenization for highly accurate partial filename matches.
+*   **JSON1 Hasher Optimization:** Upgraded the background lazy hasher to use SQLite's native `json_extract` filtering, completely preventing already-verified files from being unnecessarily loaded into memory.
 
 ## v1.0.0-beta.4
 **Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.4

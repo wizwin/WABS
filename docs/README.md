@@ -9,10 +9,13 @@ WABS is a modern, 100% offline archival management system designed to help you o
 * **Lightning-Fast Search:** Find files instantly by name, path, tags, or metadata using advanced operators (e.g., `size:>1GB`, `date:2020-2022`).
 * **Smart Searches:** Save your most-used and complex search queries as one-click shortcuts.
 * **Explorer-Style Browsing:** Navigate your archives with familiar grid and list views.
-* **Rich Previews:** Auto-generates thumbnails for photos, videos, PDFs, and code.
+* **Rich Previews:** Auto-generates thumbnails for photos, videos, PDFs, Word documents, and code.
 * **Smart Categorization:** Automatically groups files into categories like Photos, Videos, Code, etc.
 * **Offline Face Recognition:** Scans photos using local AI to find and group people automatically.
 * **Object & Scene Tagging:** Classifies objects and scenes in photos completely offline, allowing you to easily search by content.
+* **Combined AI Scanning:** Scan for files, faces, and objects simultaneously to massively speed up index generation.
+* **Advanced JSON Search:** Native, high-speed metadata querying (FPS, Camera Model, ID3 Tags, etc.) powered by SQLite's JSON1 extension.
+* **Database Management:** Built-in tools to cleanly remove missing files, purge orphaned AI profiles, and vacuum the databases to reclaim disk space.
 * **Portable:** Move your backup drives around? WABS easily remaps your indexed files to new drive letters.
 
 ## Getting Started
@@ -60,6 +63,8 @@ WABS supports powerful search operators to help you precisely filter your archiv
 * **`object:`** Search for AI-detected objects or scenes (e.g., `object:car`, `object:beach`)
 * **`person:`** Search for specific people identified by the Face Scanner (e.g., `person:"john doe"`)
 * **`tag:`** Search for your custom manual tags (e.g., `tag:family_trip`)
+* **Specific Metadata:** Filter natively by extracted attributes using `camera:`, `resolution:`, `fps:` (supports relational operators, e.g., `fps:>=60`), `artist:`, `album:`, and `genre:`.
+* **`meta:`** Catch-all to search any arbitrary JSON metadata extracted during indexing (e.g., `meta:CompanyName:Microsoft` or `meta:gps.latitude:45.0`).
 * **Wildcards:** Use `*` for partial matches (e.g., `*vacation*`, `*.mp3`)
 
 ### Configuring Local AI (Free & Offline)

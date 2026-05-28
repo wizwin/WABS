@@ -743,6 +743,10 @@ async function choosePathForConfig(configId, field, mode){
 }
 
 async function clearCache() {
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before clearing the thumbnail cache to prevent file access conflicts.");
+    return;
+  }
   if (!window.confirm('Are you sure you want to clear the thumbnail cache? The cached images will be permanently deleted and automatically regenerated as needed.')) return;
   try {
     await axios.post(`${API}/clear-cache`);
@@ -1332,6 +1336,11 @@ async function moveSelected() {
 }
 
 async function backupDatabase() {
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks (Indexing, Face/Object Scanning, Hash Verification) before backing up the database to ensure data consistency.");
+    return;
+  }
+  
   try {
     const dest = await axios.get(`${API}/choose-path?mode=directory`);
     if (!dest.data || !dest.data.path) return;
@@ -1346,7 +1355,45 @@ async function backupDatabase() {
   }
 }
 
+async function cleanupDatabase() {
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks (Indexing, Face/Object Scanning, Hash Verification) before running the cleanup routine.");
+    return;
+  }
+  if (!window.confirm('Are you sure you want to run the cleanup routine? This will scan the entire database for missing files, remove their dead links, clean up empty AI profiles, and vacuum the databases. This may take several minutes for large archives.')) return;
+  
+  setActionInProgress(true);
+  try {
+    showToastMessage('Database cleanup & optimization in progress...');
+    const r = await axios.post(`${API}/system/cleanup`);
+    showToastMessage(`Cleanup complete. Removed ${r.data.removed_files} missing files.`);
+    await loadDashboard(); // Refresh dashboard stats
+    
+    // If files were deleted, flush the cache and reload the current view
+    if (r.data.removed_files > 0) {
+      globalFileCache.current.clear();
+      setCheckedFiles(new Set());
+      setSelected(null);
+      if (page === 'explorer') {
+        await loadFiles(0, false, filterCategory);
+      } else if (page === 'search') {
+        await goToSearch(filterCategory);
+      }
+    }
+  } catch (err) {
+    alert('Error running cleanup: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
+  }
+}
+
 async function exportKnownPeople() {
+  if (indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running) {
+    alert("Please stop scanning tasks before exporting known people to ensure data consistency.");
+    return;
+  }
+  setActionInProgress(true);
+  showToastMessage('Exporting known people...');
   try {
     const r = await axios.get(`${API}/system/export-people`);
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(r.data, null, 2));
@@ -1359,10 +1406,16 @@ async function exportKnownPeople() {
     showToastMessage('Known people exported successfully.');
   } catch(err) {
     alert('Error exporting people: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
   }
 }
 
 function importKnownPeople() {
+  if (indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running) {
+    alert("Please stop scanning tasks before importing known people to prevent database conflicts.");
+    return;
+  }
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.json';
@@ -1399,6 +1452,12 @@ function importKnownPeople() {
 }
 
 async function exportTags() {
+  if (indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running) {
+    alert("Please stop the Indexer and Object Scanner before exporting tags to ensure data consistency.");
+    return;
+  }
+  setActionInProgress(true);
+  showToastMessage('Exporting tags...');
   try {
     const r = await axios.get(`${API}/system/export-tags`);
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(r.data, null, 2));
@@ -1411,10 +1470,16 @@ async function exportTags() {
     showToastMessage('Tags exported successfully.');
   } catch(err) {
     alert('Error exporting tags: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
   }
 }
 
 function importTags() {
+  if (indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running) {
+    alert("Please stop the Indexer and Object Scanner before importing tags to prevent database conflicts.");
+    return;
+  }
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.json';
@@ -3032,13 +3097,13 @@ Update
 <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running} onClick={()=>indexerAction('reindex')} style={{ color: (indexer.running || indexer.combined_scanner_running) ? undefined : '#f59e0b' }}>
 Re-index
 </ActionButton>
-<ActionButton disabled={actionInProgress || (!indexer.running && !indexer.combined_scanner_running) || indexer.paused || indexer.stopped || indexer.combined_scanner_stopped} onClick={()=>indexerAction('pause')}>
+<ActionButton disabled={actionInProgress || (!indexer.running && !indexer.combined_scanner_running) || indexer.paused || (indexer.running && indexer.stopped) || (indexer.combined_scanner_running && indexer.combined_scanner_stopped)} onClick={()=>indexerAction('pause')}>
 Pause
 </ActionButton>
-<ActionButton disabled={actionInProgress || ((indexer.running || indexer.combined_scanner_running) && !indexer.paused) || indexer.stopped || indexer.combined_scanner_stopped} onClick={()=>indexerAction('resume')}>
+<ActionButton disabled={actionInProgress || ((indexer.running || indexer.combined_scanner_running) && !indexer.paused) || (indexer.running && indexer.stopped) || (indexer.combined_scanner_running && indexer.combined_scanner_stopped)} onClick={()=>indexerAction('resume')}>
 Resume
 </ActionButton>
-<ActionButton disabled={actionInProgress || (!indexer.running && !indexer.combined_scanner_running) || indexer.stopped || indexer.combined_scanner_stopped} onClick={()=>indexerAction('stop')} style={{ color: ((!indexer.running && !indexer.combined_scanner_running) || indexer.stopped || indexer.combined_scanner_stopped) ? undefined : '#ef4444' }}>
+<ActionButton disabled={actionInProgress || (!indexer.running && !indexer.combined_scanner_running) || (indexer.running && indexer.stopped) || (indexer.combined_scanner_running && indexer.combined_scanner_stopped)} onClick={()=>indexerAction('stop')} style={{ color: ((!indexer.running && !indexer.combined_scanner_running) || (indexer.running && indexer.stopped) || (indexer.combined_scanner_running && indexer.combined_scanner_stopped)) ? undefined : '#ef4444' }}>
 Stop
 </ActionButton>
 </div>
@@ -3172,10 +3237,29 @@ page==='settings' &&
         <div style={{ display: 'grid', gap: '16px' }}>
           <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
             <div>
+              <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Database Cleanup &amp; Optimization</h4>
+              <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Scan for missing files, clear orphaned data, and vacuum databases to reclaim space.</p>
+            </div>
+            <ActionButton 
+              disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} 
+              className="btn btn-secondary" 
+              onClick={cleanupDatabase}
+              title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to run cleanup" : ""}
+            >
+              Run Cleanup
+            </ActionButton>
+          </div>
+          <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+            <div>
               <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Full Database Backup</h4>
               <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Create a safe, portable copy of your archive.db, ai_metadata.db, and config.yaml.</p>
             </div>
-            <ActionButton disabled={actionInProgress} className="btn btn-secondary" onClick={backupDatabase}>
+            <ActionButton 
+              disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} 
+              className="btn btn-secondary" 
+              onClick={backupDatabase}
+              title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to backup the database" : ""}
+            >
               Export / Backup Data
             </ActionButton>
           </div>
@@ -3185,10 +3269,20 @@ page==='settings' &&
               <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Export or import named people and their face embeddings as a portable JSON file.</p>
             </div>
             <div style={{ display: 'flex', gap: '10px' }}>
-              <ActionButton disabled={actionInProgress} className="btn btn-secondary" onClick={exportKnownPeople}>
+              <ActionButton 
+                disabled={actionInProgress || indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running} 
+                className="btn btn-secondary" 
+                onClick={exportKnownPeople}
+                title={(indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running) ? "Stop scanning tasks to export data" : ""}
+              >
                 Export JSON
               </ActionButton>
-              <ActionButton disabled={actionInProgress} className="btn btn-secondary" onClick={importKnownPeople}>
+              <ActionButton 
+                disabled={actionInProgress || indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running} 
+                className="btn btn-secondary" 
+                onClick={importKnownPeople}
+                title={(indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running) ? "Stop scanning tasks to import data" : ""}
+              >
                 Import JSON
               </ActionButton>
             </div>
@@ -3199,10 +3293,20 @@ page==='settings' &&
               <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Export or import all applied tags mapped to file paths as a portable JSON file.</p>
             </div>
             <div style={{ display: 'flex', gap: '10px' }}>
-              <ActionButton disabled={actionInProgress} className="btn btn-secondary" onClick={exportTags}>
+              <ActionButton 
+                disabled={actionInProgress || indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running} 
+                className="btn btn-secondary" 
+                onClick={exportTags}
+                title={(indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running) ? "Stop scanning tasks to export data" : ""}
+              >
                 Export JSON
               </ActionButton>
-              <ActionButton disabled={actionInProgress} className="btn btn-secondary" onClick={importTags}>
+              <ActionButton 
+                disabled={actionInProgress || indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running} 
+                className="btn btn-secondary" 
+                onClick={importTags}
+                title={(indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running) ? "Stop scanning tasks to import data" : ""}
+              >
                 Import JSON
               </ActionButton>
             </div>
@@ -3255,7 +3359,13 @@ page==='settings' &&
           </div>
         )}
         <div style={{ marginBottom: '0', marginTop: '16px' }}>
-          <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={clearCache}>
+          <ActionButton 
+            disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} 
+            className="btn btn-secondary" 
+            style={{ padding: '6px 12px' }} 
+            onClick={clearCache}
+            title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to clear cache" : ""}
+          >
             Clear Thumbnail Cache
           </ActionButton>
         </div>
@@ -3340,7 +3450,7 @@ page==='settings' &&
 
             <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', color: '#38bdf8' }}>
               <input type='checkbox' checked={config.path_mapping_enabled || false} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, path_mapping_enabled: e.target.checked } : c) }))} />
-              Enable drive path remapping (Use if drive letter changed)
+              Enable path remapping (Use if drive letter or path changed)
             </label>
 
             {config.path_mapping_enabled && (

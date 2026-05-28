@@ -304,6 +304,26 @@ def _build_search_query(query, s, q_base=None):
             elif val.startswith("name:"):
                 n_val = val[len("name:"):]
                 exclude_filters.append(text_filter(FileIndex.filename, n_val))
+            elif val.startswith("camera:"):
+                c_val = val[len("camera:"):]
+                exclude_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, '$.camera')).contains(c_val))
+            elif val.startswith("resolution:"):
+                r_val = val[len("resolution:"):]
+                exclude_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, '$.resolution')).contains(r_val))
+            elif val.startswith("artist:"):
+                a_val = val[len("artist:"):]
+                exclude_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, '$.artist')).contains(a_val))
+            elif val.startswith("album:"):
+                al_val = val[len("album:"):]
+                exclude_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, '$.album')).contains(al_val))
+            elif val.startswith("genre:"):
+                g_val = val[len("genre:"):]
+                exclude_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, '$.genre')).contains(g_val))
+            elif val.startswith("meta:"):
+                orig_val = token[1:]
+                parts = orig_val[5:].split(":", 1)
+                if len(parts) == 2:
+                    exclude_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, f'$.{parts[0]}')).contains(parts[1].lower()))
             else:
                 exclude_filters.append(or_(
                     text_filter(FileIndex.filename, val),
@@ -415,6 +435,43 @@ def _build_search_query(query, s, q_base=None):
                 elif operator == "<": specific_filters.append(val_col < num_val)
             else:
                 specific_filters.append(text_filter(FileIndex.metadata_json, val))
+        elif lower_token.startswith("camera:"):
+            val = lower_token[len("camera:"):]
+            specific_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, '$.camera')).contains(val))
+        elif lower_token.startswith("resolution:"):
+            val = lower_token[len("resolution:"):]
+            specific_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, '$.resolution')).contains(val))
+        elif lower_token.startswith("artist:"):
+            val = lower_token[len("artist:"):]
+            specific_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, '$.artist')).contains(val))
+        elif lower_token.startswith("album:"):
+            val = lower_token[len("album:"):]
+            specific_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, '$.album')).contains(val))
+        elif lower_token.startswith("genre:"):
+            val = lower_token[len("genre:"):]
+            specific_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, '$.genre')).contains(val))
+        elif lower_token.startswith("meta:"):
+            parts = token[5:].split(":", 1)
+            if len(parts) == 2:
+                specific_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, f'$.{parts[0]}')).contains(parts[1].lower()))
+        elif lower_token.startswith("fps:"):
+            val = lower_token[len("fps:"):]
+            operator = ""
+            if val.startswith(">="): operator, val = ">=", val[2:]
+            elif val.startswith("<="): operator, val = "<=", val[2:]
+            elif val.startswith(">"): operator, val = ">", val[1:]
+            elif val.startswith("<"): operator, val = "<", val[1:]
+            
+            try:
+                num_val = float(val)
+                fps_col = func.json_extract(FileIndex.metadata_json, '$.fps')
+                if operator == ">=": specific_filters.append(fps_col >= num_val)
+                elif operator == "<=": specific_filters.append(fps_col <= num_val)
+                elif operator == ">": specific_filters.append(fps_col > num_val)
+                elif operator == "<": specific_filters.append(fps_col < num_val)
+                else: specific_filters.append(fps_col == num_val)
+            except ValueError:
+                specific_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, '$.fps')).contains(val))
         elif "*" in lower_token:
             like_val = lower_token.replace("*", "%")
             specific_filters.append(func.lower(func.coalesce(FileIndex.filename, "")).like(like_val))
@@ -464,7 +521,7 @@ def files(category:str="all", offset:int=0, limit:int=50):
     cache_flag = "&tc=1" if cache_enabled else ""
 
     with SessionLocal() as s:
-        q = s.query(FileIndex)
+        q = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
         if category != "all":
             if category == "other":
                 standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
@@ -487,7 +544,7 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50):
 
     from sqlalchemy import text
     with SessionLocal() as s:
-        q_base = s.query(FileIndex)
+        q_base = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
         if category != "all":
             if category == "other":
                 standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
@@ -520,7 +577,10 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50):
             return [_build_item(r, cache_flag) for r in filtered]
 
         # Fallback to standard builder for custom search parameters (date:, size:, etc)
-        search_prefixes = ["date:", "tag:", "type:", "name:", "size:", "length:", "object:", "person:"]
+        search_prefixes = [
+            "date:", "tag:", "type:", "name:", "size:", "length:", "object:", "person:",
+            "camera:", "resolution:", "fps:", "artist:", "album:", "genre:", "meta:"
+        ]
         if any(prefix in query.lower() for prefix in search_prefixes) or "*" in query or query.startswith("-") or " -" in query or query.startswith("+") or " +" in query:
             q = _build_search_query(query, s, q_base)
             rows = q.offset(offset).limit(limit).all()
@@ -578,8 +638,18 @@ def search_suggestions(q: str = "", limit: int = 5):
             ).scalars().all()
             
             close_matches = difflib.get_close_matches(last_word, all_terms, n=limit, cutoff=0.7)
-            if close_matches:
-                return {"type": "did_you_mean", "suggestions": close_matches, "last_word": last_word}
+            
+            valid_matches = []
+            for m in close_matches:
+                if m == last_word:
+                    continue
+                # Filter out FTS Porter Stemming artifacts (e.g., 'purchas' for 'purchase', 'asu' for 'asus')
+                if last_word.startswith(m) and len(last_word) - len(m) <= 3:
+                    continue
+                valid_matches.append(m)
+                
+            if valid_matches:
+                return {"type": "did_you_mean", "suggestions": valid_matches, "last_word": last_word}
                 
     return {"type": "none", "suggestions": [], "last_word": last_word}
 
@@ -1336,6 +1406,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
 
         # --- Face Setup ---
         detector, recognizer, clusters, p_count = None, None, {}, 0
+        cluster_matrix_norm = None
+        cluster_ids_list = []
         face_threshold, cluster_threshold = 0.70, 0.55
         if run_face:
             yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
@@ -1389,6 +1461,16 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                 cursor.execute("SELECT COUNT(id) FROM people")
                 p_row = cursor.fetchone()
                 p_count = p_row[0] if p_row else 0
+                
+                # Build initial numpy matrix for clustering
+                cluster_embs = []
+                for pid, embs in clusters.items():
+                    cluster_ids_list.extend([pid] * len(embs))
+                    cluster_embs.extend(embs)
+                if cluster_embs:
+                    cm = np.array(cluster_embs)
+                    cn = np.linalg.norm(cm, axis=1, keepdims=True)
+                    cluster_matrix_norm = cm / np.where(cn == 0, 1, cn)
 
             if run_object:
                 cursor.execute('''CREATE TABLE IF NOT EXISTS processed_objects (file_id INTEGER PRIMARY KEY)''')
@@ -1437,16 +1519,22 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
             with SessionLocal() as session:
-                # Store only path-to-id mapping for fast lookups without massive RAM usage
-                path_to_id = {r[0]: r[1] for r in session.query(FileIndex.path, FileIndex.id).all()}
+                # Store lightweight info mapping to avoid millions of session.get() queries
+                file_cache = {}
+                for r in session.query(FileIndex.id, FileIndex.path, FileIndex.size, FileIndex.modified, FileIndex.category, FileIndex.filename).yield_per(5000):
+                    file_cache[r.path] = {"id": r.id, "size": r.size, "modified": r.modified, "category": r.category, "filename": r.filename}
                 
                 for idx, file_str in enumerate(files_to_process):
                     while STATE.get("paused"):
                         time.sleep(0.5)
                         if combined_scanner_stopped or (run_index and STATE.get("stopped")):
                             break
+                        if not run_index and run_face and not face_scanner_running:
+                            break
 
                     if combined_scanner_stopped or (run_index and STATE.get("stopped")):
+                        break
+                    if not run_index and run_face and not face_scanner_running:
                         break
                         
                     file = Path(file_str)
@@ -1464,14 +1552,17 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         STATE["object_scanner_current_file"] = file.name
 
                     # --- 1. Indexing Phase ---
-                    db_item_id = path_to_id.get(file_str)
-                    db_item = session.get(FileIndex, db_item_id) if db_item_id else None
+                    cached_info = file_cache.get(file_str)
+                    db_item_id = cached_info["id"] if cached_info else None
+                    db_item = None
+                    
                     if run_index:
                         try:
-                            modified_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(file.stat().st_mtime))
-                            file_size = str(file.stat().st_size)
+                            f_stat = file.stat()
+                            modified_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(f_stat.st_mtime))
+                            file_size = str(f_stat.st_size)
                             
-                            if not db_item:
+                            if not cached_info:
                                 category = classify(file.suffix)
                                 metadata, extra_tags = extract_metadata_for_file(file, category)
                                 tags = build_tags(metadata, category, file.suffix, file)
@@ -1485,11 +1576,14 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                 session.add(db_item)
                                 session.flush()
                                 STATE["indexed"] += 1
-                                if STATE["indexed"] % 50 == 0:
+                                if STATE["indexed"] % 500 == 0:
                                     session.commit()
-                                path_to_id[file_str] = db_item.id
+                                db_item_id = db_item.id
+                                file_cache[file_str] = {"id": db_item.id, "size": file_size, "modified": modified_time, "category": category, "filename": file.name}
+                                cached_info = file_cache[file_str]
                             else:
-                                if db_item.size != file_size or db_item.modified != modified_time:
+                                if cached_info["size"] != file_size or cached_info["modified"] != modified_time:
+                                    db_item = session.get(FileIndex, db_item_id)
                                     category = classify(file.suffix)
                                     metadata, extra_tags = extract_metadata_for_file(file, category)
                                     tags = build_tags(metadata, category, file.suffix, file)
@@ -1498,31 +1592,40 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     db_item.modified = modified_time
                                     db_item.metadata_json = json.dumps(metadata)
                                     db_item.tags = tags
+                                    
+                                    cached_info["size"] = file_size
+                                    cached_info["modified"] = modified_time
+                                    cached_info["category"] = category
+                                    
                                     STATE["indexed"] += 1
-                                    if STATE["indexed"] % 50 == 0:
+                                    if STATE["indexed"] % 500 == 0:
                                         session.commit()
                         except Exception as e:
                             print(f"Index error on {file.name}: {e}")
                             continue
 
                     # Skip AI phase if the file is not an image
-                    if not db_item or db_item.category != 'photo':
+                    if not cached_info or cached_info["category"] != 'photo':
                         continue
 
                     # --- 2. AI Phase ---
                     obj_stopped = STATE.get("object_scanner_stopped", False)
-                    needs_face = run_face and face_scanner_running and db_item.id not in face_processed_ids
-                    needs_object = run_object and not obj_stopped and db_item.id not in object_processed_ids
+                    needs_face = run_face and face_scanner_running and db_item_id not in face_processed_ids
+                    needs_object = run_object and not obj_stopped and db_item_id not in object_processed_ids
                     
                     if not needs_face and not needs_object:
                         continue
                         
-                    filename_lower = db_item.filename.lower() if db_item.filename else ""
+                    # Fetch full SQLAlchemy object ONLY if we need to modify tags or it wasn't fetched yet
+                    if not db_item:
+                        db_item = session.get(FileIndex, db_item_id)
+                        
+                    filename_lower = cached_info["filename"].lower() if cached_info["filename"] else ""
                     if "screenshot" in filename_lower or "meme" in filename_lower:
-                        if needs_face: cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item.id,))
-                        if needs_object: cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item.id,))
+                        if needs_face: cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item_id,))
+                        if needs_object: cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item_id,))
                         processed_count += 1
-                        if processed_count % 50 == 0:
+                        if processed_count % 500 == 0:
                             conn.commit()
                             session.commit()
                         continue
@@ -1535,10 +1638,10 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         continue
 
                     if img is None:
-                        if needs_face: cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item.id,))
-                        if needs_object: cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item.id,))
+                        if needs_face: cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item_id,))
+                        if needs_object: cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item_id,))
                         processed_count += 1
-                        if processed_count % 50 == 0:
+                        if processed_count % 500 == 0:
                             conn.commit()
                             session.commit()
                         continue
@@ -1576,8 +1679,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         except Exception as e:
                             print(f"ERROR: Failed to classify {file.name}: {e}")
                             
-                        cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item.id,))
-                        object_processed_ids.add(db_item.id)
+                        cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item_id,))
+                        object_processed_ids.add(db_item_id)
 
                     # --- Run Face Detector ---
                     if needs_face and detector is not None:
@@ -1622,32 +1725,55 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
 
                                     best_match_id = None
                                     best_sim = -1.0
-                                    for person_id, rep_embs in clusters.items():
-                                        for rep_emb in rep_embs:
-                                            sim = _cosine_similarity(embedding, rep_emb)
-                                            if sim > cluster_threshold and sim > best_sim:
-                                                best_sim = sim
-                                                best_match_id = person_id
+                                    
+                                    if cluster_matrix_norm is not None:
+                                        emb_np = np.array(embedding)
+                                        emb_norm = np.linalg.norm(emb_np)
+                                        if emb_norm > 0:
+                                            emb_np_norm = emb_np / emb_norm
+                                            similarities = np.dot(cluster_matrix_norm, emb_np_norm)
+                                            max_idx = np.argmax(similarities)
+                                            max_sim = similarities[max_idx]
+                                            
+                                            if max_sim > cluster_threshold:
+                                                best_sim = float(max_sim)
+                                                best_match_id = cluster_ids_list[max_idx]
 
                                     if best_match_id is None:
                                         p_count += 1
                                         cursor.execute("INSERT INTO people (name) VALUES (?)", (f"Unknown Person #{p_count}",))
                                         best_match_id = cursor.lastrowid
                                         clusters[best_match_id] = [embedding]
+                                        
+                                        emb_np = np.array(embedding)
+                                        emb_norm = np.linalg.norm(emb_np)
+                                        emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
+                                        if cluster_matrix_norm is None:
+                                            cluster_matrix_norm = np.array([emb_np_norm])
+                                            cluster_ids_list = [best_match_id]
+                                        else:
+                                            cluster_matrix_norm = np.vstack([cluster_matrix_norm, emb_np_norm])
+                                            cluster_ids_list.append(best_match_id)
                                     else:
                                         if len(clusters[best_match_id]) < 15:
                                             clusters[best_match_id].append(embedding)
+                                            
+                                            emb_np = np.array(embedding)
+                                            emb_norm = np.linalg.norm(emb_np)
+                                            emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
+                                            cluster_matrix_norm = np.vstack([cluster_matrix_norm, emb_np_norm])
+                                            cluster_ids_list.append(best_match_id)
                                     
                                     cursor.execute("INSERT INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
-                                                    (best_match_id, db_item.id, json.dumps(embedding)))
+                                                    (best_match_id, db_item_id, json.dumps(embedding)))
                         except Exception as e:
                             print(f"Face processing error on {file.name}: {e}")
                             
-                        cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item.id,))
-                        face_processed_ids.add(db_item.id)
+                        cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item_id,))
+                        face_processed_ids.add(db_item_id)
 
                     processed_count += 1
-                    if processed_count % 50 == 0:
+                    if processed_count % 500 == 0:
                         conn.commit()
                         session.commit()
 
@@ -1754,18 +1880,37 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.60):
             WHERE p.name LIKE 'Unknown Person%' AND f.embedding_json != '[]'
         """)
         
+        try:
+            import numpy as np
+            has_numpy = True
+            known_matrix = np.array(known_embeddings)
+            known_norms = np.linalg.norm(known_matrix, axis=1, keepdims=True)
+            known_matrix_norm = known_matrix / np.where(known_norms == 0, 1, known_norms)
+        except ImportError:
+            has_numpy = False
         
         similar_profiles = {}
         for unk_person_id, unk_name, unk_embedding_json, photo_count, file_id in cursor:
             if not unk_embedding_json:
                 continue
-            unk_embedding = json.loads(unk_embedding_json)
-            max_sim = 0.0
-            for known_emb in known_embeddings:
-                if known_emb:
-                    sim = _cosine_similarity(known_emb, unk_embedding)
-                    if sim > max_sim:
-                        max_sim = sim
+            
+            if has_numpy:
+                unk_embedding = np.array(json.loads(unk_embedding_json))
+                unk_norm = np.linalg.norm(unk_embedding)
+                if unk_norm == 0:
+                    continue
+                unk_embedding_norm = unk_embedding / unk_norm
+                similarities = np.dot(known_matrix_norm, unk_embedding_norm)
+                max_sim = np.max(similarities)
+            else:
+                unk_embedding = json.loads(unk_embedding_json)
+                max_sim = 0.0
+                for known_emb in known_embeddings:
+                    if known_emb:
+                        sim = _cosine_similarity(known_emb, unk_embedding)
+                        if sim > max_sim:
+                            max_sim = sim
+                            
             if max_sim >= threshold:
                 if unk_person_id not in similar_profiles or max_sim > similar_profiles[unk_person_id]["similarity"]:
                     similar_profiles[unk_person_id] = {
@@ -1874,11 +2019,21 @@ def get_person_thumbnail(person_id: int):
 
             best_face_align = None
             best_sim = -1.0
+            
+            target_emb_np = np.array(target_embedding)
+            target_norm = np.linalg.norm(target_emb_np)
+            target_emb_norm = target_emb_np / target_norm if target_norm > 0 else target_emb_np
+            
             for face in faces:
                 face_align = recognizer.alignCrop(img, face)
                 face_feature = recognizer.feature(face_align)
-                embedding = face_feature[0].tolist()
-                sim = _cosine_similarity(embedding, target_embedding)
+                
+                emb_np = face_feature[0]
+                emb_norm = np.linalg.norm(emb_np)
+                emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
+                
+                sim = float(np.dot(target_emb_norm, emb_np_norm))
+                
                 if sim > best_sim:
                     best_sim = sim
                     best_face_align = face_align
@@ -1923,7 +2078,7 @@ def get_person_photos(person_id: int, offset: int = 0, limit: int = 50):
         # Chunk queries to prevent SQLite IN() limitations and memory exhaustion
         for i in range(0, len(file_ids), 900):
             chunk = file_ids[i:i + 900]
-            photos = s.query(FileIndex).filter(FileIndex.id.in_(chunk)).all()
+            photos = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json).filter(FileIndex.id.in_(chunk)).all()
             
             # Ensure the response maintains the exact ordered pagination from SQLite
             photo_dict = {p.id: _build_item(p, cache_flag) for p in photos}
@@ -2246,7 +2401,7 @@ def _scan_and_tag_objects_worker():
                     if "screenshot" in filename_lower or "meme" in filename_lower:
                         cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (photo.id,))
                         processed_count += 1
-                        if processed_count % 50 == 0:
+                        if processed_count % 500 == 0:
                             conn.commit()
                             s.commit()
                         continue
@@ -2266,7 +2421,7 @@ def _scan_and_tag_objects_worker():
                     if img is None:
                         cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (photo.id,))
                         processed_count += 1
-                        if processed_count % 50 == 0:
+                        if processed_count % 500 == 0:
                             conn.commit()
                             s.commit()
                         continue
@@ -2308,7 +2463,7 @@ def _scan_and_tag_objects_worker():
                         
                     cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (photo.id,))
                     processed_count += 1
-                    if processed_count % 50 == 0:
+                    if processed_count % 500 == 0:
                         conn.commit()
                         s.commit()
                 
@@ -2372,14 +2527,19 @@ def add_tags(req: TagUpdateRequest):
         # Chunk processing to avoid SQLite IN() limits and memory spikes
         for i in range(0, len(req.file_ids), 900):
             chunk = req.file_ids[i:i + 900]
-            files_to_update = s.query(FileIndex).filter(FileIndex.id.in_(chunk)).all()
-            for f in files_to_update:
-                current_tags = set((f.tags or "").split())
+            files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
+            mappings = []
+            for f_id, tags in files_to_update:
+                current_tags = set((tags or "").split())
                 for tag in req.tags:
                     formatted_tag = f"object:{tag}" if ":" not in tag else tag
                     current_tags.add(formatted_tag)
-                f.tags = " ".join(sorted(current_tags))
-            s.commit()
+                new_tags_str = " ".join(sorted(current_tags))
+                if new_tags_str != tags:
+                    mappings.append({"id": f_id, "tags": new_tags_str})
+            if mappings:
+                s.bulk_update_mappings(FileIndex, mappings)
+                s.commit()
     return {"status": "success"}
 
 @app.post("/tags/remove")
@@ -2387,16 +2547,21 @@ def remove_tags(req: TagUpdateRequest):
     with SessionLocal() as s:
         for i in range(0, len(req.file_ids), 900):
             chunk = req.file_ids[i:i + 900]
-            files_to_update = s.query(FileIndex).filter(FileIndex.id.in_(chunk)).all()
-            for f in files_to_update:
-                if not f.tags:
+            files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
+            mappings = []
+            for f_id, tags in files_to_update:
+                if not tags:
                     continue
-                current_tags = set((f.tags or "").split())
+                current_tags = set((tags or "").split())
                 for tag in req.tags:
                     formatted_tag = f"object:{tag}" if ":" not in tag else tag
                     current_tags.discard(formatted_tag)
-                f.tags = " ".join(sorted(current_tags))
-            s.commit()
+                new_tags_str = " ".join(sorted(current_tags))
+                if new_tags_str != tags:
+                    mappings.append({"id": f_id, "tags": new_tags_str})
+            if mappings:
+                s.bulk_update_mappings(FileIndex, mappings)
+                s.commit()
     return {"status": "success"}
 
 @app.delete("/tags/objects/all")
@@ -2408,13 +2573,18 @@ def clear_all_object_tags():
         chunk_size = 1000
         for i in range(0, len(file_ids), chunk_size):
             chunk = file_ids[i:i + chunk_size]
-            files = s.query(FileIndex).filter(FileIndex.id.in_(chunk)).all()
-            for f in files:
-                if f.tags:
+            files = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
+            mappings = []
+            for f_id, tags in files:
+                if tags:
                     # Split tags, filter out object tags, and rejoin
-                    tags_list = [t for t in re.split(r'[\s,]+', f.tags) if not t.startswith('object:')]
-                    f.tags = " ".join(filter(bool, tags_list))
-            s.commit()
+                    tags_list = [t for t in re.split(r'[\s,]+', tags) if not t.startswith('object:')]
+                    new_tags_str = " ".join(filter(bool, tags_list))
+                    if new_tags_str != tags:
+                        mappings.append({"id": f_id, "tags": new_tags_str})
+            if mappings:
+                s.bulk_update_mappings(FileIndex, mappings)
+                s.commit()
 
     return {"status": "success", "message": "All object tags have been cleared."}
 
@@ -2430,12 +2600,17 @@ def delete_object_tag_globally(tag_name: str):
         chunk_size = 1000
         for i in range(0, len(file_ids), chunk_size):
             chunk = file_ids[i:i + chunk_size]
-            files = s.query(FileIndex).filter(FileIndex.id.in_(chunk)).all()
-            for f in files:
-                if f.tags:
-                    tags_list = [t for t in re.split(r'[\s,]+', f.tags) if t != tag_to_delete]
-                    f.tags = " ".join(filter(bool, tags_list))
-            s.commit()
+            files = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
+            mappings = []
+            for f_id, tags in files:
+                if tags:
+                    tags_list = [t for t in re.split(r'[\s,]+', tags) if t != tag_to_delete]
+                    new_tags_str = " ".join(filter(bool, tags_list))
+                    if new_tags_str != tags:
+                        mappings.append({"id": f_id, "tags": new_tags_str})
+            if mappings:
+                s.bulk_update_mappings(FileIndex, mappings)
+                s.commit()
 
     return {"status": "success", "deleted_tag": tag_to_delete}
 
@@ -2522,6 +2697,85 @@ def backup_databases(payload: dict = Body(...)):
             import logging
             logging.error(f"Critical error: Backup failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Backup failed: {e}")
+
+@app.post("/system/cleanup")
+def system_cleanup():
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    db_path_str = cfg.get("database_path") or "archive.db"
+    main_db_path = Path(db_path_str)
+    if not main_db_path.is_absolute():
+        if getattr(sys, 'frozen', False):
+            main_db_path = Path(sys.executable).parent / main_db_path
+        else:
+            main_db_path = Path(__file__).resolve().parent.parent.parent / main_db_path
+
+    missing_ids = []
+    with SessionLocal() as s:
+        # 1. Identify files that no longer exist on disk
+        for r in s.query(FileIndex.id, FileIndex.path).yield_per(1000):
+            fid, path_str = r[0], r[1]
+            file_path = _resolve_path(Path(path_str))
+            if not file_path.exists():
+                missing_ids.append(fid)
+                
+        # 2. Delete dead records from main archive database
+        if missing_ids:
+            for i in range(0, len(missing_ids), 900):
+                chunk = missing_ids[i:i + 900]
+                s.query(FileIndex).filter(FileIndex.id.in_(chunk)).delete(synchronize_session=False)
+            s.commit()
+
+    # 3. Clean up AI database (orphaned faces, processed files/objects, and people without faces)
+    if missing_ids and ai_db_path.exists():
+        with sqlite3.connect(ai_db_path, timeout=15) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            cursor = conn.cursor()
+            for i in range(0, len(missing_ids), 900):
+                chunk = missing_ids[i:i+900]
+                placeholders = ",".join("?" * len(chunk))
+                try:
+                    cursor.execute(f"DELETE FROM faces WHERE file_id IN ({placeholders})", chunk)
+                    cursor.execute(f"DELETE FROM processed_files WHERE file_id IN ({placeholders})", chunk)
+                    cursor.execute(f"DELETE FROM processed_objects WHERE file_id IN ({placeholders})", chunk)
+                    cursor.execute(f"UPDATE people SET thumbnail_file_id = NULL WHERE thumbnail_file_id IN ({placeholders})", chunk)
+                except sqlite3.OperationalError:
+                    pass
+            
+            try:
+                # Delete people profiles that no longer have any associated faces
+                cursor.execute("DELETE FROM people WHERE id NOT IN (SELECT DISTINCT person_id FROM faces)")
+            except sqlite3.OperationalError:
+                pass
+            conn.commit()
+
+    # 4. Vacuum databases to reclaim space and optimize indices
+    try:
+        with sqlite3.connect(main_db_path, timeout=15) as conn:
+            conn.isolation_level = None  # Auto-commit mode required for VACUUM
+            conn.execute("VACUUM")
+    except Exception as e:
+        print(f"Failed to vacuum main database: {e}")
+        if cfg.get("enable_logging"):
+            import logging
+            logging.error(f"Failed to vacuum main database: {e}", exc_info=True)
+
+    if ai_db_path.exists():
+        try:
+            with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                conn.isolation_level = None
+                conn.execute("VACUUM")
+        except Exception as e:
+            print(f"Failed to vacuum AI database: {e}")
+            if cfg.get("enable_logging"):
+                import logging
+                logging.error(f"Failed to vacuum AI database: {e}", exc_info=True)
+
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Database cleanup finished: {len(missing_ids)} dead files removed, empty profiles cleared, and databases vacuumed.")
+
+    return {"status": "success", "removed_files": len(missing_ids), "message": "Cleanup and optimization complete."}
 
 @app.get("/system/export-people")
 def export_people():

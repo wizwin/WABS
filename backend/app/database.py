@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy import create_engine, Column, Integer, String, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 try:
@@ -43,6 +43,13 @@ engine = create_engine(
     connect_args={"check_same_thread":False}
 )
 
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
+
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
@@ -75,7 +82,9 @@ with engine.begin() as conn:
     conn.execute(text("""
         CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
             filename, tags, 
-            content='files', content_rowid='id'
+            content='files', content_rowid='id',
+            tokenize='unicode61',
+            prefix='2 3 4 5 6 7'
         );
     """))
     conn.execute(text("""
@@ -90,8 +99,9 @@ with engine.begin() as conn:
             VALUES ('delete', old.id, old.filename, old.tags);
         END;
     """))
+    conn.execute(text("DROP TRIGGER IF EXISTS files_au;"))
     conn.execute(text("""
-        CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
+        CREATE TRIGGER files_au AFTER UPDATE OF filename, tags ON files BEGIN
             INSERT INTO files_fts(files_fts, rowid, filename, tags) 
             VALUES ('delete', old.id, old.filename, old.tags);
             
