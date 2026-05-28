@@ -846,7 +846,8 @@ def open_file_path(path: str = Body(..., embed=True)):
     system_name = platform.system()
     try:
         if system_name == "Windows":
-            subprocess.Popen(f'start "" "{file_path}"', shell=True)
+            norm_path = os.path.normpath(file_path)
+            subprocess.Popen(f'start "" "{norm_path}"', shell=True)
         elif system_name == "Darwin":
             subprocess.Popen(["open", str(file_path)])
         else:
@@ -858,16 +859,25 @@ def open_file_path(path: str = Body(..., embed=True)):
 
 @app.post("/open-folder")
 def open_folder(path: str = Body(..., embed=True)):
-    folder_path = _resolve_path(Path(path)).parent
+    resolved_path = _resolve_path(Path(path))
+    folder_path = resolved_path.parent
     if not folder_path.exists() or not folder_path.is_dir():
         raise HTTPException(status_code=404, detail="Folder not found")
 
     system_name = platform.system()
     try:
         if system_name == "Windows":
-            subprocess.Popen(f'start "" "{folder_path}"', shell=True)
+            if resolved_path.exists() and resolved_path.is_file():
+                norm_path = os.path.normpath(resolved_path)
+                subprocess.Popen(['explorer', '/select,', norm_path])
+            else:
+                norm_folder = os.path.normpath(folder_path)
+                subprocess.Popen(['explorer', norm_folder])
         elif system_name == "Darwin":
-            subprocess.Popen(["open", str(folder_path)])
+            if resolved_path.exists() and resolved_path.is_file():
+                subprocess.Popen(["open", "-R", str(resolved_path)])
+            else:
+                subprocess.Popen(["open", str(folder_path)])
         else:
             subprocess.Popen(["xdg-open", str(folder_path)])
     except Exception as exc:
@@ -1194,10 +1204,12 @@ def indexer_reindex(req: IndexRequest = None):
         try:
             with sqlite3.connect(ai_db_path, timeout=15) as conn:
                 conn.execute("PRAGMA journal_mode=WAL;")
-                conn.execute("DELETE FROM faces")
-                conn.execute("DELETE FROM people")
-                conn.execute("DELETE FROM processed_files")
-                conn.execute("DELETE FROM processed_objects")
+                for table in ['faces', 'people', 'processed_files', 'processed_objects']:
+                    try:
+                        conn.execute(f"DELETE FROM {table}")
+                    except sqlite3.OperationalError as e:
+                        if "no such table" not in str(e).lower():
+                            raise
                 try:
                     conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('faces', 'people', 'processed_files', 'processed_objects')")
                 except Exception:
@@ -1436,8 +1448,10 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             if run_face:
                 cursor.execute('''CREATE TABLE IF NOT EXISTS people (
                                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                name TEXT DEFAULT 'Unknown Person'
+                                name TEXT DEFAULT 'Unknown Person',
+                                thumbnail_file_id INTEGER
                               )''')
+                cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_people_name ON people(name)")
                 cursor.execute('''CREATE TABLE IF NOT EXISTS faces (
                                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                                     person_id INTEGER,
@@ -1445,6 +1459,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     embedding_json TEXT,
                                     FOREIGN KEY(person_id) REFERENCES people(id)
                                 )''')
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_faces_person_file ON faces(person_id, file_id)")
+                cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_faces_unique ON faces(person_id, file_id, embedding_json)")
                 cursor.execute('''CREATE TABLE IF NOT EXISTS processed_files (
                                     file_id INTEGER PRIMARY KEY
                                 )''')
@@ -1458,9 +1474,9 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         clusters[p_id] = []
                     if len(clusters[p_id]) < 15:
                         clusters[p_id].append(json.loads(emb_str))
-                cursor.execute("SELECT COUNT(id) FROM people")
+                cursor.execute("SELECT MAX(id) FROM people")
                 p_row = cursor.fetchone()
-                p_count = p_row[0] if p_row else 0
+                p_count = p_row[0] if (p_row and p_row[0]) else 0
                 
                 # Build initial numpy matrix for clustering
                 cluster_embs = []
@@ -1740,9 +1756,12 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                                 best_match_id = cluster_ids_list[max_idx]
 
                                     if best_match_id is None:
-                                        p_count += 1
-                                        cursor.execute("INSERT INTO people (name) VALUES (?)", (f"Unknown Person #{p_count}",))
-                                        best_match_id = cursor.lastrowid
+                                        while True:
+                                            p_count += 1
+                                            cursor.execute("INSERT OR IGNORE INTO people (name) VALUES (?)", (f"Unknown Person #{p_count}",))
+                                            if cursor.rowcount > 0:
+                                                best_match_id = cursor.lastrowid
+                                                break
                                         clusters[best_match_id] = [embedding]
                                         
                                         emb_np = np.array(embedding)
@@ -1763,8 +1782,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                             emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
                                             cluster_matrix_norm = np.vstack([cluster_matrix_norm, emb_np_norm])
                                             cluster_ids_list.append(best_match_id)
-                                    
-                                    cursor.execute("INSERT INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
+                                    cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
                                                     (best_match_id, db_item_id, json.dumps(embedding)))
                         except Exception as e:
                             print(f"Face processing error on {file.name}: {e}")
@@ -1862,9 +1880,14 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.60):
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         
-        # Fetch known person's embeddings
-        cursor.execute("SELECT embedding_json FROM faces WHERE person_id = ? AND embedding_json != '[]'", (person_id,))
-        known_rows = cursor.fetchall()
+        try:
+            # Fetch known person's embeddings
+            cursor.execute("SELECT embedding_json FROM faces WHERE person_id = ? AND embedding_json != '[]'", (person_id,))
+            known_rows = cursor.fetchall()
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e).lower():
+                raise HTTPException(status_code=500, detail=f"Database locked or unavailable: {e}")
+            raise HTTPException(status_code=404, detail="AI database tables not initialized.")
         if not known_rows:
             raise HTTPException(status_code=404, detail="Known person faces not found.")
         
@@ -1934,12 +1957,9 @@ def get_person_thumbnail(person_id: int):
     with sqlite3.connect(ai_db_path, timeout=15) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
-        try:
-            cursor.execute("SELECT thumbnail_file_id FROM people WHERE id = ?", (person_id,))
-            thumb_row = cursor.fetchone()
-            thumb_file_id = thumb_row[0] if thumb_row else None
-        except sqlite3.OperationalError:
-            thumb_file_id = None
+        cursor.execute("SELECT thumbnail_file_id FROM people WHERE id = ?", (person_id,))
+        thumb_row = cursor.fetchone()
+        thumb_file_id = thumb_row[0] if thumb_row else None
             
         face_row = None
         if thumb_file_id:
@@ -2066,11 +2086,16 @@ def get_person_photos(person_id: int, offset: int = 0, limit: int = 50):
     with sqlite3.connect(ai_db_path, timeout=15) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT file_id FROM faces WHERE person_id = ? GROUP BY file_id ORDER BY file_id DESC LIMIT ? OFFSET ?", 
-            (person_id, limit, offset)
-        )
-        file_ids = [r[0] for r in cursor.fetchall()]
+        try:
+            cursor.execute(
+                "SELECT file_id FROM faces WHERE person_id = ? GROUP BY file_id ORDER BY file_id DESC LIMIT ? OFFSET ?", 
+                (person_id, limit, offset)
+            )
+            file_ids = [r[0] for r in cursor.fetchall()]
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e).lower():
+                raise HTTPException(status_code=500, detail=f"Database locked or unavailable: {e}")
+            return []
     if not file_ids:
         return []
     with SessionLocal() as s:
@@ -2099,11 +2124,6 @@ def set_person_thumbnail(person_id: int, payload: dict = Body(...)):
     with sqlite3.connect(ai_db_path, timeout=15) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
-        try:
-            cursor.execute("ALTER TABLE people ADD COLUMN thumbnail_file_id INTEGER")
-        except sqlite3.OperationalError:
-            pass
-            
         cursor.execute("UPDATE people SET thumbnail_file_id = ? WHERE id = ?", (file_id, person_id))
         conn.commit()
         
@@ -2138,13 +2158,10 @@ def remove_person_photo(person_id: int, payload: dict = Body(...)):
         cursor.execute("DELETE FROM faces WHERE person_id = ? AND file_id = ?", (person_id, file_id))
         deleted_count = cursor.rowcount
         
-        try:
-            cursor.execute("SELECT thumbnail_file_id FROM people WHERE id = ?", (person_id,))
-            thumb_row = cursor.fetchone()
-            if thumb_row and thumb_row[0] == file_id:
-                cursor.execute("UPDATE people SET thumbnail_file_id = NULL WHERE id = ?", (person_id,))
-        except sqlite3.OperationalError:
-            pass
+        cursor.execute("SELECT thumbnail_file_id FROM people WHERE id = ?", (person_id,))
+        thumb_row = cursor.fetchone()
+        if thumb_row and thumb_row[0] == file_id:
+            cursor.execute("UPDATE people SET thumbnail_file_id = NULL WHERE id = ?", (person_id,))
             
         conn.commit()
         
@@ -2153,8 +2170,12 @@ def remove_person_photo(person_id: int, payload: dict = Body(...)):
             with SessionLocal() as s:
                 f = s.query(FileIndex).filter(FileIndex.id == file_id).first()
                 if f and f.tags:
-                    f.tags = f.tags.replace(f"person:{person_name}", "").replace("  ", " ").strip()
-                    s.commit()
+                        current_tags = set(f.tags.split())
+                        tag_to_remove = f"person:{person_name}"
+                        if tag_to_remove in current_tags:
+                            current_tags.remove(tag_to_remove)
+                            f.tags = " ".join(sorted(current_tags))
+                            s.commit()
 
         thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
         cached_face = thumb_dir / f"person_{person_id}.jpg"
@@ -2191,17 +2212,18 @@ def add_person_photo(person_id: int, payload: dict = Body(...)):
             return {"success": True, "message": "Already tagged"}
             
         # Insert empty array since it's a manual tag (bypasses similarity checks)
-        cursor.execute("INSERT INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)", (person_id, file_id, "[]"))
+        cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)", (person_id, file_id, "[]"))
         conn.commit()
         
     if person_name and not person_name.startswith("Unknown Person"):
         with SessionLocal() as s:
             f = s.query(FileIndex).filter(FileIndex.id == file_id).first()
             if f:
-                current_tags = f.tags or ""
+                current_tags = set((f.tags or "").split())
                 new_tag = f"person:{person_name}"
                 if new_tag not in current_tags:
-                    f.tags = f"{current_tags} {new_tag}".strip()
+                    current_tags.add(new_tag)
+                    f.tags = " ".join(sorted(current_tags))
                     s.commit()
 
     return {"success": True}
@@ -2234,7 +2256,8 @@ def rename_person(person_id: int, payload: dict = Body(...)):
         if existing_person:
             target_id = existing_person[0]
             # Auto-Merge: Reassign all faces to the existing person, then delete the duplicate
-            cursor.execute("UPDATE faces SET person_id = ? WHERE person_id = ?", (target_id, person_id))
+            cursor.execute("UPDATE OR IGNORE faces SET person_id = ? WHERE person_id = ?", (target_id, person_id))
+            cursor.execute("DELETE FROM faces WHERE person_id = ?", (person_id,))
             cursor.execute("DELETE FROM people WHERE id = ?", (person_id,))
         else:
             # Standard Rename
@@ -2244,17 +2267,23 @@ def rename_person(person_id: int, payload: dict = Body(...)):
         
     if file_ids:
         with SessionLocal() as s:
-            files_to_update = s.query(FileIndex).filter(FileIndex.id.in_(file_ids)).all()
-            for f in files_to_update:
-                current_tags = f.tags or ""
-                if old_name and not old_name.startswith("Unknown Person"):
-                    current_tags = current_tags.replace(f"person:{old_name}", "").replace("  ", " ").strip()
-                if new_name and not new_name.startswith("Unknown Person"):
-                    new_tag = f"person:{new_name}"
-                    if new_tag not in current_tags:
-                        current_tags = f"{current_tags} {new_tag}".strip()
-                f.tags = current_tags
-            s.commit()
+            for i in range(0, len(file_ids), 900):
+                chunk = file_ids[i:i + 900]
+                files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
+                mappings = []
+                for f_id, tags in files_to_update:
+                    current_tags_set = set((tags or "").split())
+                    if old_name and not old_name.startswith("Unknown Person"):
+                        current_tags_set.discard(f"person:{old_name}")
+                    if new_name and not new_name.startswith("Unknown Person"):
+                        current_tags_set.add(f"person:{new_name}")
+                        
+                    new_tags_str = " ".join(sorted(current_tags_set))
+                    if new_tags_str != tags:
+                        mappings.append({"id": f_id, "tags": new_tags_str})
+                if mappings:
+                    s.bulk_update_mappings(FileIndex, mappings)
+                    s.commit()
             
     return {"success": True, "name": new_name}
 
@@ -2283,11 +2312,20 @@ def delete_person(person_id: int):
     # Clean up any tags from the main index
     if file_ids and old_name and not old_name.startswith("Unknown Person"):
         with SessionLocal() as s:
-            files_to_update = s.query(FileIndex).filter(FileIndex.id.in_(file_ids)).all()
-            for f in files_to_update:
-                if f.tags:
-                    f.tags = f.tags.replace(f"person:{old_name}", "").replace("  ", " ").strip()
-            s.commit()
+            for i in range(0, len(file_ids), 900):
+                chunk = file_ids[i:i + 900]
+                files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
+                mappings = []
+                for f_id, tags in files_to_update:
+                    if tags:
+                        current_tags_set = set(tags.split())
+                        current_tags_set.discard(f"person:{old_name}")
+                        new_tags_str = " ".join(sorted(current_tags_set))
+                        if new_tags_str != tags:
+                            mappings.append({"id": f_id, "tags": new_tags_str})
+                if mappings:
+                    s.bulk_update_mappings(FileIndex, mappings)
+                    s.commit()
             
     return {"success": True, "deleted_id": person_id}
 
@@ -2318,7 +2356,8 @@ def merge_people(payload: dict = Body(...)):
         ids_to_merge = [p[0] for p in people_rows if p[0] != primary_id]
         
         for old_id in ids_to_merge:
-            cursor.execute("UPDATE faces SET person_id = ? WHERE person_id = ?", (primary_id, old_id))
+            cursor.execute("UPDATE OR IGNORE faces SET person_id = ? WHERE person_id = ?", (primary_id, old_id))
+            cursor.execute("DELETE FROM faces WHERE person_id = ?", (old_id,))
             cursor.execute("DELETE FROM people WHERE id = ?", (old_id,))
             
         conn.commit()
@@ -2734,19 +2773,25 @@ def system_cleanup():
             for i in range(0, len(missing_ids), 900):
                 chunk = missing_ids[i:i+900]
                 placeholders = ",".join("?" * len(chunk))
-                try:
-                    cursor.execute(f"DELETE FROM faces WHERE file_id IN ({placeholders})", chunk)
-                    cursor.execute(f"DELETE FROM processed_files WHERE file_id IN ({placeholders})", chunk)
-                    cursor.execute(f"DELETE FROM processed_objects WHERE file_id IN ({placeholders})", chunk)
-                    cursor.execute(f"UPDATE people SET thumbnail_file_id = NULL WHERE thumbnail_file_id IN ({placeholders})", chunk)
-                except sqlite3.OperationalError:
-                    pass
+                
+                for query in [
+                    f"DELETE FROM faces WHERE file_id IN ({placeholders})",
+                    f"DELETE FROM processed_files WHERE file_id IN ({placeholders})",
+                    f"DELETE FROM processed_objects WHERE file_id IN ({placeholders})",
+                    f"UPDATE people SET thumbnail_file_id = NULL WHERE thumbnail_file_id IN ({placeholders})"
+                ]:
+                    try:
+                        cursor.execute(query, chunk)
+                    except sqlite3.OperationalError as e:
+                        if "no such table" not in str(e).lower():
+                            raise
             
             try:
                 # Delete people profiles that no longer have any associated faces
                 cursor.execute("DELETE FROM people WHERE id NOT IN (SELECT DISTINCT person_id FROM faces)")
-            except sqlite3.OperationalError:
-                pass
+            except sqlite3.OperationalError as e:
+                if "no such table" not in str(e).lower():
+                    raise
             conn.commit()
 
     # 4. Vacuum databases to reclaim space and optimize indices
@@ -2790,9 +2835,11 @@ def export_people():
         cursor = conn.cursor()
         try:
             cursor.execute("SELECT id, name, thumbnail_file_id FROM people WHERE name NOT LIKE 'Unknown Person%'")
-        except sqlite3.OperationalError:
-            cursor.execute("SELECT id, name, NULL FROM people WHERE name NOT LIKE 'Unknown Person%'")
-        people_rows = cursor.fetchall()
+            people_rows = cursor.fetchall()
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e).lower():
+                raise HTTPException(status_code=500, detail=f"Database locked or unavailable: {e}")
+            people_rows = []
         
         export_data = []
         with SessionLocal() as s:
@@ -2832,8 +2879,9 @@ def import_people(payload: list = Body(...)):
         cursor.execute('''CREATE TABLE IF NOT EXISTS people (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                             name TEXT DEFAULT 'Unknown Person',
-                            cover_face_id INTEGER
+                            thumbnail_file_id INTEGER
                       )''')
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_people_name ON people(name)")
         cursor.execute('''CREATE TABLE IF NOT EXISTS faces (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             person_id INTEGER,
@@ -2841,46 +2889,71 @@ def import_people(payload: list = Body(...)):
                             embedding_json TEXT,
                             FOREIGN KEY(person_id) REFERENCES people(id)
                         )''')
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_faces_person_file ON faces(person_id, file_id)")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_faces_unique ON faces(person_id, file_id, embedding_json)")
         cursor.execute('''CREATE TABLE IF NOT EXISTS processed_files (file_id INTEGER PRIMARY KEY)''')
         
         imported_people = 0
         imported_faces = 0
         with SessionLocal() as s:
+            paths_in_payload = set()
+            for p_data in payload:
+                if t := p_data.get("thumbnail_path"):
+                    paths_in_payload.add(t)
+                for face in p_data.get("faces", []):
+                    if f := face.get("path"):
+                        paths_in_payload.add(f)
+            
             path_to_id = {}
-            fallback_map = {}
-            for r in s.query(FileIndex.path, FileIndex.id).all():
-                p, fid = r[0], r[1]
-                path_to_id[p] = fid
-                try:
-                    parts = Path(p).parts
-                    key = f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else parts[-1]
-                    if key not in fallback_map: fallback_map[key] = []
-                    fallback_map[key].append(fid)
-                except Exception:
-                    pass
-
+            if paths_in_payload:
+                paths_list = list(paths_in_payload)
+                for i in range(0, len(paths_list), 900):
+                    chunk = paths_list[i:i+900]
+                    for r in s.query(FileIndex.path, FileIndex.id).filter(FileIndex.path.in_(chunk)).all():
+                        path_to_id[r[0]] = r[1]
+            
+            fallback_map = None
             def get_fid(path_str):
                 if not path_str: return None
                 if path_str in path_to_id: return path_to_id[path_str]
+                
+                nonlocal fallback_map
+                if fallback_map is None:
+                    fallback_map = {}
+                    for r in s.query(FileIndex.path, FileIndex.id).yield_per(10000):
+                        p, fid = r[0], r[1]
+                        try:
+                            p_clean = p.replace('\\', '/')
+                            parts = p_clean.strip('/').split('/')
+                            key = f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else parts[-1]
+                            if key not in fallback_map: fallback_map[key] = []
+                            fallback_map[key].append(fid)
+                        except Exception:
+                            pass
+                
                 try:
-                    parts = Path(path_str).parts
+                    p_clean = path_str.replace('\\', '/')
+                    parts = p_clean.strip('/').split('/')
                     key = f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else parts[-1]
                     matches = fallback_map.get(key, [])
-                    if len(matches) == 1: return matches[0]
+                    if len(matches) == 1: 
+                        path_to_id[path_str] = matches[0]
+                        return matches[0]
                 except Exception:
                     pass
                 return None
 
+            tags_to_update = {}
+
             for p_data in payload:
                 name = p_data.get("name")
                 if not name: continue
-                cursor.execute("SELECT id FROM people WHERE name = ?", (name,))
-                row = cursor.fetchone()
-                if row: pid = row[0]
-                else:
-                    cursor.execute("INSERT INTO people (name) VALUES (?)", (name,))
-                    pid = cursor.lastrowid
+                cursor.execute("INSERT OR IGNORE INTO people (name) VALUES (?)", (name,))
+                if cursor.rowcount > 0:
                     imported_people += 1
+                cursor.execute("SELECT id FROM people WHERE name = ?", (name,))
+                pid = cursor.fetchone()[0]
+                
                 thumb_path = p_data.get("thumbnail_path")
                 thumb_fid = get_fid(thumb_path)
                 for face in p_data.get("faces", []):
@@ -2888,24 +2961,32 @@ def import_people(payload: list = Body(...)):
                     emb = face.get("embedding")
                     fid = get_fid(f_path)
                     if fid:
-                        cursor.execute("SELECT id FROM faces WHERE person_id = ? AND file_id = ?", (pid, fid))
-                        face_row = cursor.fetchone()
-                        if not face_row:
-                            cursor.execute("INSERT INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)", (pid, fid, emb))
-                            new_face_id = cursor.lastrowid
+                        cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)", (pid, fid, emb))
+                        if cursor.rowcount > 0:
                             cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (fid,))
                             imported_faces += 1
-                            db_item = s.get(FileIndex, fid)
-                            if db_item:
-                                current_tags = db_item.tags or ""
-                                new_tag = f"person:{name}"
-                                if new_tag not in current_tags:
-                                    db_item.tags = f"{current_tags} {new_tag}".strip()
-                        else:
-                            new_face_id = face_row[0]
-                            
-                        if thumb_fid and fid == thumb_fid:
-                            cursor.execute("UPDATE people SET cover_face_id = ? WHERE id = ?", (new_face_id, pid))
+                            if fid not in tags_to_update:
+                                tags_to_update[fid] = set()
+                            tags_to_update[fid].add(f"person:{name}")
+                
+                if thumb_fid:
+                    cursor.execute("UPDATE people SET thumbnail_file_id = ? WHERE id = ?", (thumb_fid, pid))
+
+            if tags_to_update:
+                fid_list = list(tags_to_update.keys())
+                for i in range(0, len(fid_list), 900):
+                    chunk = fid_list[i:i+900]
+                    files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
+                    mappings = []
+                    for f_id, tags in files_to_update:
+                        current_tags = set((tags or "").split())
+                        new_tags = tags_to_update[f_id]
+                        new_tags_str = " ".join(sorted(current_tags.union(new_tags)))
+                        if new_tags_str != tags:
+                            mappings.append({"id": f_id, "tags": new_tags_str})
+                    if mappings:
+                        s.bulk_update_mappings(FileIndex, mappings)
+
             s.commit()
         conn.commit()
     return {"success": True, "imported_people": imported_people, "imported_faces": imported_faces}
@@ -2937,34 +3018,55 @@ def export_tags():
 def import_tags(payload: list = Body(...)):
     imported_count = 0
     with SessionLocal() as s:
+        paths_in_payload = set()
+        for item in payload:
+            if p := item.get("path"):
+                paths_in_payload.add(p)
+        
         path_to_id = {}
-        fallback_map = {}
-        for r in s.query(FileIndex.path, FileIndex.id).all():
-            p, fid = r[0], r[1]
-            path_to_id[p] = fid
-            try:
-                parts = Path(p).parts
-                key = f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else parts[-1]
-                if key not in fallback_map: fallback_map[key] = []
-                fallback_map[key].append(fid)
-            except Exception:
-                pass
+        if paths_in_payload:
+            paths_list = list(paths_in_payload)
+            for i in range(0, len(paths_list), 900):
+                chunk = paths_list[i:i+900]
+                for r in s.query(FileIndex.path, FileIndex.id).filter(FileIndex.path.in_(chunk)).all():
+                    path_to_id[r[0]] = r[1]
 
+        fallback_map = None
         def get_fid(path_str):
             if not path_str: return None
             if path_str in path_to_id: return path_to_id[path_str]
+            
+            nonlocal fallback_map
+            if fallback_map is None:
+                fallback_map = {}
+                for r in s.query(FileIndex.path, FileIndex.id).yield_per(10000):
+                    p, fid = r[0], r[1]
+                    try:
+                        p_clean = p.replace('\\', '/')
+                        parts = p_clean.strip('/').split('/')
+                        key = f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else parts[-1]
+                        if key not in fallback_map: fallback_map[key] = []
+                        fallback_map[key].append(fid)
+                    except Exception:
+                        pass
+            
             try:
-                parts = Path(path_str).parts
+                p_clean = path_str.replace('\\', '/')
+                parts = p_clean.strip('/').split('/')
                 key = f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else parts[-1]
                 matches = fallback_map.get(key, [])
-                if len(matches) == 1: return matches[0]
+                if len(matches) == 1: 
+                    path_to_id[path_str] = matches[0]
+                    return matches[0]
             except Exception:
                 pass
             return None
-        
+            
         chunk_size = 900
         for i in range(0, len(payload), chunk_size):
             chunk = payload[i:i + chunk_size]
+            chunk_updates = {}
+            
             for item in chunk:
                 path = item.get("path")
                 new_tags = item.get("tags")
@@ -2973,13 +3075,24 @@ def import_tags(payload: list = Body(...)):
                 
                 file_id = get_fid(path)
                 if file_id:
-                    db_item = s.get(FileIndex, file_id)
-                    if db_item:
-                        current_tags = set((db_item.tags or "").split())
-                        imported_tags = set(new_tags.split())
-                        db_item.tags = " ".join(sorted(current_tags.union(imported_tags)))
-                        imported_count += 1
-            s.commit()
+                    chunk_updates[file_id] = new_tags
+                    
+            if not chunk_updates:
+                continue
+                
+            files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk_updates.keys())).all()
+            mappings = []
+            for f_id, tags in files_to_update:
+                current_tags = set((tags or "").split())
+                imported_tags = set(chunk_updates[f_id].split())
+                new_tags_str = " ".join(sorted(current_tags.union(imported_tags)))
+                if new_tags_str != tags:
+                    mappings.append({"id": f_id, "tags": new_tags_str})
+                    imported_count += 1
+            
+            if mappings:
+                s.bulk_update_mappings(FileIndex, mappings)
+                s.commit()
     return {"success": True, "imported_files": imported_count}
 
 # --- Serve React Frontend (Production) ---

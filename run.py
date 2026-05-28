@@ -23,38 +23,54 @@ def get_local_ip():
     except Exception:
         return "127.0.0.1"
 
-def on_startup():
+def on_startup(port, show_info=False, open_browser=True):
     ip = get_local_ip()
-    port = 8000
     # Automatically open the user's default web browser locally
-    webbrowser.open(f"http://127.0.0.1:{port}")
+    if open_browser:
+        webbrowser.open(f"http://127.0.0.1:{port}")
     
-    try:
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-        messagebox.showinfo(
-            "WABS Server Started", 
-            f"WABS is now running in the background.\n\n"
+    if show_info:
+        info_text = (
+            "WABS is now running in the background.\n\n"
             f"Access on this PC: http://127.0.0.1:{port}\n"
             f"Access on your phone: http://{ip}:{port}"
         )
-        root.destroy()
-    except Exception:
-        pass
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            messagebox.showinfo("WABS Server Started", info_text)
+            root.destroy()
+        except Exception:
+            # Fallback for CLI mode or if tkinter fails
+            print("\n--- WABS Server Information ---")
+            print(info_text)
+            print("-----------------------------\n")
 
 if __name__ == "__main__":
     # Freeze support is required for PyInstaller bundles to run on Windows
     multiprocessing.freeze_support()
     
+    show_info_popup = '--help' in sys.argv
+    open_browser_flag = '--no-browser' not in sys.argv
+
+    port = 8000
+    if '--port' in sys.argv:
+        try:
+            port_index = sys.argv.index('--port')
+            port = int(sys.argv[port_index + 1])
+        except (ValueError, IndexError):
+            print("Invalid port specified. Using default 8000.")
+            port = 8000
+
     # Wait 1.5 seconds for Uvicorn to start, then run the startup popup and open the browser
-    threading.Timer(1.5, on_startup).start()
+    threading.Timer(1.5, on_startup, args=[port, show_info_popup, open_browser_flag]).start()
 
     # We instantiate the server manually to gain access to the server object
     # for a graceful shutdown.
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
 
     # Attach the server object to the app's state so it can be accessed from endpoints

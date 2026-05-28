@@ -13,6 +13,8 @@
 *   **Advanced JSON Search:** Added high-speed JSON prefix searches (`camera:`, `resolution:`, `fps:`, `artist:`, `album:`, `genre:`, and `meta:`) utilizing SQLite's JSON1 extension for native metadata querying.
 
 ### ✨ UI/UX Enhancements
+*   **Import/Export Progress:** Added progress bars with cancellation support for all People and Tag import operations in the Data Management settings.
+*   **Import Safeguards:** The UI now displays a confirmation warning before importing data into a non-empty database to prevent accidental duplication.
 *   **Data Management:** Completely redesigned the Data Management section in Settings with clean, descriptive UI cards.
 
 ### 🛠 Build & CI
@@ -20,6 +22,16 @@
 *   **Build Selection:** Added UI to pick the build target when running workflows manually.
 
 ### 🐞 Bug Fixes & Performance
+*   **Critical Import Performance:** Fixed a major performance bottleneck where importing large JSON files would hang the backend. Tag application is now performed in massive batches using `bulk_update_mappings`, reducing import times from minutes to seconds.
+*   **Database Integrity & Stability:**
+    *   Hardened the AI database schema with `UNIQUE` constraints to programmatically prevent duplicate people and face embeddings.
+    *   Upgraded all merge, rename, and delete operations (`rename_person`, `delete_person`, `merge_people`) to be fully compatible with the new constraints, preventing crashes on conflicting data.
+    *   Fixed a critical bug where the AI scanner could crash after deleting people by implementing a robust "Unknown Person" ID counter.
+*   **Robust Tagging Engine:**
+    *   Eliminated a subtle bug where manually adding or removing a person from a photo could fail if another person with a similar name was also tagged (e.g., "Ben" vs. "Benjamin"). All tag operations now use strict set-based logic.
+    *   Fixed a fatal `IndentationError` in the `import-tags` API endpoint.
+*   **Optimized Bulk Operations:** Refactored the `delete_person` and `rename_person` endpoints to use optimized bulk updates, preventing crashes and ensuring instant tag removal/updates even on profiles with thousands of photos.
+*   **Schema Consistency:** Unified the AI database schema creation to eliminate redundant error handling and improve overall code reliability.
 *   **Database Cleanup & Optimization:** Added a dedicated routine in Settings to scan for missing files, remove dead links, purge orphaned AI profiles, and vacuum the SQLite databases to reclaim disk space.
 *   **OOM Memory Optimizations:** Resolved severe backend Out-Of-Memory crashes and SQLite lock contentions when scanning massive archives (>90,000 files) by implementing batched `.yield_per()` queries and ID-level tracking.
 *   **Connection Stability:** Fixed backend HTTP connection drops (`[WinError 10054]`) during rapid frontend scrolling using `AbortController` network cancellation.

@@ -42,6 +42,24 @@ import FaceIcon from '@mui/icons-material/Face'
 // Use relative path in production to support network IPs, fallback to localhost for Vite dev server
 const API = window.location.port === '5173' ? 'http://127.0.0.1:8000' : ''
 
+// Global Axios Interceptor to automatically retry requests if the SQLite database is locked
+axios.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const config = error.config;
+    const errorDetail = error.response?.data?.detail?.toLowerCase() || "";
+    if (error.response && error.response.status === 500 && errorDetail.includes("locked")) {
+      config._retryCount = config._retryCount || 0;
+      if (config._retryCount < 3) {
+        config._retryCount += 1;
+        await new Promise(resolve => setTimeout(resolve, 1000 * config._retryCount)); // Exponential backoff (1s, 2s, 3s)
+        return axios(config); // Retry the original request
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 const SettingsContext = createContext({ animationsEnabled: true });
 
 function StatCard({ title, value, icon, color, onClick }) {
@@ -294,12 +312,14 @@ const [showSearchHelp, setShowSearchHelp] = useState(false)
 const [isShutdown, setIsShutdown] = useState(false)
 const [toastMessage, setToastMessage] = useState('');
 const [showToast, setShowToast] = useState(false);
+const toastTimeoutRef = useRef(null);
 const [suggestionsData, setSuggestionsData] = useState({ type: 'none', suggestions: [], lastWord: '' });
 const suggestionTimeout = useRef(null);
 const searchContainerRef = useRef(null);
 const suggestionAbortController = useRef(null);
 const searchAbortController = useRef(null);
 const loadFilesAbortController = useRef(null);
+const syncDateTimeoutRef = useRef(null);
 const [focusedSuggestionIndex, setFocusedSuggestionIndex] = useState(-1);
 const [people, setPeople] = useState([]);
 const [currentPerson, setCurrentPerson] = useState(null);
@@ -314,6 +334,7 @@ const [editingNames, setEditingNames] = useState({});
 const [dbFilename, setDbFilename] = useState('archive.db');
 const [thumbUpdateTimestamps, setThumbUpdateTimestamps] = useState({});
 const [actionInProgress, setActionInProgress] = useState(false);
+const [dataOpProgress, setDataOpProgress] = useState(null);
 const [combinedOptions, setCombinedOptions] = useState(() => {
   try {
     const saved = localStorage.getItem('wabs_combined_options');
@@ -333,6 +354,7 @@ const [checkedSimilar, setCheckedSimilar] = useState(new Set());
 const [similarityThreshold, setSimilarityThreshold] = useState(0.60);
 const [settingsTab, setSettingsTab] = useState('general');
 const findSimilarAbortController = useRef(null);
+const abortDataOpRef = useRef(false);
 const [fullTimelineData, setFullTimelineData] = useState([]);
 
 useEffect(() => {
@@ -503,6 +525,7 @@ function doSearch(value, cat = filterCategory){
         setPage('explorer')
       }
       setSelected(null)
+          setCheckedFiles(new Set())
       await loadFiles(0, false, cat)
       return
     }
@@ -514,6 +537,7 @@ function doSearch(value, cat = filterCategory){
 
     setLoadingMore(true)
     setSelected(null)
+        setCheckedFiles(new Set())
     const safeQuery = value.replace(/,/g, ' ');
     try {
       const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=50`, {
@@ -536,6 +560,7 @@ function doSearch(value, cat = filterCategory){
 
 async function goToSearch(cat = filterCategory){
   setSelected(null)
+  setCheckedFiles(new Set())
   if(query){
     if (searchAbortController.current) {
       searchAbortController.current.abort();
@@ -618,26 +643,33 @@ async function loadMore(){
 
 const syncActiveDate = (containerElement) => {
   if (!containerElement) return;
-  const containerRect = containerElement.getBoundingClientRect();
-  const headers = document.querySelectorAll('.date-header');
-  let currentActive = null;
   
-  for (let i = 0; i < headers.length; i++) {
-    const rect = headers[i].getBoundingClientRect();
-    if (rect.top - containerRect.top <= 120) {
-      currentActive = headers[i].getAttribute('data-date');
-    } else {
-      break;
+  if (syncDateTimeoutRef.current) {
+    clearTimeout(syncDateTimeoutRef.current);
+  }
+  
+  syncDateTimeoutRef.current = setTimeout(() => {
+    const containerRect = containerElement.getBoundingClientRect();
+    const headers = document.querySelectorAll('.date-header');
+    let currentActive = null;
+    
+    for (let i = 0; i < headers.length; i++) {
+      const rect = headers[i].getBoundingClientRect();
+      if (rect.top - containerRect.top <= 120) {
+        currentActive = headers[i].getAttribute('data-date');
+      } else {
+        break;
+      }
     }
-  }
-  
-  if (!currentActive && headers.length > 0) {
-    currentActive = headers[0].getAttribute('data-date');
-  }
-  
-  if (currentActive) {
-    setActiveDate(prev => prev !== currentActive ? currentActive : prev);
-  }
+    
+    if (!currentActive && headers.length > 0) {
+      currentActive = headers[0].getAttribute('data-date');
+    }
+    
+    if (currentActive) {
+      setActiveDate(prev => prev !== currentActive ? currentActive : prev);
+    }
+  }, 50); // 50ms debounce prevents layout thrashing
 };
 
 function handleScroll(e){
@@ -691,7 +723,8 @@ async function loadSettings(){
 const showToastMessage = (message) => {
   setToastMessage(message);
   setShowToast(true);
-  setTimeout(() => {
+  if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+  toastTimeoutRef.current = setTimeout(() => {
     setShowToast(false);
     setToastMessage('');
   }, 3000); // Hide after 3 seconds
@@ -947,8 +980,6 @@ function locateSelectedFileInExplorer() {
     }
 
     setFilterCategory('all');
-    setSortBy('date');
-    setSortOrder('desc');
     setQuery(q);
     setPage('search');
     setSelected(file);
@@ -1393,6 +1424,7 @@ async function exportKnownPeople() {
     return;
   }
   setActionInProgress(true);
+  setDataOpProgress({ id: 'people', action: 'export', current: 0, total: 0 });
   showToastMessage('Exporting known people...');
   try {
     const r = await axios.get(`${API}/system/export-people`);
@@ -1407,6 +1439,7 @@ async function exportKnownPeople() {
   } catch(err) {
     alert('Error exporting people: ' + (err?.response?.data?.detail || err.message));
   } finally {
+    setDataOpProgress(null);
     setActionInProgress(false);
   }
 }
@@ -1415,6 +1448,9 @@ function importKnownPeople() {
   if (indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running) {
     alert("Please stop scanning tasks before importing known people to prevent database conflicts.");
     return;
+  }
+  if (people && people.length > 0) {
+    if (!window.confirm("You already have people in your database. Importing again might create duplicated profiles. Do you wish to continue?")) return;
   }
   const input = document.createElement('input');
   input.type = 'file';
@@ -1428,21 +1464,31 @@ function importKnownPeople() {
         const payload = JSON.parse(event.target.result);
         if (!Array.isArray(payload)) throw new Error("Invalid JSON format");
         setActionInProgress(true);
+        setDataOpProgress({ id: 'people', action: 'import', current: 0, total: payload.length });
+        abortDataOpRef.current = false;
         let importedPeople = 0;
         let importedFaces = 0;
         const chunkSize = 50;
         for (let i = 0; i < payload.length; i += chunkSize) {
+          if (abortDataOpRef.current) {
+            showToastMessage('Import cancelled by user.');
+            break;
+          }
+          setDataOpProgress({ id: 'people', action: 'import', current: i, total: payload.length });
           showToastMessage(`Importing people... ${Math.round((i / payload.length) * 100)}%`);
           const chunk = payload.slice(i, i + chunkSize);
           const r = await axios.post(`${API}/system/import-people`, chunk);
           importedPeople += r.data.imported_people;
           importedFaces += r.data.imported_faces;
         }
-        showToastMessage(`Imported ${importedPeople} people and ${importedFaces} faces.`);
+        if (!abortDataOpRef.current) {
+          showToastMessage(`Imported ${importedPeople} people and ${importedFaces} faces.`);
+        }
         loadPeople();
       } catch (err) {
         alert('Error importing people: ' + (err?.response?.data?.detail || err.message));
       } finally {
+        setDataOpProgress(null);
         setActionInProgress(false);
       }
     };
@@ -1457,6 +1503,7 @@ async function exportTags() {
     return;
   }
   setActionInProgress(true);
+  setDataOpProgress({ id: 'tags', action: 'export', current: 0, total: 0 });
   showToastMessage('Exporting tags...');
   try {
     const r = await axios.get(`${API}/system/export-tags`);
@@ -1471,6 +1518,7 @@ async function exportTags() {
   } catch(err) {
     alert('Error exporting tags: ' + (err?.response?.data?.detail || err.message));
   } finally {
+    setDataOpProgress(null);
     setActionInProgress(false);
   }
 }
@@ -1479,6 +1527,9 @@ function importTags() {
   if (indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running) {
     alert("Please stop the Indexer and Object Scanner before importing tags to prevent database conflicts.");
     return;
+  }
+  if (objectTags && objectTags.length > 0) {
+    if (!window.confirm("You already have tags in your database. Importing again might create duplicated tags. Do you wish to continue?")) return;
   }
   const input = document.createElement('input');
   input.type = 'file';
@@ -1492,19 +1543,29 @@ function importTags() {
         const payload = JSON.parse(event.target.result);
         if (!Array.isArray(payload)) throw new Error("Invalid JSON format");
         setActionInProgress(true);
+        setDataOpProgress({ id: 'tags', action: 'import', current: 0, total: payload.length });
+        abortDataOpRef.current = false;
         let totalImported = 0;
         const chunkSize = 2000;
         for (let i = 0; i < payload.length; i += chunkSize) {
+          if (abortDataOpRef.current) {
+            showToastMessage('Import cancelled by user.');
+            break;
+          }
+          setDataOpProgress({ id: 'tags', action: 'import', current: i, total: payload.length });
           showToastMessage(`Importing tags... ${Math.round((i / payload.length) * 100)}%`);
           const chunk = payload.slice(i, i + chunkSize);
           const r = await axios.post(`${API}/system/import-tags`, chunk);
           totalImported += r.data.imported_files;
         }
-        showToastMessage(`Successfully imported tags for ${totalImported} files.`);
+        if (!abortDataOpRef.current) {
+          showToastMessage(`Successfully imported tags for ${totalImported} files.`);
+        }
         loadTags();
       } catch (err) {
         alert('Error importing tags: ' + (err?.response?.data?.detail || err.message));
       } finally {
+        setDataOpProgress(null);
         setActionInProgress(false);
       }
     };
@@ -1557,6 +1618,7 @@ const handleFilterChange = (e) => {
   const newCat = e.target.value;
   setFilterCategory(newCat);
   setShowSelectedOnly(false);
+  setCheckedFiles(new Set());
   if (newCat === 'duplicates') {
     setSortBy('size');
     setSortOrder('desc');
@@ -1574,6 +1636,7 @@ const handleCategoryClick = (category) => {
   setPage('explorer');
   setSelected(null);
   setShowSelectedOnly(false);
+  setCheckedFiles(new Set());
   if (category === 'duplicates') {
     setSortBy('size');
     setSortOrder('desc');
@@ -1640,7 +1703,7 @@ const sortedFiles = useMemo(() => {
     }
   });
   return sorted;
-}, [files, sortBy, sortOrder, showSelectedOnly, checkedFiles]);
+}, [files, sortBy, sortOrder, showSelectedOnly, checkedFiles, filterCategory]);
 
 const groupedFiles = useMemo(() => {
   if (filterCategory === 'duplicates') {
@@ -1659,7 +1722,7 @@ const groupedFiles = useMemo(() => {
     groups[key].push(file);
   });
   return groups;
-}, [sortedFiles]);
+}, [sortedFiles, filterCategory]);
 
 const groupedPersonFiles = useMemo(() => {
   const groups = {};
@@ -1983,6 +2046,7 @@ return(
       setPage('explorer');
       setSelected(null);
       setShowSelectedOnly(false);
+      setCheckedFiles(new Set());
       loadFiles(0, false, cat);
     }}>
     <FolderIcon fontSize="small" /> Explorer
@@ -1999,6 +2063,7 @@ return(
       setPage('search');
       setSelected(null);
       setShowSelectedOnly(false);
+      setCheckedFiles(new Set());
       if (query && searchCache.length > 0) {
         setFiles(searchCache);
         setOffset(searchCache.length);
@@ -2162,8 +2227,6 @@ return(
           if (showFull) {
             const tData = fullTimelineData.find(t => t.key === dateKey);
             if (tData) {
-              setSortBy('date');
-              setSortOrder('desc');
               doSearch(`date:${tData.yearMonth}`);
             }
           }
@@ -2758,8 +2821,6 @@ page==='person_files' &&
           if (showFull) {
             const tData = fullTimelineData.find(t => t.key === dateKey);
             if (tData) {
-              setSortBy('date');
-              setSortOrder('desc');
               doSearch(`person:"${currentPerson?.name || ''}" date:${tData.yearMonth}`);
             }
           }
@@ -3264,9 +3325,27 @@ page==='settings' &&
             </ActionButton>
           </div>
           <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-            <div>
+            <div style={{ flex: 1, minWidth: '250px' }}>
               <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Known People (Faces)</h4>
               <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Export or import named people and their face embeddings as a portable JSON file.</p>
+              {dataOpProgress && dataOpProgress.id === 'people' && (
+                <div style={{ marginTop: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                    <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                      {dataOpProgress.action === 'export' ? 'Exporting...' : 'Importing...'}
+                    </span>
+                    {dataOpProgress.action === 'import' && (
+                      <span 
+                        onClick={() => abortDataOpRef.current = true}
+                        style={{ fontSize: '12px', color: '#ef4444', cursor: 'pointer', textDecoration: 'underline' }}
+                      >
+                        Cancel
+                      </span>
+                    )}
+                  </div>
+                  <ProgressBar current={dataOpProgress.current} total={dataOpProgress.total} color="#10b981" />
+                </div>
+              )}
             </div>
             <div style={{ display: 'flex', gap: '10px' }}>
               <ActionButton 
@@ -3288,9 +3367,27 @@ page==='settings' &&
             </div>
           </div>
           <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-            <div>
+            <div style={{ flex: 1, minWidth: '250px' }}>
               <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Object &amp; Custom Tags</h4>
               <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Export or import all applied tags mapped to file paths as a portable JSON file.</p>
+              {dataOpProgress && dataOpProgress.id === 'tags' && (
+                <div style={{ marginTop: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                    <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                      {dataOpProgress.action === 'export' ? 'Exporting...' : 'Importing...'}
+                    </span>
+                    {dataOpProgress.action === 'import' && (
+                      <span 
+                        onClick={() => abortDataOpRef.current = true}
+                        style={{ fontSize: '12px', color: '#ef4444', cursor: 'pointer', textDecoration: 'underline' }}
+                      >
+                        Cancel
+                      </span>
+                    )}
+                  </div>
+                  <ProgressBar current={dataOpProgress.current} total={dataOpProgress.total} color="#38bdf8" />
+                </div>
+              )}
             </div>
             <div style={{ display: 'flex', gap: '10px' }}>
               <ActionButton 
