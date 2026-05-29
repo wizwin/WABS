@@ -1,5 +1,36 @@
 # WABS Changelog
 
+## v1.0.0-beta.6
+**Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.6
+
+### 🚀 Major New Features
+*   **Hidden People:** Added the ability to explicitly "Hide" specific Known or Unknown people from the UI and Search Auto-Suggest. Hidden profiles are kept in the database to prevent the AI from repeatedly rescanning them.
+*   **Video Date Extraction:** Added native video container date parsing (`creation_time`, `\xa9day`) via `mutagen`. Video files now map perfectly into the chronological timeline alongside your photos.
+
+### ✨ UI/UX Enhancements
+*   **Data Management Tab:** Reorganized Settings to feature a dedicated "Data Management" tab, cleanly grouping your DB Cleanup, Export/Backup, JSON tools, and Cache clearing operations.
+*   **Intelligent Scroll Memory:** Navigating back to the People page from a specific person's photo grid now automatically snaps you back to your exact scroll position and active page.
+*   **Thumbnail Debouncing:** Added a 250ms Javascript debounce wrapper to face thumbnails. Rapidly paginating through the People grid no longer hammers the backend with hundreds of queued OpenCV tasks!
+*   **Smooth Fade-ins:** Replaced harsh image placeholders with a smooth CSS opacity fade-in once face thumbnails finish loading.
+*   **Animated Operation Spinners:** Added real-time animated hourglass spinners and text updates to the Database Cleanup and Backup buttons to clearly indicate active synchronous operations.
+
+### 🛠 Build & CI
+*   **Windows Executable Polish:** The GitHub Actions Windows build now automatically uses the `--noconsole` flag (hiding the background command prompt) and embeds a custom WABS application icon (`.ico`).
+
+### 🐞 Bug Fixes & Performance
+*   **Database Synchronization & Ghost Faces:** Fixed a major bug where the `ai_metadata.db` retained "ghost" faces for files that were moved or deleted. The `System Cleanup` routine now flawlessly cross-references the main database and completely purges all orphaned AI records.
+*   **Scanner Commit Bug:** Fixed a catastrophic indentation bug in the unified scanner loop where the final batch of database commits (up to 499 files) was rolled back, resulting in missing index records and `404: Image not found` errors.
+*   **Group Photo Speedup:** Added a 98% match early-exit optimization for face thumbnail extraction. The backend no longer wastes computationally expensive AI cycles checking every single face in massive group photos once the target person is found.
+*   **Pillow (PIL) Media Fallbacks:** Added robust Pillow fallback logic to both the large photo caching routine and the face cropper, completely fixing missing thumbnails for modern formats (like `.webp`) that OpenCV silently fails to decode.
+*   **Orphaned Thumbnail Cleanup:** The `System Cleanup` routine now explicitly scans and deletes orphaned physical `.jpg` thumbnails from the `.wabs_cache` disk directories to reclaim space.
+*   **Start Scan In-Memory Optimization:** The Indexer now pre-fetches all existing file paths into a Python `set` when starting a scan. O(N) database queries have been replaced with O(1) in-memory lookups, drastically speeding up indexing.
+*   **Explorer Timeline Dates:** Fixed an issue where the timeline grouped migrated files by their OS `modified` timestamp instead of their true EXIF `DateTimeOriginal` metadata.
+*   **Photo Cache Optimizations:** Reduced the dimensions of cached photo thumbnails from `800x800` to `400x400`, saving 75% more disk space and browser RAM without losing visual quality. Also fixed a bug where caching settings changes were ignored.
+*   **Hasher Progress Bar:** Restored missing progress state tracking in the Lazy Hasher. The UI now properly displays the hashing progress bar and automatically refreshes the Duplicates page with green verification ticks upon completion.
+*   **Dashboard Counts:** Fixed the Dashboard `/stats` endpoint to dynamically read the configuration and correctly subtract "Hidden" profiles from the Known/Unknown totals.
+*   **Exclusion Resuming:** Fixed a bug where removing an exclusion and clicking 'Start' would fail to scan the newly un-excluded folders due to stale pagination caching.
+*   **Config UI Parsing:** Flattened legacy nested `ui_preferences` in the configuration file so settings like Animations and Cache limits save and load correctly.
+
 ## v1.0.0-beta.5
 **Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.5
 

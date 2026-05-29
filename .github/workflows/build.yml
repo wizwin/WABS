@@ -17,7 +17,7 @@ on:
           - all
           - windows-latest
           - ubuntu-latest
-          - ubuntu-24.04-arm
+          - ubuntu-22.04-arm
 
 permissions:
   contents: write # Required to allow GitHub to attach files to the Release
@@ -35,9 +35,9 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           MATRIX_JSON='[
-            {"os": "windows-latest", "artifact_name": "WABS-Windows.exe", "path_sep": ";"},
-            {"os": "ubuntu-latest", "artifact_name": "WABS-Linux", "path_sep": ":"},
-            {"os": "ubuntu-24.04-arm", "artifact_name": "WABS-RaspberryPi", "path_sep": ":"}
+            {"os": "windows-latest", "artifact_name": "WABS-Windows.exe", "path_sep": ";", "icon_flag": "--icon=icon.ico"},
+            {"os": "ubuntu-latest", "artifact_name": "WABS-Linux", "path_sep": ":", "icon_flag": ""},
+            {"os": "ubuntu-22.04-arm", "artifact_name": "WABS-RaspberryPi", "path_sep": ":", "icon_flag": ""}
           ]'
           
           if [[ "$EVENT_NAME" == "workflow_dispatch" && "$TARGET_OS" != "all" ]]; then
@@ -82,7 +82,7 @@ jobs:
       - name: Package with PyInstaller
         shell: bash # Prevents Windows PowerShell from breaking the semicolon
         run: |
-          pyinstaller --name ${{ matrix.artifact_name }} --onefile --add-data "frontend/dist${{ matrix.path_sep }}frontend/dist" --add-data "backend/*.onnx${{ matrix.path_sep }}backend" --add-data "backend/*.txt${{ matrix.path_sep }}backend" run.py
+          pyinstaller --name ${{ matrix.artifact_name }} --onefile --noconsole ${{ matrix.icon_flag }} --add-data "frontend/dist${{ matrix.path_sep }}frontend/dist" --add-data "backend/*.onnx${{ matrix.path_sep }}backend" --add-data "backend/*.txt${{ matrix.path_sep }}backend" run.py
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2

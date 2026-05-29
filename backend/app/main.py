@@ -564,8 +564,10 @@ def _build_search_query(query, s, q_base=None):
 @app.get("/files")
 def files(category:str="all", offset:int=0, limit:int=50):
     cfg = load_config()
-    ui_prefs = cfg.get("ui_preferences", {})
-    cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", cfg.get("enable_photo_thumbnail_cache", False))
+    ui_prefs = cfg.get("ui_preferences") or {}
+    cache_enabled = cfg.get("enable_photo_thumbnail_cache")
+    if cache_enabled is None:
+        cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
     cache_flag = "&tc=1" if cache_enabled else ""
 
     with SessionLocal() as s:
@@ -586,9 +588,11 @@ def files(category:str="all", offset:int=0, limit:int=50):
 @app.get("/search")
 def search(query:str="", category:str="all", offset:int=0, limit:int=50):
     cfg = load_config()
-    ui_prefs = cfg.get("ui_preferences", {})
-    cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", cfg.get("enable_photo_thumbnail_cache", False))
-    cache_flag = "&tc=1" if cache_enabled else ""
+    ui_prefs = cfg.get("ui_preferences") or {}
+    cache_enabled = cfg.get("enable_photo_thumbnail_cache")
+    if cache_enabled is None:
+        cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
+    cache_flag = "&tc=1" if str(cache_enabled).lower() in ("true", "1", "yes") else ""
 
     from sqlalchemy import text
     with SessionLocal() as s:
@@ -714,41 +718,65 @@ def preview(item_id:int):
     if file_path.exists() and file_path.is_file():
         if file_category == "photo":
             cfg = load_config()
-            ui_prefs = cfg.get("ui_preferences", {})
-            cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", cfg.get("enable_photo_thumbnail_cache", False))
+            ui_prefs = cfg.get("ui_preferences") or {}
+            cache_enabled = cfg.get("enable_photo_thumbnail_cache")
+            if cache_enabled is None:
+                cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
             
-            if cache_enabled:
+            if str(cache_enabled).lower() in ("true", "1", "yes"):
                 try:
-                    size_limit_mb = float(ui_prefs.get("photo_thumbnail_size_limit_mb", cfg.get("photo_thumbnail_size_limit_mb", 5)))
+                    limit_val = cfg.get("photo_thumbnail_size_limit_mb")
+                    if limit_val is None:
+                        limit_val = ui_prefs.get("photo_thumbnail_size_limit_mb", 5)
+                    size_limit_mb = float(limit_val)
                     size_limit_bytes = size_limit_mb * 1024 * 1024
                     
                     if file_path.stat().st_size > size_limit_bytes:
                         thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "photos"
                         thumb_dir.mkdir(parents=True, exist_ok=True)
-                        cached_thumb = thumb_dir / f"{file_path.stem}_{file_path.stat().st_size}.jpg"
+                        cached_thumb = thumb_dir / f"{item_id}.jpg"
                         
                         if cached_thumb.exists():
                             return FileResponse(str(cached_thumb), media_type="image/jpeg")
                             
+                        success = False
                         if cv2 is not None:
-                            import numpy as np
-                            img_array = np.fromfile(str(file_path), np.uint8)
-                            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                            if img is not None:
-                                height, width = img.shape[:2]
-                                scaling_factor = min(800 / width, 800 / height)
-                                if scaling_factor < 1.0:
-                                    new_size = (int(width * scaling_factor), int(height * scaling_factor))
-                                    resized_img = cv2.resize(img, new_size, interpolation=cv2.INTER_AREA)
-                                else:
-                                    resized_img = img
-                                    
-                                is_success, buffer = cv2.imencode(".jpg", resized_img)
-                                if is_success:
-                                    with open(str(cached_thumb), "wb") as f:
-                                        f.write(buffer.tobytes())
-                                    if cached_thumb.exists():
-                                        return FileResponse(str(cached_thumb), media_type="image/jpeg")
+                            try:
+                                import numpy as np
+                                img_array = np.fromfile(str(file_path), np.uint8)
+                                img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                                if img is not None:
+                                    height, width = img.shape[:2]
+                                    scaling_factor = min(400 / width, 400 / height)
+                                    if scaling_factor < 1.0:
+                                        new_size = (int(width * scaling_factor), int(height * scaling_factor))
+                                        resized_img = cv2.resize(img, new_size, interpolation=cv2.INTER_AREA)
+                                    else:
+                                        resized_img = img
+                                        
+                                    is_success, buffer = cv2.imencode(".jpg", resized_img)
+                                    if is_success:
+                                        with open(str(cached_thumb), "wb") as f:
+                                            f.write(buffer.tobytes())
+                                        success = True
+                            except Exception as e:
+                                print(f"OpenCV photo cache failed for {file_path.name}: {e}")
+                                
+                        if not success:
+                            try:
+                                from PIL import Image, ImageOps
+                                with Image.open(file_path) as pil_img:
+                                    pil_img = ImageOps.exif_transpose(pil_img)
+                                    if pil_img.mode != 'RGB':
+                                        pil_img = pil_img.convert('RGB')
+                                    pil_img.thumbnail((400, 400), Image.Resampling.LANCZOS)
+                                    pil_img.save(str(cached_thumb), "JPEG", quality=85)
+                                    success = True
+                            except Exception as e:
+                                print(f"Pillow photo cache fallback failed for {file_path.name}: {e}")
+                                
+                        if success and cached_thumb.exists():
+                            return FileResponse(str(cached_thumb), media_type="image/jpeg")
                 except Exception as e:
                     print(f"Large photo thumbnail error: {e}")
 
@@ -1049,6 +1077,7 @@ def move_files(paths: list[str] = Body(...), destination: str = Body(...)):
 
 @app.get("/stats")
 def stats():
+    cfg = load_config()
     with SessionLocal() as s:
         # Grouping drastically speeds up counting for millions of rows compared to 5 separate counts
         results = s.query(FileIndex.category, func.count(FileIndex.id)).group_by(FileIndex.category).all()
@@ -1082,10 +1111,18 @@ def stats():
                     cursor = conn.cursor()
                     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='faces'")
                     if cursor.fetchone():
-                        cursor.execute("SELECT COUNT(DISTINCT people.id) FROM faces JOIN people ON faces.person_id = people.id WHERE people.name NOT LIKE 'Unknown Person%'")
+                        hidden_people = cfg.get("hidden_people")
+                        if hidden_people is None:
+                            hidden_people = cfg.get("ui_preferences", {}).get("hidden_people", [])
+                        if not isinstance(hidden_people, list):
+                            hidden_people = []
+                        hidden_ids = [str(pid) for pid in hidden_people if str(pid).isdigit()]
+                        hidden_clause = f" AND people.id NOT IN ({','.join(hidden_ids)})" if hidden_ids else ""
+                        
+                        cursor.execute(f"SELECT COUNT(DISTINCT people.id) FROM faces JOIN people ON faces.person_id = people.id WHERE people.name NOT LIKE 'Unknown Person%' {hidden_clause}")
                         stats_dict["known_faces"] = cursor.fetchone()[0] or 0
                         
-                        cursor.execute("SELECT COUNT(DISTINCT people.id) FROM faces JOIN people ON faces.person_id = people.id WHERE people.name LIKE 'Unknown Person%'")
+                        cursor.execute(f"SELECT COUNT(DISTINCT people.id) FROM faces JOIN people ON faces.person_id = people.id WHERE people.name LIKE 'Unknown Person%' {hidden_clause}")
                         stats_dict["unknown_faces"] = cursor.fetchone()[0] or 0
             except Exception as e:
                 print(f"Error fetching AI stats: {e}")
@@ -1312,15 +1349,11 @@ def settings():
         "database_path": "archive.db",
         "thumbnail_path": "thumbnails",
         "enable_logging": False,
-        "backup_configs": [],
-        "ui_preferences": {
-            "enable_photo_thumbnail_cache": False,
-            "photo_thumbnail_size_limit_mb": 5,
-            "allow_unverified_deletion": False,
-            "animations_enabled": True,
-            "show_full_timeline": False,
-        },
-        "smart_searches": [],
+        "enable_photo_thumbnail_cache": False,
+        "photo_thumbnail_size_limit_mb": 5,
+        "allow_unverified_deletion": False,
+        "animations_enabled": True,
+        "show_full_timeline": False,
         "read_only_mode": True,
         "ai_enabled": False,
         "ai_provider": "",
@@ -1332,6 +1365,8 @@ def settings():
         "min_unknown_photos": 1,
         "run_face_scan": False,
         "run_object_scan": False,
+        "backup_configs": [],
+        "smart_searches": [],
     }
 
     # Recursively merge defaults into the loaded config to prevent crashes from missing keys
@@ -1423,12 +1458,12 @@ def stop_verify_duplicates():
     return {"status": "stopping"}
 
 def _cosine_similarity(vec1, vec2):
-    dot_product = sum(a * b for a, b in zip(vec1, vec2))
-    norm_a = sum(a * a for a in vec1) ** 0.5
-    norm_b = sum(b * b for b in vec2) ** 0.5
-    if norm_a == 0 or norm_b == 0:
+    import numpy as np
+    v1, v2 = np.array(vec1), np.array(vec2)
+    norm_1, norm_2 = np.linalg.norm(v1), np.linalg.norm(v2)
+    if norm_1 == 0 or norm_2 == 0:
         return 0.0
-    return dot_product / (norm_a * norm_b)
+    return float(np.dot(v1, v2) / (norm_1 * norm_2))
 
 def _process_unified_scanners(run_index: bool = False, run_face: bool = False, run_object: bool = False):
     global face_scanner_running, object_scanner_running, combined_scanner_running
@@ -1515,17 +1550,18 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                 cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) SELECT DISTINCT file_id FROM faces")
                 cursor.execute("SELECT file_id FROM processed_files")
                 face_processed_ids = set(r[0] for r in cursor.fetchall())
-                
+
                 cursor.execute("SELECT person_id, embedding_json FROM faces WHERE embedding_json != '[]'")
                 for p_id, emb_str in cursor.fetchall():
                     if p_id not in clusters:
                         clusters[p_id] = []
                     if len(clusters[p_id]) < 15:
                         clusters[p_id].append(json.loads(emb_str))
+
                 cursor.execute("SELECT MAX(id) FROM people")
                 p_row = cursor.fetchone()
                 p_count = p_row[0] if (p_row and p_row[0]) else 0
-                
+
                 # Build initial numpy matrix for clustering
                 cluster_embs = []
                 for pid, embs in clusters.items():
@@ -1840,11 +1876,11 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
 
                     processed_count += 1
                     if processed_count % 500 == 0:
-                        conn.commit()
                         session.commit()
+                        conn.commit()
 
-            session.commit()
-            conn.commit()
+                session.commit()
+                conn.commit()
 
     except Exception as e:
         print(f"CRITICAL: Unified Worker Error: {e}")
@@ -2011,14 +2047,22 @@ def get_person_thumbnail(person_id: int):
             
         face_row = None
         if thumb_file_id:
-            cursor.execute("SELECT file_id, embedding_json FROM faces WHERE person_id = ? AND file_id = ? LIMIT 1", (person_id, thumb_file_id))
+            cursor.execute("SELECT file_id, embedding_json FROM faces WHERE person_id = ? AND file_id = ? AND embedding_json != '[]' LIMIT 1", (person_id, thumb_file_id))
+            face_row = cursor.fetchone()
+            if not face_row:
+                # User selected a manual tag as cover photo (no embedding). Return the full photo fallback.
+                return preview(thumb_file_id)
+            
+        if not face_row:
+            cursor.execute("SELECT file_id, embedding_json FROM faces WHERE person_id = ? AND embedding_json != '[]' ORDER BY id DESC LIMIT 1", (person_id,))
             face_row = cursor.fetchone()
             
         if not face_row:
-            cursor.execute("SELECT file_id, embedding_json FROM faces WHERE person_id = ? LIMIT 1", (person_id,))
-            face_row = cursor.fetchone()
-            
-        if not face_row:
+            # If they only have manual tags without embeddings, fallback to the full uncropped photo
+            cursor.execute("SELECT file_id FROM faces WHERE person_id = ? ORDER BY id DESC LIMIT 1", (person_id,))
+            fallback = cursor.fetchone()
+            if fallback:
+                return preview(fallback[0])
             raise HTTPException(status_code=404, detail="Person not found")
         file_id, emb_json = face_row
         target_embedding = json.loads(emb_json)
@@ -2040,6 +2084,18 @@ def get_person_thumbnail(person_id: int):
         import numpy as np
         img_array = np.fromfile(str(file_path), np.uint8)
         img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            try:
+                from PIL import Image, ImageOps
+                with Image.open(file_path) as pil_img:
+                    pil_img = ImageOps.exif_transpose(pil_img)
+                    if pil_img.mode != 'RGB':
+                        pil_img = pil_img.convert('RGB')
+                    img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            except Exception as e:
+                print(f"Pillow face thumbnail fallback failed for {file_path.name}: {e}")
+                
         if img is None:
             return preview(file_id)
 
@@ -2105,8 +2161,13 @@ def get_person_thumbnail(person_id: int):
                 if sim > best_sim:
                     best_sim = sim
                     best_face_align = face_align
+                    
+                # Early Exit: Since the target embedding came from this exact image, 
+                # the match will be nearly 1.0. We can safely skip the remaining faces!
+                if best_sim > 0.98:
+                    break
 
-            if best_face_align is not None:
+            if best_face_align is not None and best_sim >= 0.40:
                 is_success, buffer = cv2.imencode(".jpg", best_face_align)
                 if is_success:
                     with open(str(cached_face), "wb") as f:
@@ -2127,9 +2188,11 @@ def get_person_photos(person_id: int, offset: int = 0, limit: int = 50):
     if not ai_db_path.exists():
         return []
         
-    ui_prefs = cfg.get("ui_preferences", {})
-    cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", cfg.get("enable_photo_thumbnail_cache", False))
-    cache_flag = "&tc=1" if cache_enabled else ""
+    ui_prefs = cfg.get("ui_preferences") or {}
+    cache_enabled = cfg.get("enable_photo_thumbnail_cache")
+    if cache_enabled is None:
+        cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
+    cache_flag = "&tc=1" if str(cache_enabled).lower() in ("true", "1", "yes") else ""
 
     with sqlite3.connect(ai_db_path, timeout=15) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
@@ -2551,8 +2614,8 @@ def _scan_and_tag_objects_worker():
                     cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (photo.id,))
                     processed_count += 1
                     if processed_count % 500 == 0:
-                        conn.commit()
                         s.commit()
+                        conn.commit()
                 
                 s.commit()
             conn.commit()
@@ -2798,6 +2861,9 @@ def system_cleanup():
             main_db_path = Path(__file__).resolve().parent.parent.parent / main_db_path
 
     missing_ids = []
+    deleted_thumbnails_count = 0
+    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
+    
     with SessionLocal() as s:
         # 1. Identify files that no longer exist on disk
         for r in s.query(FileIndex.id, FileIndex.path).yield_per(1000):
@@ -2813,13 +2879,55 @@ def system_cleanup():
                 s.query(FileIndex).filter(FileIndex.id.in_(chunk)).delete(synchronize_session=False)
             s.commit()
 
-    # 3. Clean up AI database (orphaned faces, processed files/objects, and people without faces)
-    if missing_ids and ai_db_path.exists():
+        valid_file_ids = {str(r[0]) for r in s.query(FileIndex.id).all()}
+
+        # 3. Clean up orphaned thumbnails
+        if thumb_dir.exists():
+            for f in thumb_dir.iterdir():
+                if f.is_file() and f.suffix.lower() == '.jpg':
+                    if f.stem not in valid_file_ids:
+                        try:
+                            f.unlink()
+                            deleted_thumbnails_count += 1
+                        except Exception:
+                            pass
+                            
+            photos_dir = thumb_dir / "photos"
+            if photos_dir.exists():
+                for f in photos_dir.iterdir():
+                    if f.is_file() and f.suffix.lower() == '.jpg':
+                        if f.stem not in valid_file_ids:
+                            try:
+                                f.unlink()
+                                deleted_thumbnails_count += 1
+                            except Exception:
+                                pass
+
+    ai_missing_file_ids = set()
+    if ai_db_path.exists():
+        try:
+            with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                cursor = conn.cursor()
+                for table in ['faces', 'processed_files', 'processed_objects']:
+                    try:
+                        cursor.execute(f"SELECT DISTINCT file_id FROM {table}")
+                        for row in cursor.fetchall():
+                            if str(row[0]) not in valid_file_ids:
+                                ai_missing_file_ids.add(row[0])
+                    except sqlite3.OperationalError:
+                        pass
+        except Exception:
+            pass
+            
+    all_missing_ids = list(set(missing_ids).union(ai_missing_file_ids))
+
+    # 4. Clean up AI database (orphaned faces, processed files/objects, and people without faces)
+    if all_missing_ids and ai_db_path.exists():
         with sqlite3.connect(ai_db_path, timeout=15) as conn:
             conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
-            for i in range(0, len(missing_ids), 900):
-                chunk = missing_ids[i:i+900]
+            for i in range(0, len(all_missing_ids), 900):
+                chunk = all_missing_ids[i:i+900]
                 placeholders = ",".join("?" * len(chunk))
                 
                 for query in [
@@ -2842,7 +2950,30 @@ def system_cleanup():
                     raise
             conn.commit()
 
-    # 4. Vacuum databases to reclaim space and optimize indices
+    # 5. Clean up orphaned face thumbnails (must run after AI DB cleanup)
+    if thumb_dir.exists() and ai_db_path.exists():
+        faces_dir = thumb_dir / "faces"
+        if faces_dir.exists():
+            valid_person_ids = set()
+            try:
+                with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id FROM people")
+                    valid_person_ids = {str(r[0]) for r in cursor.fetchall()}
+            except Exception:
+                pass
+            
+            for f in faces_dir.iterdir():
+                if f.is_file() and f.name.startswith("person_") and f.suffix.lower() == '.jpg':
+                    pid_str = f.stem.replace("person_", "")
+                    if pid_str not in valid_person_ids:
+                        try:
+                            f.unlink()
+                            deleted_thumbnails_count += 1
+                        except Exception:
+                            pass
+
+    # 6. Vacuum databases to reclaim space and optimize indices
     try:
         with sqlite3.connect(main_db_path, timeout=15) as conn:
             conn.isolation_level = None  # Auto-commit mode required for VACUUM
@@ -2866,9 +2997,9 @@ def system_cleanup():
 
     if cfg.get("enable_logging"):
         import logging
-        logging.info(f"Database cleanup finished: {len(missing_ids)} dead files removed, empty profiles cleared, and databases vacuumed.")
+        logging.info(f"Database cleanup finished: {len(missing_ids)} dead files removed, {deleted_thumbnails_count} orphaned thumbnails deleted, empty profiles cleared, and databases vacuumed.")
 
-    return {"status": "success", "removed_files": len(missing_ids), "message": "Cleanup and optimization complete."}
+    return {"status": "success", "removed_files": len(missing_ids), "removed_thumbnails": deleted_thumbnails_count, "message": "Cleanup and optimization complete."}
 
 @app.get("/system/export-people")
 def export_people():

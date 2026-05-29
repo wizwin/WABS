@@ -80,6 +80,21 @@ WABS uses **Hardware-Bound Encryption** to protect your OpenAI API key from plai
 
 If you move or copy your `config.yaml` file to a different computer (or change major hardware components), the API key will intentionally fail to decrypt to prevent unauthorized access. The application will not crash; you will simply need to re-enter your API key in the Settings menu on the new machine.
 
+### Limiting CPU Usage (Optional)
+By default, the AI scanners (Face and Object detection) will try to use 100% of your available CPU cores to process files as fast as possible. If you want to run WABS in the background without it slowing down your PC or running your Raspberry Pi too hot, you can limit the number of CPU cores it uses by launching it from the terminal/command prompt with specific environment variables:
+
+**On Windows (Command Prompt):**
+```cmd
+set MKL_NUM_THREADS=2
+set OMP_NUM_THREADS=2
+WABS-Windows.exe
+```
+
+**On Linux / Raspberry Pi:**
+```bash
+OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 ./WABS-Linux
+```
+
 ---
 
 ## Screenshot

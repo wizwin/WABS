@@ -38,6 +38,7 @@ import FileCopyIcon from '@mui/icons-material/FileCopy'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty'
 import FaceIcon from '@mui/icons-material/Face'
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
 
 // Use relative path in production to support network IPs, fallback to localhost for Vite dev server
 const API = window.location.port === '5173' ? 'http://127.0.0.1:8000' : ''
@@ -155,6 +156,64 @@ function formatSize(size) {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function parseFileDate(file) {
+  let dateStr = file.metadata?.date || file.modified;
+  if (!dateStr) return null;
+  // Normalize EXIF date colons and ensure ISO format for robust browser parsing
+  if (typeof dateStr === 'string') {
+    if (dateStr.match(/^\d{4}:\d{2}:\d{2}/)) {
+      dateStr = dateStr.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
+    }
+    dateStr = dateStr.replace(' ', 'T');
+  }
+  const d = new Date(dateStr);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function PersonThumb({ url, size = 60 }) {
+  const [shouldLoad, setShouldLoad] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [hasError, setHasError] = useState(false);
+  const imgRef = useRef(null);
+  
+  useEffect(() => {
+    if (!url) return;
+    setShouldLoad(false);
+    setIsLoaded(false);
+    setHasError(false);
+    const timer = setTimeout(() => setShouldLoad(true), 250); // 250ms debounce
+    return () => clearTimeout(timer);
+  }, [url]);
+
+  // Fix for React cached image bug (onLoad missing on browser-cached images)
+  useEffect(() => {
+    if (shouldLoad && imgRef.current && imgRef.current.complete) {
+      setIsLoaded(true);
+    }
+  }, [shouldLoad]);
+
+  if (!url) {
+    return <FaceIcon style={{fontSize: size, color:'#94a3b8'}} />;
+  }
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {(!isLoaded || hasError) && (
+        <FaceIcon style={{fontSize: size, color:'#94a3b8', position: 'absolute'}} />
+      )}
+      {shouldLoad && !hasError && (
+        <img 
+          ref={imgRef}
+          src={url} 
+          style={{width: '100%', height: '100%', objectFit: 'cover', opacity: isLoaded ? 1 : 0, transition: 'opacity 0.2s ease', position: 'relative', zIndex: 1}} 
+          onLoad={() => setIsLoaded(true)}
+          onError={() => setHasError(true)} 
+        />
+      )}
+    </div>
+  );
 }
 
 function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContextMenu, onSelectAndOpen, renderThumb, isAltGroup, showVerified, showUnverified, isReadOnly, isProcessing }) {
@@ -353,10 +412,27 @@ const [similarUnknowns, setSimilarUnknowns] = useState(null);
 const [isFindingSimilar, setIsFindingSimilar] = useState(false);
 const [checkedSimilar, setCheckedSimilar] = useState(new Set());
 const [similarityThreshold, setSimilarityThreshold] = useState(0.60);
+const [showSimilarPanel, setShowSimilarPanel] = useState(false);
 const [settingsTab, setSettingsTab] = useState('general');
 const findSimilarAbortController = useRef(null);
 const abortDataOpRef = useRef(false);
 const [fullTimelineData, setFullTimelineData] = useState([]);
+const [personPreviewPhotos, setPersonPreviewPhotos] = useState([]);
+
+useEffect(() => {
+  if (selected && selected.is_person) {
+    let isMounted = true;
+    setPersonPreviewPhotos([]);
+    axios.get(`${API}/people/${selected.id}/photos?offset=0&limit=6`)
+      .then(r => {
+        if (isMounted) setPersonPreviewPhotos(r.data);
+      })
+      .catch(e => console.warn(e));
+    return () => { isMounted = false; };
+  } else {
+    setPersonPreviewPhotos([]);
+  }
+}, [selected]);
 
 useEffect(() => {
   localStorage.setItem('wabs_combined_options', JSON.stringify(combinedOptions));
@@ -461,7 +537,7 @@ const handleSearchChange = (e) => {
     } else if (cleanWord.startsWith('person:')) {
       const searchName = cleanWord.replace('person:', '').replace(/_/g, ' ');
       const suggestions = (Array.isArray(people) ? people : [])
-        .filter(p => p.name && !p.name.startsWith('Unknown Person') && p.name.toLowerCase().includes(searchName))
+        .filter(p => p.name && !p.name.startsWith('Unknown Person') && p.name.toLowerCase().includes(searchName) && !(settings.hidden_people || []).includes(p.id))
         .map(p => isAndPrefix ? `+person:"${p.name}"` : isNotPrefix ? `-person:"${p.name}"` : `person:"${p.name}"`)
         .slice(0, 8);
       if (suggestions.length > 0) {
@@ -835,6 +911,8 @@ async function openPersonPhotos(person) {
     setOffset(r.data.length);
     setHasMore(r.data.length === 50);
     setPage('person_files');
+    setSimilarUnknowns(null); // Clear previous similar faces results when opening a new person
+    setShowSimilarPanel(false);
   } catch (err) {
     console.warn('Failed to load person photos', err);
   }
@@ -971,8 +1049,8 @@ function locateSelectedFileInExplorer() {
 
     // Search for the specific day to provide timeline context
     let q = '';
-    const d = new Date(file.modified);
-    if (file.modified && !isNaN(d.getTime())) {
+    const d = parseFileDate(file);
+    if (d) {
         const month = String(d.getMonth() + 1).padStart(2, '0');
         const day = String(d.getDate()).padStart(2, '0');
         q = `date:${d.getFullYear()}-${month}-${day}`;
@@ -1013,7 +1091,7 @@ function locateSelectedFileInExplorer() {
             if (el) {
                 el.scrollIntoView({ behavior: 'smooth', block: 'center' });
             } else {
-                const dateKey = (!isNaN(d.getTime()) && file.modified) ? d.toLocaleDateString('default', { month: 'short', year: 'numeric' }) : 'Unknown Date';
+                const dateKey = d ? d.toLocaleDateString('default', { month: 'short', year: 'numeric' }) : 'Unknown Date';
                 document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }
         }, 300);
@@ -1316,7 +1394,7 @@ const selectVerifiedDuplicates = () => {
 };
 
 async function deleteSelected() {
-  if (filterCategory === 'duplicates' && !settings.allow_unverified_deletion) {
+  if (filterCategory === 'duplicates' && !(settings.allow_unverified_deletion ?? settings.ui_preferences?.allow_unverified_deletion)) {
     const filesToDelete = Array.from(checkedFiles).map(p => globalFileCache.current.get(p)).filter(Boolean);
     const hasUnverified = filesToDelete.some(f => !f.metadata?.sha256);
     if (hasUnverified) {
@@ -1378,12 +1456,14 @@ async function backupDatabase() {
     if (!dest.data || !dest.data.path) return;
     
     setActionInProgress(true);
+    setDataOpProgress({ id: 'backup' });
     await axios.post(`${API}/system/backup`, { destination: dest.data.path });
     showToastMessage('Data safely backed up to ' + dest.data.path);
   } catch (err) {
     alert('Error backing up database: ' + (err?.response?.data?.detail || err.message));
   } finally {
     setActionInProgress(false);
+    setDataOpProgress(null);
   }
 }
 
@@ -1395,6 +1475,7 @@ async function cleanupDatabase() {
   if (!window.confirm('Are you sure you want to run the cleanup routine? This will scan the entire database for missing files, remove their dead links, clean up empty AI profiles, and vacuum the databases. This may take several minutes for large archives.')) return;
   
   setActionInProgress(true);
+  setDataOpProgress({ id: 'cleanup' });
   try {
     showToastMessage('Database cleanup & optimization in progress...');
     const r = await axios.post(`${API}/system/cleanup`);
@@ -1416,6 +1497,7 @@ async function cleanupDatabase() {
     alert('Error running cleanup: ' + (err?.response?.data?.detail || err.message));
   } finally {
     setActionInProgress(false);
+    setDataOpProgress(null);
   }
 }
 
@@ -1728,8 +1810,10 @@ const sortedFiles = useMemo(() => {
   const sorted = [...baseFiles].sort((a,b) => {
     let aVal, bVal;
     if(sortBy === 'date'){
-      aVal = new Date(a.modified).getTime();
-      bVal = new Date(b.modified).getTime();
+      const d1 = parseFileDate(a);
+      const d2 = parseFileDate(b);
+      aVal = d1 ? d1.getTime() : 0;
+      bVal = d2 ? d2.getTime() : 0;
     } else if(sortBy === 'size'){
       const parseSize = (s) => {
         if (!s) return 0;
@@ -1763,11 +1847,9 @@ const groupedFiles = useMemo(() => {
   const groups = {};
   sortedFiles.forEach(file => {
     let key = 'Unknown Date';
-    if (file.modified) {
-      const d = new Date(file.modified);
-      if (!isNaN(d.getTime())) {
-        key = d.toLocaleDateString('default', { month: 'short', year: 'numeric' });
-      }
+    const d = parseFileDate(file);
+    if (d) {
+      key = d.toLocaleDateString('default', { month: 'short', year: 'numeric' });
     }
     if (!groups[key]) groups[key] = [];
     groups[key].push(file);
@@ -1779,11 +1861,9 @@ const groupedPersonFiles = useMemo(() => {
   const groups = {};
   personFiles.forEach(file => {
     let key = 'Unknown Date';
-    if (file.modified) {
-      const d = new Date(file.modified);
-      if (!isNaN(d.getTime())) {
-        key = d.toLocaleDateString('default', { month: 'short', year: 'numeric' });
-      }
+    const d = parseFileDate(file);
+    if (d) {
+      key = d.toLocaleDateString('default', { month: 'short', year: 'numeric' });
     }
     if (!groups[key]) groups[key] = [];
     groups[key].push(file);
@@ -2046,7 +2126,7 @@ const filteredTags = useMemo(() => {
 }, [objectTags, tagSearchQuery]);
 
 return(
-<SettingsContext.Provider value={{ animationsEnabled: settings.animations_enabled !== false }}>
+<SettingsContext.Provider value={{ animationsEnabled: (settings.animations_enabled ?? settings.ui_preferences?.animations_enabled) !== false }}>
 <div className='layout'>
 {isShutdown ? (
   <div style={{
@@ -2456,7 +2536,7 @@ return(
           value=""
         >
           <option value="" disabled>Select person...</option>
-          {[...people].sort((a,b) => (a.name || '').localeCompare(b.name || '')).map(p => <option key={p.id} value={p.id}>{p.name || `Unknown Person #${p.id}`}</option>)}
+          {[...people].filter(p => !(settings.hidden_people || []).includes(p.id)).sort((a,b) => (a.name || '').localeCompare(b.name || '')).map(p => <option key={p.id} value={p.id}>{p.name || `Unknown Person #${p.id}`}</option>)}
         </select>
       )}
     </div>
@@ -2572,6 +2652,39 @@ Object.entries(groupedFiles).map(([dateKey, filesGroup]) => (
 
 {
 selected ?
+selected.is_person ? (
+<div>
+<img
+src={getPersonThumbUrl(selected)}
+style={{ width:'100%', borderRadius:'12px', marginBottom: '12px' }}
+key={`person-${selected.id}`}
+/>
+<h2 style={{ wordBreak: 'break-word', marginTop: 0 }}>{selected.name}</h2>
+<p><b>Profile ID:</b> {selected.id}</p>
+{selected.similarity !== undefined && <p><b>Similarity:</b> {Math.round(selected.similarity * 100)}% Match</p>}
+<p><b>Face Count:</b> {selected.face_count} photos</p>
+<p style={{color: '#94a3b8', fontSize: '13px', marginTop: '16px', lineHeight: '1.5'}}>
+   Merging will combine all {selected.face_count} photos from this profile into <b>{currentPerson?.name}</b>.
+</p>
+{personPreviewPhotos.length > 0 && (
+  <div style={{ marginTop: '16px', borderTop: '1px solid #1f2937', paddingTop: '16px' }}>
+    <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#f8fafc' }}><b>Sample Photos</b></p>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
+      {personPreviewPhotos.map(photo => (
+         <img 
+           key={photo.path} 
+           src={renderThumb(photo)} 
+           onError={(e) => { e.target.src = renderThumb({ ...photo, thumbnail: null }) }}
+           style={{ width: '100%', height: '80px', objectFit: 'cover', borderRadius: '8px', cursor: 'pointer', border: '1px solid #334155' }} 
+           onClick={() => openFile(photo.path)}
+           title={photo.filename}
+         />
+      ))}
+    </div>
+  </div>
+)}
+</div>
+) : (
 <div>
 
 <img
@@ -2641,8 +2754,9 @@ onClick={()=>openFile(selected.path)}
 {renderMetadata(selected.metadata)}
 
 </div>
-:
-<p>Select file to preview.</p>
+) : (
+<p>Select file or profile to preview.</p>
+)
 }
 
 </div>
@@ -2704,7 +2818,7 @@ page==='people' &&
       </select>
     </div>
 
-    {people.filter(p => !(p.name || '').startsWith('Unknown Person')).length > 0 && (
+    {people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length > 0 && (
       <>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '24px', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
@@ -2717,13 +2831,13 @@ page==='people' &&
               style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #334155', background: '#1e293b', color: '#f8fafc', width: '100%', maxWidth: '250px', outline: 'none' }}
             />
           </div>
-          {people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length > 50 && (
+          {people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length > 50 && (
             <div style={{ display: 'flex', gap: '16px' }}>
               <ActionButton disabled={namedPeoplePage === 1} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setNamedPeoplePage(prev => Math.max(1, prev - 1))}>
                 Previous
               </ActionButton>
-              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)}</span>
-              <ActionButton disabled={namedPeoplePage >= Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
+              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)}</span>
+              <ActionButton disabled={namedPeoplePage >= Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
                 Next
               </ActionButton>
             </div>
@@ -2731,8 +2845,8 @@ page==='people' &&
         </div>
         
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
-        {people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '') : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || ''))).slice((namedPeoplePage - 1) * 50, namedPeoplePage * 50).map(p => (
-          <div key={p.id} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
+        {people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '') : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || ''))).slice((namedPeoplePage - 1) * 50, namedPeoplePage * 50).map(p => (
+          <div key={p.id} id={`person-card-${p.id}`} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
              <input 
                type="checkbox" 
                checked={checkedPeople.has(p.id)}
@@ -2752,11 +2866,15 @@ page==='people' &&
              >
                ✕
              </div>
+             <div 
+               onClick={(e) => { e.stopPropagation(); const next = [...(settings.hidden_people || []), p.id]; updateUIPreferences({ hidden_people: next }); showToastMessage(`${p.name || 'Person'} hidden from UI.`); }}
+               style={{position: 'absolute', top: '8px', right: '42px', background: 'rgba(148, 163, 184, 0.2)', color: '#94a3b8', width: '26px', height: '26px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', zIndex: 10}}
+               title="Hide Person (Keep faces to prevent rescanning)"
+             >
+               <VisibilityOffIcon style={{ fontSize: '15px' }} />
+             </div>
              <div style={{width:'100%', height:'150px', background:'#1e293b', borderRadius:'12px', display:'flex', alignItems:'center', justifyContent:'center', overflow: 'hidden'}}>
-                 {p.thumbnail && (
-                     <img src={getPersonThumbUrl(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} onError={(e) => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
-                 )}
-                 <FaceIcon style={{fontSize: 60, color:'#94a3b8', display: p.thumbnail ? 'none' : 'block'}} />
+                 <PersonThumb url={getPersonThumbUrl(p)} size={60} />
              </div>
              <div style={{display:'flex', alignItems:'center'}}>
                  <input 
@@ -2785,17 +2903,17 @@ page==='people' &&
         ))}
         </div>
 
-        {people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length === 0 && namedPersonSearchQuery && (
+        {people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length === 0 && namedPersonSearchQuery && (
           <p style={{ color: '#94a3b8', marginTop: '16px' }}>No named people match your search.</p>
         )}
         
-        {people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length > 50 && (
+        {people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length > 50 && (
           <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '32px', marginBottom: '24px' }}>
             <ActionButton disabled={namedPeoplePage === 1} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setNamedPeoplePage(prev => Math.max(1, prev - 1))}>
               Previous
             </ActionButton>
-            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)}</span>
-            <ActionButton disabled={namedPeoplePage >= Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
+            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)}</span>
+            <ActionButton disabled={namedPeoplePage >= Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
               Next
             </ActionButton>
           </div>
@@ -2804,17 +2922,17 @@ page==='people' &&
       </>
     )}
 
-    {people.filter(p => (p.name || '').startsWith('Unknown Person')).length > 0 && (
+    {people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length > 0 && (
       <>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '32px', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
           <h2 id="unknown-people-section" style={{ margin: 0, color: '#f8fafc', fontSize: '20px' }}>Unknown People</h2>
-          {people.filter(p => (p.name || '').startsWith('Unknown Person')).length > 50 && (
+          {people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length > 50 && (
             <div style={{ display: 'flex', gap: '16px' }}>
               <ActionButton disabled={unknownPeoplePage === 1} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setUnknownPeoplePage(prev => Math.max(1, prev - 1))}>
                 Previous
               </ActionButton>
-              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 50)}</span>
-              <ActionButton disabled={unknownPeoplePage >= Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 50)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
+              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length / 50)}</span>
+              <ActionButton disabled={unknownPeoplePage >= Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length / 50)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
                 Next
               </ActionButton>
             </div>
@@ -2822,8 +2940,8 @@ page==='people' &&
         </div>
         
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
-        {people.filter(p => (p.name || '').startsWith('Unknown Person')).sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }) : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }))).slice((unknownPeoplePage - 1) * 50, unknownPeoplePage * 50).map(p => (
-          <div key={p.id} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
+        {people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }) : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }))).slice((unknownPeoplePage - 1) * 50, unknownPeoplePage * 50).map(p => (
+          <div key={p.id} id={`person-card-${p.id}`} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
              <input 
                type="checkbox" 
                checked={checkedPeople.has(p.id)}
@@ -2843,11 +2961,15 @@ page==='people' &&
              >
                ✕
              </div>
+             <div 
+               onClick={(e) => { e.stopPropagation(); const next = [...(settings.hidden_people || []), p.id]; updateUIPreferences({ hidden_people: next }); showToastMessage(`Unknown Person #${p.id} hidden from UI.`); }}
+               style={{position: 'absolute', top: '8px', right: '42px', background: 'rgba(148, 163, 184, 0.2)', color: '#94a3b8', width: '26px', height: '26px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', zIndex: 10}}
+               title="Hide Person (Keep faces to prevent rescanning)"
+             >
+               <VisibilityOffIcon style={{ fontSize: '15px' }} />
+             </div>
              <div style={{width:'100%', height:'150px', background:'#1e293b', borderRadius:'12px', display:'flex', alignItems:'center', justifyContent:'center', overflow: 'hidden'}}>
-                 {p.thumbnail && (
-                     <img src={getPersonThumbUrl(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} onError={(e) => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
-                 )}
-                 <FaceIcon style={{fontSize: 60, color:'#94a3b8', display: p.thumbnail ? 'none' : 'block'}} />
+                 <PersonThumb url={getPersonThumbUrl(p)} size={60} />
              </div>
              <div style={{display:'flex', alignItems:'center'}}>
                  <input 
@@ -2876,13 +2998,13 @@ page==='people' &&
         ))}
         </div>
 
-        {people.filter(p => (p.name || '').startsWith('Unknown Person')).length > 50 && (
+        {people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length > 50 && (
           <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '32px', marginBottom: '24px' }}>
             <ActionButton disabled={unknownPeoplePage === 1} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setUnknownPeoplePage(prev => Math.max(1, prev - 1))}>
               Previous
             </ActionButton>
-            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 50)}</span>
-            <ActionButton disabled={unknownPeoplePage >= Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person')).length / 50)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
+            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length / 50)}</span>
+            <ActionButton disabled={unknownPeoplePage >= Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length / 50)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
               Next
             </ActionButton>
           </div>
@@ -2928,7 +3050,18 @@ page==='person_files' &&
 )}
 <div style={{display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0}}>
 <div style={{padding: '18px', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '16px'}}>
-    <ActionButton className="btn btn-secondary" onClick={() => { setPage('people'); setCheckedFiles(new Set()); setSimilarUnknowns(null); loadPeople(); }}>&larr; Back to People</ActionButton>
+    <ActionButton className="btn btn-secondary" onClick={() => { 
+      setPage('people'); 
+      setCheckedFiles(new Set()); 
+      setSimilarUnknowns(null); 
+      loadPeople(); 
+      setTimeout(() => {
+        const el = document.getElementById(`person-card-${currentPerson?.id}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 100);
+    }}>&larr; Back to People</ActionButton>
     <h2 style={{margin: 0}}>{currentPerson?.name}'s Photos</h2>
     {!currentPerson?.name?.startsWith('Unknown Person') && (
         isFindingSimilar ? (
@@ -2940,21 +3073,38 @@ page==='person_files' &&
                 <CloseIcon fontSize="small" /> Stop Searching
             </ActionButton>
         ) : (
+            showSimilarPanel || similarUnknowns ? (
+            <ActionButton 
+                className="btn btn-secondary" 
+                style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px', color: '#ef4444', borderColor: '#b91c1c' }}
+                onClick={() => {
+                  setShowSimilarPanel(false);
+                  setSimilarUnknowns(null);
+                  setCheckedSimilar(new Set());
+                  if (selected?.is_person) setSelected(null);
+                }}
+            >
+                <CloseIcon fontSize="small" /> Close Panel
+            </ActionButton>
+            ) : (
             <ActionButton 
                 className="btn btn-secondary" 
                 style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px', color: '#38bdf8', borderColor: '#3b82f6' }}
-                onClick={() => findSimilarUnknowns(currentPerson.id, similarityThreshold)}
+                onClick={() => setShowSimilarPanel(true)}
             >
                 <FaceIcon fontSize="small" /> Find Similar Unknowns
             </ActionButton>
+            )
         )
     )}
 </div>
 
-{similarUnknowns && (
+{(showSimilarPanel || similarUnknowns) && (
   <div style={{ padding: '18px', borderBottom: '1px solid #1f2937', background: '#0f172a' }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
-      <h3 style={{ margin: 0, color: '#f8fafc' }}>Similar Unknown Profiles ({similarUnknowns.length})</h3>
+      <h3 style={{ margin: 0, color: '#f8fafc' }}>
+        {similarUnknowns ? `Similar Unknown Profiles (${similarUnknowns.length})` : 'Find Similar Unknowns'}
+      </h3>
       <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
         <span style={{ color: '#94a3b8', fontSize: '14px' }}>Similarity Threshold:</span>
         <input 
@@ -2965,22 +3115,31 @@ page==='person_files' &&
           onChange={(e) => setSimilarityThreshold(parseFloat(e.target.value))} 
         />
         <span style={{ color: '#38bdf8', fontSize: '14px', minWidth: '40px' }}>{Math.round(similarityThreshold * 100)}%</span>
-            <ActionButton disabled={isFindingSimilar} className="btn btn-primary" style={{ padding: '4px 10px' }} onClick={() => findSimilarUnknowns(currentPerson.id, similarityThreshold)}>Apply</ActionButton>
-        <ActionButton className="btn btn-secondary" style={{ padding: '4px 10px' }} onClick={() => { setSimilarUnknowns(null); setCheckedSimilar(new Set()); }}>Close</ActionButton>
+        <ActionButton disabled={isFindingSimilar} className="btn btn-primary" style={{ padding: '4px 10px' }} onClick={() => findSimilarUnknowns(currentPerson.id, similarityThreshold)}>
+          {similarUnknowns ? 'Update Search' : 'Start Search'}
+        </ActionButton>
+        <ActionButton className="btn btn-secondary" style={{ padding: '4px 10px' }} onClick={() => { setSimilarUnknowns(null); setShowSimilarPanel(false); setCheckedSimilar(new Set()); if (selected?.is_person) setSelected(null); }}>Close</ActionButton>
       </div>
     </div>
     
-    {similarUnknowns.length === 0 ? (
+    {isFindingSimilar ? (
+      <div style={{ padding: '20px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', color: '#38bdf8' }}>
+        <HourglassEmptyIcon style={{ fontSize: '32px', marginBottom: '8px' }} />
+        <p style={{ margin: 0 }}>Searching for similar unknown profiles...</p>
+      </div>
+    ) : similarUnknowns ? (
+      similarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id)).length === 0 ? (
       <p style={{ color: '#94a3b8' }}>No similar unknown profiles found at this threshold. Try lowering the slider.</p>
     ) : (
       <>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '16px', marginBottom: '16px', maxHeight: '300px', overflowY: 'auto', paddingRight: '8px' }}>
-          {similarUnknowns.map(p => (
+          {similarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id)).map(p => (
              <div key={p.id} style={{background:'#111827', padding:'10px', borderRadius:'12px', border: checkedSimilar.has(p.id) ? '2px solid #3b82f6' : '1px solid #24324a', cursor:'pointer', position: 'relative'}} onClick={() => {
                 const next = new Set(checkedSimilar);
                 if (next.has(p.id)) next.delete(p.id);
                 else next.add(p.id);
                 setCheckedSimilar(next);
+                setSelected({ is_person: true, ...p });
              }}>
                <input 
                  type="checkbox" 
@@ -2989,10 +3148,7 @@ page==='person_files' &&
                  style={{ position: 'absolute', top: '8px', left: '8px', zIndex: 10, cursor: 'pointer' }}
                />
                <div style={{width:'100%', height:'100px', background:'#1e293b', borderRadius:'8px', display:'flex', alignItems:'center', justifyContent:'center', overflow: 'hidden', marginBottom: '8px'}}>
-                 {p.thumbnail && (
-                     <img src={getPersonThumbUrl(p)} style={{width: '100%', height: '100%', objectFit: 'cover'}} onError={(e) => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
-                 )}
-                 <FaceIcon style={{fontSize: 40, color:'#94a3b8', display: p.thumbnail ? 'none' : 'block'}} />
+                 <PersonThumb url={getPersonThumbUrl(p)} size={40} />
                </div>
                <div style={{ fontSize: '13px', color: '#f8fafc', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.name}>{p.name}</div>
                <div style={{ fontSize: '12px', color: '#38bdf8' }}>{Math.round(p.similarity * 100)}% Match</div>
@@ -3011,7 +3167,9 @@ page==='person_files' &&
                 await axios.post(`${API}/people/merge`, { person_ids: [currentPerson.id, ...Array.from(checkedSimilar)] });
                 showToastMessage(`Merged ${checkedSimilar.size} profiles successfully.`);
                 setSimilarUnknowns(null);
+                  setShowSimilarPanel(false);
                 setCheckedSimilar(new Set());
+                if (selected?.is_person) setSelected(null);
                 openPersonPhotos(currentPerson);
                 loadPeople();
               } catch(err) {
@@ -3021,13 +3179,16 @@ page==='person_files' &&
              Merge {checkedSimilar.size} Selected
            </ActionButton>
            <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => {
-              if (checkedSimilar.size === similarUnknowns.length) setCheckedSimilar(new Set());
-              else setCheckedSimilar(new Set(similarUnknowns.map(p => p.id)));
+              const visibleSimilar = similarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id));
+              if (checkedSimilar.size === visibleSimilar.length && visibleSimilar.length > 0) setCheckedSimilar(new Set());
+              else setCheckedSimilar(new Set(visibleSimilar.map(p => p.id)));
            }}>
-              {checkedSimilar.size === similarUnknowns.length ? 'Deselect All' : 'Select All'}
+              {checkedSimilar.size === similarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id)).length && similarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id)).length > 0 ? 'Deselect All' : 'Select All'}
            </ActionButton>
         </div>
       </>
+    )) : (
+      <p style={{ color: '#94a3b8' }}>Adjust the similarity threshold and click "Start Search" to find potential matches.</p>
     )}
   </div>
 )}
@@ -3086,6 +3247,127 @@ page==='person_files' &&
     ))}
 </div>
 </div>
+
+{showDetails && (
+<>
+<div className={`resizer ${isResizing === 'details' ? 'active' : ''}`} onMouseDown={(e) => { e.preventDefault(); setIsResizing('details'); }} />
+<div className='details' style={{ width: detailsWidth, overflowY: 'auto', maxHeight: '100%', display: 'flex', flexDirection: 'column'}}>
+
+<h3>Details</h3>
+
+{
+selected ?
+selected.is_person ? (
+<div>
+<img
+src={getPersonThumbUrl(selected)}
+style={{ width:'100%', borderRadius:'12px', marginBottom: '12px' }}
+key={`person-${selected.id}`}
+/>
+<h2 style={{ wordBreak: 'break-word', marginTop: 0 }}>{selected.name}</h2>
+<p><b>Profile ID:</b> {selected.id}</p>
+{selected.similarity !== undefined && <p><b>Similarity:</b> {Math.round(selected.similarity * 100)}% Match</p>}
+<p><b>Face Count:</b> {selected.face_count} photos</p>
+<p style={{color: '#94a3b8', fontSize: '13px', marginTop: '16px', lineHeight: '1.5'}}>
+   Merging will combine all {selected.face_count} photos from this profile into <b>{currentPerson?.name}</b>.
+</p>
+{personPreviewPhotos.length > 0 && (
+  <div style={{ marginTop: '16px', borderTop: '1px solid #1f2937', paddingTop: '16px' }}>
+    <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#f8fafc' }}><b>Sample Photos</b></p>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
+      {personPreviewPhotos.map(photo => (
+         <img 
+           key={photo.path} 
+           src={renderThumb(photo)} 
+           onError={(e) => { e.target.src = renderThumb({ ...photo, thumbnail: null }) }}
+           style={{ width: '100%', height: '80px', objectFit: 'cover', borderRadius: '8px', cursor: 'pointer', border: '1px solid #334155' }} 
+           onClick={() => openFile(photo.path)}
+           title={photo.filename}
+         />
+      ))}
+    </div>
+  </div>
+)}
+</div>
+) : (
+<div>
+
+<img
+src={renderThumb(selected)}
+style={{
+width:'100%',
+borderRadius:'12px',
+cursor:'pointer'
+}}
+key={selected.path}
+onClick={()=>openFile(selected.path)}
+/>
+
+<h2>{selected.filename}</h2>
+
+<p><b>Path:</b> {selected.path}</p>
+
+<p><b>Category:</b> {selected.category}</p>
+
+<p><b>Extension:</b> {selected.extension || 'unknown'}</p>
+
+<p><b>Size:</b> {formatSize(selected.size)}</p>
+
+<p><b>Modified:</b> {selected.modified}</p>
+
+{selected.metadata?.gps && (
+  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+    <b>Location:</b>
+    <ActionButton 
+      className="btn btn-secondary" 
+      style={{ padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px', borderColor: '#3b82f6', color: '#3b82f6' }}
+      onClick={() => window.open(`https://www.google.com/maps?q=${selected.metadata.gps.latitude},${selected.metadata.gps.longitude}`, '_blank')}
+    >
+      <PlaceIcon fontSize="small" /> View on Map
+    </ActionButton>
+  </div>
+)}
+
+{selected.tags && (
+  <div style={{ marginBottom: '16px' }}>
+    <h3 style={{ margin: '0 0 8px 0', fontSize: '15px' }}>Detected Tags</h3>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+      {selected.tags.split(' ').filter(t => t.trim()).map(tag => {
+        const isObj = tag.startsWith('object:');
+        const isPerson = tag.startsWith('person:');
+        const color = isObj ? '#38bdf8' : isPerson ? '#10b981' : '#cbd5e1';
+        const bg = isObj ? '#3b82f64a' : isPerson ? '#10b9814a' : '#334155';
+        const border = isObj ? '#3b82f6' : isPerson ? '#10b981' : '#475569';
+        const label = tag.replace('object:', '').replace('person:', '').replace(/_/g, ' ');
+        return (
+          <span key={tag} style={{ background: bg, color: color, padding: '4px 10px', borderRadius: '12px', fontSize: '12px', border: `1px solid ${border}`, fontWeight: '500' }}>
+            {label}
+          </span>
+        );
+      })}
+    </div>
+  </div>
+)}
+
+<h3>Metadata</h3>
+
+<p><b>File ID:</b> {selected.id}</p>
+<div style={{display:'flex',gap:'10px',flexWrap:'wrap',marginBottom:'16px'}}>
+ <ActionButton className="btn btn-secondary" onClick={()=>openFile(selected.path)}>Open File</ActionButton>
+ <ActionButton className="btn btn-secondary" onClick={()=>openContainingFolder(selected.path)}>Open Containing Folder</ActionButton>
+</div>
+{renderMetadata(selected.metadata)}
+
+</div>
+) : (
+<p>Select file or profile to preview.</p>
+)
+}
+
+</div>
+</>
+)}
+
 </div>
 }
 
@@ -3331,7 +3613,7 @@ page==='settings' &&
 
     {/* Tab Navigation */}
     <div style={{ display: 'flex', gap: '10px', borderBottom: '1px solid #334155', paddingBottom: '10px', marginBottom: '24px', flexWrap: 'wrap' }}>
-      {['general', 'ui', 'ai', 'locations', 'search'].map(tab => (
+      {['general', 'data', 'ui', 'ai', 'locations', 'search'].map(tab => (
         <button 
           key={tab}
           onClick={() => setSettingsTab(tab)}
@@ -3343,6 +3625,7 @@ page==='settings' &&
           }}
         >
           {tab === 'general' ? 'General' : 
+           tab === 'data' ? 'Data Management' : 
            tab === 'ui' ? 'UI Preferences' : 
            tab === 'ai' ? 'AI & Vision' : 
            tab === 'locations' ? 'Backups' : 'Smart Searches'}
@@ -3380,15 +3663,48 @@ page==='settings' &&
           <ActionButton className="btn btn-secondary" onClick={()=>choosePath('thumbnail_path','directory')}>Select</ActionButton>
         </div>
 
+        <p style={{ margin: '14px 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Global Excluded Folders (comma-separated, applies to all backups)</p>
+        <div style={{display:'flex',gap:'10px', marginBottom: '0'}}>
+          <input
+            className='setting'
+            style={{ marginBottom: 0 }}
+            value={settings.global_excluded_paths || ''}
+            onChange={(e)=>setSettings(prev => ({...prev, global_excluded_paths: e.target.value}))}
+            placeholder="node_modules, .git, venv, __pycache__"
+          />
+        </div>
+
         <h3 style={{ margin: '32px 0 16px 0' }}>Data Safety</h3>
         <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px', color:'#38bdf8'}}>
           <input type='checkbox' checked={settings.read_only_mode !== false} onChange={(e)=>updateUIPreferences({ read_only_mode: e.target.checked })} /> Enable Global Read-Only Mode (Overrides individual backup settings if enabled)
         </label>
         <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'0', color:'#ef4444'}}>
-          <input type='checkbox' checked={settings.allow_unverified_deletion || false} onChange={(e)=>updateUIPreferences({ allow_unverified_deletion: e.target.checked })} /> Allow deleting unverified duplicates (Dangerous)
+          <input type='checkbox' checked={(settings.allow_unverified_deletion ?? settings.ui_preferences?.allow_unverified_deletion) || false} onChange={(e)=>updateUIPreferences({ allow_unverified_deletion: e.target.checked })} /> Allow deleting unverified duplicates (Dangerous)
         </label>
 
-        <h3 style={{ margin: '32px 0 16px 0' }}>Data Management</h3>
+        <h3 style={{ margin: '32px 0 16px 0' }}>Diagnostics</h3>
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'0', color:'#cbd5e1'}}>
+          <input 
+            type="checkbox" 
+            checked={settings.enable_logging || false} 
+            onChange={(e) => setSettings(prev => ({ ...prev, enable_logging: e.target.checked }))} 
+          />
+          Enable Background Logging (wabs.log)
+        </label>
+      </div>
+    )}
+
+    {settingsTab === 'data' && (
+      <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+        <style>
+          {`
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+          `}
+        </style>
+        <h3 style={{ margin: '0 0 16px 0' }}>Data Management</h3>
         <div style={{ display: 'grid', gap: '16px' }}>
           <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
             <div>
@@ -3400,8 +3716,11 @@ page==='settings' &&
               className="btn btn-secondary" 
               onClick={cleanupDatabase}
               title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to run cleanup" : ""}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
             >
-              Run Cleanup
+              {dataOpProgress && dataOpProgress.id === 'cleanup' ? (
+                <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Cleaning...</>
+              ) : 'Run Cleanup'}
             </ActionButton>
           </div>
           <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
@@ -3414,8 +3733,11 @@ page==='settings' &&
               className="btn btn-secondary" 
               onClick={backupDatabase}
               title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to backup the database" : ""}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
             >
-              Export / Backup Data
+              {dataOpProgress && dataOpProgress.id === 'backup' ? (
+                <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Backing up...</>
+              ) : 'Export / Backup Data'}
             </ActionButton>
           </div>
           <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
@@ -3502,17 +3824,21 @@ page==='settings' &&
               </ActionButton>
             </div>
           </div>
+          <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+            <div>
+              <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Clear Thumbnail Cache</h4>
+              <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Delete all cached preview images. They will be regenerated automatically as needed.</p>
+            </div>
+            <ActionButton 
+              disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} 
+              className="btn btn-secondary" 
+              onClick={clearCache}
+              title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to clear cache" : ""}
+            >
+              Clear Cache
+            </ActionButton>
+          </div>
         </div>
-
-        <h3 style={{ margin: '32px 0 16px 0' }}>Diagnostics</h3>
-        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'0', color:'#cbd5e1'}}>
-          <input 
-            type="checkbox" 
-            checked={settings.enable_logging || false} 
-            onChange={(e) => setSettings(prev => ({ ...prev, enable_logging: e.target.checked }))} 
-          />
-          Enable Background Logging (wabs.log)
-        </label>
       </div>
     )}
 
@@ -3532,7 +3858,7 @@ page==='settings' &&
           <input type='checkbox' checked={settings.show_full_timeline || settings.ui_preferences?.show_full_timeline || false} onChange={(e)=>updateUIPreferences({ show_full_timeline: e.target.checked })} /> Show Full Archive Timeline
         </label>
         <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
-          <input type='checkbox' checked={settings.animations_enabled !== false} onChange={(e)=>updateUIPreferences({ animations_enabled: e.target.checked })} /> Enable UI Animations
+          <input type='checkbox' checked={(settings.animations_enabled ?? settings.ui_preferences?.animations_enabled) !== false} onChange={(e)=>updateUIPreferences({ animations_enabled: e.target.checked })} /> Enable UI Animations
         </label>
         <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom: '10px', color:'#38bdf8'}}>
           <input type='checkbox' checked={settings.enable_photo_thumbnail_cache || settings.ui_preferences?.enable_photo_thumbnail_cache || false} onChange={(e)=>updateUIPreferences({ enable_photo_thumbnail_cache: e.target.checked })} /> Enable Photo Thumbnail Caching (Improves load times for large images)
@@ -3549,17 +3875,6 @@ page==='settings' &&
             />
           </div>
         )}
-        <div style={{ marginBottom: '0', marginTop: '16px' }}>
-          <ActionButton 
-            disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} 
-            className="btn btn-secondary" 
-            style={{ padding: '6px 12px' }} 
-            onClick={clearCache}
-            title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to clear cache" : ""}
-          >
-            Clear Thumbnail Cache
-          </ActionButton>
-        </div>
       </div>
     )}
 
@@ -3609,7 +3924,7 @@ page==='settings' &&
             const newId = `backup_${Date.now()}`;
             setSettings(prev => ({
               ...prev,
-              backup_configs: [...(prev.backup_configs || []), { id: newId, name: `Backup Location ${(prev.backup_configs?.length || 0) + 1}`, backup_path: '', mapped_backup_path: '', path_mapping_enabled: false, read_only_mode: true }]
+              backup_configs: [...(prev.backup_configs || []), { id: newId, name: `Backup Location ${(prev.backup_configs?.length || 0) + 1}`, backup_path: '', mapped_backup_path: '', path_mapping_enabled: false, read_only_mode: true, excluded_paths: '' }]
             }));
           }}>+ Add Backup Location</ActionButton>
         </div>
@@ -3658,6 +3973,11 @@ page==='settings' &&
               <input type='checkbox' checked={config.read_only_mode !== false} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, read_only_mode: e.target.checked } : c) }))} />
               Enable Read-Only Mode (Hide destructive Move/Delete options for this backup)
             </label>
+
+            <p style={{ margin: '14px 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Excluded Folders (comma-separated, e.g. node_modules, .git)</p>
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '14px' }}>
+              <input className='setting' style={{ marginBottom: 0 }} value={config.excluded_paths || ''} onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, excluded_paths: e.target.value } : c) }))} placeholder="System Volume Information, $RECYCLE.BIN, node_modules" />
+            </div>
           </div>
         ))}
       </div>
@@ -3758,6 +4078,29 @@ page==='settings' &&
             <option value='medium'>Balanced (Recommended)</option>
             <option value='low'>Detect fewer tags (More accurate)</option>
           </select>
+        </div>
+
+        <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+          <h3 style={{ margin: '0 0 16px 0' }}>Hidden People</h3>
+          <p style={{ margin: '0 0 16px 0', fontSize: '14px', color: '#94a3b8' }}>People hidden from the UI (kept in the database to prevent rescanning).</p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            {(!settings.hidden_people || settings.hidden_people.length === 0) && (
+              <span style={{ color: '#64748b', fontSize: '13px' }}>No hidden people.</span>
+            )}
+            {(settings.hidden_people || []).map(id => {
+               const p = Array.isArray(people) ? people.find(x => x.id === id) : null;
+               const name = p ? p.name : `Person #${id}`;
+               return (
+                 <div key={id} style={{ background: '#0f172a', border: '1px solid #334155', padding: '6px 12px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#cbd5e1' }}>
+                   {name}
+                   <ActionButton className="btn btn-secondary" style={{ padding: '2px 6px', background: 'transparent', border: 'none', color: '#ef4444' }} onClick={() => {
+                     const next = (settings.hidden_people || []).filter(x => x !== id);
+                     updateUIPreferences({ hidden_people: next });
+                   }}>Unhide</ActionButton>
+                 </div>
+               )
+            })}
+          </div>
         </div>
       </>
     )}

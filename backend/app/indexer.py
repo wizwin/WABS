@@ -195,24 +195,43 @@ def extract_metadata_for_file(path, category):
                         metadata["loc"] = sum(1 for _ in f)
             except Exception:
                 pass
-        elif category == "video" and cv2 is not None:
-            try:
-                cap = cv2.VideoCapture(str(path))
-                if cap.isOpened():
-                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    fps = cap.get(cv2.CAP_PROP_FPS)
-                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        elif category == "video":
+            if cv2 is not None:
+                try:
+                    cap = cv2.VideoCapture(str(path))
+                    if cap.isOpened():
+                        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        fps = cap.get(cv2.CAP_PROP_FPS)
+                        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        
+                        if width > 0 and height > 0:
+                            metadata["resolution"] = f"{width}x{height}"
+                        if fps > 0:
+                            metadata["fps"] = round(fps, 2)
+                            if frame_count > 0:
+                                metadata["duration_seconds"] = round(frame_count / fps, 2)
+                        cap.release()
+                except Exception:
+                    pass
                     
-                    if width > 0 and height > 0:
-                        metadata["resolution"] = f"{width}x{height}"
-                    if fps > 0:
-                        metadata["fps"] = round(fps, 2)
-                        if frame_count > 0:
-                            metadata["duration_seconds"] = round(frame_count / fps, 2)
-                    cap.release()
-            except Exception:
-                pass
+            if mutagen is not None:
+                try:
+                    vid = mutagen.File(str(path))
+                    if vid is not None and hasattr(vid, 'tags') and vid.tags:
+                        for key, value in vid.tags.items():
+                            if not value:
+                                continue
+                            val_str = str(value[0]) if isinstance(value, list) else str(value)
+                            # QuickTime/MP4 usually use ©day, MKV uses DATE
+                            if key.lower() in ['date', 'creation_time', '\xa9day', 'year']:
+                                metadata['date'] = val_str
+                                # Extract just the year for search tagging (e.g. "2023")
+                                if len(val_str) >= 4 and val_str[:4].isdigit():
+                                    tags.append(f"date:{val_str[:4]}")
+                                break
+                except Exception:
+                    pass
         elif category == "audio" and mutagen is not None:
             try:
                 audio = mutagen.File(str(path))
@@ -365,11 +384,17 @@ def background_lazy_hasher():
             ).all()
             files.extend(chunk_files)
         
+        STATE["hasher_total"] = len(files)
+        STATE["hasher_current"] = 0
+        STATE["hasher_current_file"] = ""
+
         updates = 0
         mappings = []
         for item_id, path, metadata_json in files:
             if STATE.get("hasher_stopped") or STATE.get("stopped"):
                 break
+            STATE["hasher_current"] += 1
+            STATE["hasher_current_file"] = Path(path).name
             try:
                 meta = json.loads(metadata_json or "{}")
                 file_path = Path(path)
@@ -396,6 +421,7 @@ def background_lazy_hasher():
         print(f"Lazy hasher error: {e}")
     finally:
         STATE["hasher_running"] = False
+        STATE["hasher_current_file"] = ""
         session.close()
 
 def run():
@@ -459,30 +485,63 @@ def run():
         with SessionLocal() as session:
             STATE["status"] = "Discovering files..."
             
+            global_excluded_str = cfg.get("global_excluded_paths", "")
+            global_excluded_list = [p.strip() for p in global_excluded_str.split(",") if p.strip()]
+            
             # Fast traversal using os.walk and pure strings to avoid Path object overhead
             raw_files = []
             for root_path in valid_roots:
-                for dirpath, _, filenames in os.walk(str(root_path)):
+                matching_config = next((c for c in backup_configs if c.get("backup_path") and Path(c["backup_path"]) == root_path), {})
+                excluded_str = matching_config.get("excluded_paths", "")
+                backup_excluded_list = [p.strip() for p in excluded_str.split(",") if p.strip()]
+                combined_excluded_list = list(set(global_excluded_list + backup_excluded_list))
+
+                for dirpath, dirnames, filenames in os.walk(str(root_path)):
+                    if combined_excluded_list:
+                        dirnames[:] = [d for d in dirnames if d not in combined_excluded_list]
                     for f in filenames:
                         raw_files.append(os.path.join(dirpath, f))
             
             raw_files.sort()
 
+            old_total = STATE.get("total", 0)
             STATE["total"] = len(raw_files)
             STATE["status"] = "Indexing"
 
             start_offset = 0
             is_update_only = STATE.get("update_only")
+            
+            # Pre-fetch existing paths to avoid querying the database for every new file
+            existing_paths_set = {r[0] for r in session.query(FileIndex.path).all()}
+            
             if is_update_only:
-                existing_paths = {r[0] for r in session.query(FileIndex.path).all()}
-                files_to_process = [f for f in raw_files if f not in existing_paths]
+                
+                # --- Sync & Cleanup: Remove files that were excluded or deleted from disk ---
+                valid_roots_prefixes = [str(r) + os.sep if not str(r).endswith(os.sep) else str(r) for r in valid_roots]
+                raw_files_set = set(raw_files)
+                paths_to_delete = []
+                
+                for ep in existing_paths_set:
+                    # Only consider database paths that belong to currently connected/active drives
+                    if any(ep.startswith(prefix) for prefix in valid_roots_prefixes):
+                        if ep not in raw_files_set:
+                            paths_to_delete.append(ep)
+                            
+                if paths_to_delete:
+                    STATE["status"] = f"Removing {len(paths_to_delete)} missing/excluded files..."
+                    for i in range(0, len(paths_to_delete), 500):
+                        chunk = paths_to_delete[i:i+500]
+                        session.query(FileIndex).filter(FileIndex.path.in_(chunk)).delete(synchronize_session=False)
+                    session.commit()
+
+                files_to_process = [f for f in raw_files if f not in existing_paths_set]
                 
                 processed_count = len(raw_files) - len(files_to_process)
                 STATE["indexed"] = processed_count
                 STATE["total"] = len(raw_files)
                 STATE["current"] = processed_count
                 start_offset = processed_count
-            elif resume_index > 0 and resume_index < len(raw_files):
+            elif resume_index > 0 and resume_index < len(raw_files) and old_total == len(raw_files):
                 start_offset = resume_index
                 files_to_process = raw_files[start_offset:]
                 STATE["total"] = len(raw_files)
@@ -544,7 +603,7 @@ def run():
                         tags = ",".join(set(tags.split(",") + extra_tags))
 
                     exists = None
-                    if not is_update_only:
+                    if not is_update_only and str(file) in existing_paths_set:
                         exists = session.query(FileIndex).filter_by(
                             path=str(file)
                         ).first()
