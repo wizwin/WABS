@@ -61,7 +61,7 @@ axios.interceptors.response.use(
   }
 );
 
-const SettingsContext = createContext({ animationsEnabled: true });
+const SettingsContext = createContext({ animationsEnabled: true, theme: 'dark' });
 
 function StatCard({ title, value, icon, color, onClick }) {
   const [isHovered, setIsHovered] = useState(false);
@@ -80,15 +80,25 @@ function StatCard({ title, value, icon, color, onClick }) {
   )
 }
 
-function ActionButton({ disabled, onClick, children, className = "btn btn-secondary", style = {} }) {
+function ActionButton({ disabled, onClick, children, className = "btn btn-secondary", style = {}, title, ...rest }) {
   const [isHovered, setIsHovered] = useState(false);
   const [isActive, setIsActive] = useState(false);
   const { animationsEnabled } = useContext(SettingsContext);
+  
+  const isColorful = className.includes('btn-primary') || 
+                     style.background === '#ef4444' || 
+                     style.background === '#ef44442a' || 
+                     style.background === '#3b82f6';
+                     
+  const finalClassName = `${className} ${isColorful ? 'preserve-colors' : ''}`.trim();
+
   return (
     <button 
-      className={className} 
+      className={finalClassName} 
       disabled={disabled} 
       onClick={onClick}
+      title={title}
+      {...rest}
       onMouseEnter={() => setIsHovered(true)} 
       onMouseLeave={() => { setIsHovered(false); setIsActive(false); }}
       onMouseDown={() => setIsActive(true)}
@@ -173,26 +183,21 @@ function parseFileDate(file) {
 }
 
 function PersonThumb({ url, size = 60 }) {
-  const [shouldLoad, setShouldLoad] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
   const imgRef = useRef(null);
   
   useEffect(() => {
-    if (!url) return;
-    setShouldLoad(false);
     setIsLoaded(false);
     setHasError(false);
-    const timer = setTimeout(() => setShouldLoad(true), 250); // 250ms debounce
-    return () => clearTimeout(timer);
   }, [url]);
 
   // Fix for React cached image bug (onLoad missing on browser-cached images)
   useEffect(() => {
-    if (shouldLoad && imgRef.current && imgRef.current.complete) {
+    if (imgRef.current && imgRef.current.complete) {
       setIsLoaded(true);
     }
-  }, [shouldLoad]);
+  }, [url]);
 
   if (!url) {
     return <FaceIcon style={{fontSize: size, color:'#94a3b8'}} />;
@@ -203,10 +208,11 @@ function PersonThumb({ url, size = 60 }) {
       {(!isLoaded || hasError) && (
         <FaceIcon style={{fontSize: size, color:'#94a3b8', position: 'absolute'}} />
       )}
-      {shouldLoad && !hasError && (
+      {!hasError && (
         <img 
           ref={imgRef}
           src={url} 
+          loading="lazy"
           style={{width: '100%', height: '100%', objectFit: 'cover', opacity: isLoaded ? 1 : 0, transition: 'opacity 0.2s ease', position: 'relative', zIndex: 1}} 
           onLoad={() => setIsLoaded(true)}
           onError={() => setHasError(true)} 
@@ -409,9 +415,11 @@ const [unknownPeoplePage, setUnknownPeoplePage] = useState(1);
 const [namedPeoplePage, setNamedPeoplePage] = useState(1);
 const [namedPersonSearchQuery, setNamedPersonSearchQuery] = useState('');
 const [similarUnknowns, setSimilarUnknowns] = useState(null);
+const [similarUnknownsPage, setSimilarUnknownsPage] = useState(1);
 const [isFindingSimilar, setIsFindingSimilar] = useState(false);
 const [checkedSimilar, setCheckedSimilar] = useState(new Set());
-const [similarityThreshold, setSimilarityThreshold] = useState(0.60);
+const [similarityThreshold, setSimilarityThreshold] = useState(0.55);
+const [purgeThreshold, setPurgeThreshold] = useState(3);
 const [showSimilarPanel, setShowSimilarPanel] = useState(false);
 const [settingsTab, setSettingsTab] = useState('general');
 const findSimilarAbortController = useRef(null);
@@ -912,7 +920,11 @@ async function openPersonPhotos(person) {
     setHasMore(r.data.length === 50);
     setPage('person_files');
     setSimilarUnknowns(null); // Clear previous similar faces results when opening a new person
+    setSimilarUnknownsPage(1);
     setShowSimilarPanel(false);
+    setIsTaggingPerson(false);
+    setSelected(null);
+    setCheckedFiles(new Set());
   } catch (err) {
     console.warn('Failed to load person photos', err);
   }
@@ -931,6 +943,7 @@ async function findSimilarUnknowns(personId, threshold = similarityThreshold) {
     });
     setSimilarUnknowns(r.data);
     setCheckedSimilar(new Set());
+    setSimilarUnknownsPage(1);
     setIsFindingSimilar(false);
   } catch(err) {
     if (!axios.isCancel(err)) {
@@ -1002,6 +1015,27 @@ async function setPersonThumbnail(personId, fileId) {
   }
 }
 
+async function autoSuggestThumbnail(personId) {
+  if (indexer.face_scanner_running) {
+    alert("Please stop the Face Scanner before modifying profiles.");
+    return;
+  }
+  try {
+    showToastMessage('Analyzing photos for best cover...');
+    const res = await axios.post(`${API}/people/${personId}/suggest-thumbnail`);
+    if (res.data && res.data.success) {
+      showToastMessage('Cover photo automatically updated!');
+      setThumbUpdateTimestamps(prev => ({ ...prev, [personId]: Date.now() }));
+      loadPeople();
+      if (selected && selected.is_person && selected.id === personId) {
+         setSelected(prev => ({...prev, thumbnail: `/people/${personId}/thumbnail?v=${res.data.new_thumbnail_id}`}));
+      }
+    }
+  } catch(err) {
+    alert('Error suggesting thumbnail: ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
 async function removePersonPhotosBulk(personId, fileIds) {
   if (indexer.face_scanner_running) {
     alert("Please stop the Face Scanner before modifying profiles to prevent database conflicts.");
@@ -1038,6 +1072,33 @@ async function assignPhotosToPerson(personId, filePaths) {
     else if (page === 'search') doSearch(query, filterCategory);
   } catch(err) {
     alert('Error tagging photo(s): ' + (err?.response?.data?.detail || err.message));
+  }
+}
+
+async function movePhotosToPerson(targetPersonId, filePaths) {
+  if (indexer.face_scanner_running) {
+    alert("Please stop the Face Scanner before modifying profiles to prevent database conflicts.");
+    return;
+  }
+  if (!targetPersonId) return;
+  const fileIds = filePaths.map(p => globalFileCache.current.get(p)?.id).filter(id => id);
+  if (fileIds.length === 0) return;
+  
+  setActionInProgress(true);
+  try {
+    for (const id of fileIds) {
+      await axios.post(`${API}/people/${targetPersonId}/add-photo`, { file_id: id });
+      await axios.post(`${API}/people/${currentPerson?.id}/remove-photo`, { file_id: id });
+    }
+    showToastMessage(`Successfully moved ${fileIds.length} photo(s).`);
+    setIsTaggingPerson(false);
+    setCheckedFiles(new Set());
+    setPersonFiles(prev => prev.filter(f => !fileIds.includes(f.id)));
+    loadPeople();
+  } catch(err) {
+    alert('Error moving photo(s): ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
   }
 }
 
@@ -1495,6 +1556,29 @@ async function cleanupDatabase() {
     }
   } catch (err) {
     alert('Error running cleanup: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
+    setDataOpProgress(null);
+  }
+}
+
+async function purgeSmallUnknowns() {
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks (Indexing, Face/Object Scanning, Hash Verification) before running the purge routine.");
+    return;
+  }
+  if (!window.confirm(`Are you sure you want to permanently delete all Unknown Person profiles that have fewer than ${purgeThreshold} photos? This will also trigger a database cleanup and cannot be undone.`)) return;
+  
+  setActionInProgress(true);
+  setDataOpProgress({ id: 'purge' });
+  try {
+    showToastMessage(`Purging unknown profiles with < ${purgeThreshold} photos...`);
+    const r = await axios.post(`${API}/system/purge-unknowns`, { threshold: purgeThreshold });
+    showToastMessage(`Purged ${r.data.purged_profiles} small unknown profiles successfully.`);
+    await loadDashboard(); // Refresh dashboard stats
+    if (page === 'people') await loadPeople();
+  } catch (err) {
+    alert('Error purging profiles: ' + (err?.response?.data?.detail || err.message));
   } finally {
     setActionInProgress(false);
     setDataOpProgress(null);
@@ -2048,25 +2132,28 @@ function getOfflinePlaceholder(text, bgColor, textColor) {
 }
 
 function renderThumb(item){
+ const currentTheme = settings?.theme || 'dark';
  if(item.thumbnail){
-   return item.thumbnail.startsWith('http') ? item.thumbnail : `${API}${item.thumbnail}`
+   let url = item.thumbnail.startsWith('http') ? item.thumbnail : `${API}${item.thumbnail}`
+   url += (url.includes('?') ? '&' : '?') + `theme=${currentTheme}`
+   return url
  }
 
  const label = item.filename ? String(item.filename).slice(0, 15) : 'Unknown';
 
  if(item.category==='photo'){
-   return getOfflinePlaceholder('PHOTO', '#1e293b', '#94a3b8');
+   return getOfflinePlaceholder('PHOTO', currentTheme === 'light' ? '#f1f5f9' : '#1e293b', currentTheme === 'light' ? '#64748b' : '#94a3b8');
  }
 
  if(item.category==='video'){
-   return getOfflinePlaceholder(label, '#111827', '#ffffff');
+   return getOfflinePlaceholder(label, currentTheme === 'light' ? '#e2e8f0' : '#111827', currentTheme === 'light' ? '#334155' : '#ffffff');
  }
 
  if(item.category==='document'){
-   return getOfflinePlaceholder(label, '#172033', '#ffffff');
+   return getOfflinePlaceholder(label, currentTheme === 'light' ? '#f8fafc' : '#172033', currentTheme === 'light' ? '#0f172a' : '#ffffff');
  }
 
- return getOfflinePlaceholder(label, '#1e293b', '#cbd5e1');
+ return getOfflinePlaceholder(label, currentTheme === 'light' ? '#f1f5f9' : '#1e293b', currentTheme === 'light' ? '#0f172a' : '#cbd5e1');
 }
 
 function renderMetadata(meta){
@@ -2115,8 +2202,10 @@ function renderValue(value){
 const getPersonThumbUrl = (p) => {
   if (!p.thumbnail) return '';
   let url = p.thumbnail.startsWith('http') ? p.thumbnail : `${API}${p.thumbnail}`;
+  const currentTheme = settings?.theme || 'dark';
+  url += (url.includes('?') ? '&' : '?') + `theme=${currentTheme}`;
   if (thumbUpdateTimestamps[p.id]) {
-    url += (url.includes('?') ? '&' : '?') + `cb=${thumbUpdateTimestamps[p.id]}`;
+    url += `&cb=${thumbUpdateTimestamps[p.id]}`;
   }
   return url;
 };
@@ -2125,9 +2214,213 @@ const filteredTags = useMemo(() => {
   return objectTags.filter(t => t.toLowerCase().includes(tagSearchQuery.toLowerCase()));
 }, [objectTags, tagSearchQuery]);
 
+const sortedSimilarUnknowns = useMemo(() => {
+  if (!similarUnknowns) return null;
+  
+  // Extract path directories and dates from current person's photos to find overlaps
+  const currentExactPaths = new Set();
+  const currentPaths = new Set();
+  const currentDates = new Set();
+  personFiles.forEach(f => {
+    if (f.path) {
+      currentExactPaths.add(f.path.toLowerCase());
+      const dir = f.path.substring(0, Math.max(f.path.lastIndexOf('/'), f.path.lastIndexOf('\\')));
+      if (dir) currentPaths.add(dir.toLowerCase());
+    }
+    const d = parseFileDate(f);
+    if (d) {
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      currentDates.add(`${d.getFullYear()}-${month}-${day}`);
+    }
+  });
+
+  const enriched = similarUnknowns.map(p => {
+    let overlap = 0;
+    let inSamePhoto = false;
+
+    if (p.sample_paths) {
+      const pPaths = String(p.sample_paths).split('|');
+      
+      // If they appear in the exact same photo, they are almost certainly a different person (e.g. a friend in a group photo)
+      if (pPaths.some(path => currentExactPaths.has(path.toLowerCase()))) {
+        inSamePhoto = true;
+      }
+
+      if (pPaths.some(path => { const dir = path.substring(0, Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))); return dir && currentPaths.has(dir.toLowerCase()); })) {
+        overlap += 2;
+      }
+    }
+    if (p.sample_dates) {
+      const pDates = String(p.sample_dates).split('|');
+      if (pDates.some(d => {
+        const parsed = new Date(d.replace(' ', 'T')); // Robust cross-browser parsing for Safari/Firefox
+        if (isNaN(parsed)) return false;
+        const month = String(parsed.getMonth() + 1).padStart(2, '0');
+        const day = String(parsed.getDate()).padStart(2, '0');
+        return currentDates.has(`${parsed.getFullYear()}-${month}-${day}`);
+      })) overlap += 1;
+    }
+    
+    if (inSamePhoto) {
+      overlap = -1; // Penalize group photos so they drop below true positive matches
+    }
+
+    return { ...p, context_score: overlap, inSamePhoto };
+  });
+
+  return enriched.sort((a, b) => {
+    const simA = Math.round((a.similarity || 0) * 100);
+    const simB = Math.round((b.similarity || 0) * 100);
+    if (simB !== simA) return simB - simA;
+    
+    if (a.inSamePhoto && !b.inSamePhoto) return 1;
+    if (!a.inSamePhoto && b.inSamePhoto) return -1;
+    
+    if ((b.face_count || 0) !== (a.face_count || 0)) return (b.face_count || 0) - (a.face_count || 0);
+    return (b.context_score || 0) - (a.context_score || 0);
+  });
+}, [similarUnknowns, personFiles]);
+
+const visibleSimilar = useMemo(() => {
+  if (!sortedSimilarUnknowns) return [];
+  return sortedSimilarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id));
+}, [sortedSimilarUnknowns, settings.hidden_people]);
+
 return(
-<SettingsContext.Provider value={{ animationsEnabled: (settings.animations_enabled ?? settings.ui_preferences?.animations_enabled) !== false }}>
-<div className='layout'>
+<SettingsContext.Provider value={{ animationsEnabled: (settings.animations_enabled ?? settings.ui_preferences?.animations_enabled) !== false, theme: settings.theme || 'dark' }}>
+<div className='layout' data-theme={settings.theme || 'dark'}>
+<style>
+  {`
+    /* MASTER LIGHT THEME FILTER (100% Invert perfectly mirrors Dark colors to clean Light colors) */
+    [data-theme="light"] {
+      filter: invert(1) hue-rotate(180deg);
+      background-color: #000000; /* Base inverts to pure white #ffffff */
+      min-height: 100vh;
+    }
+    
+    /* CORE LAYOUT BACKGROUNDS */
+    [data-theme="light"] .workspace {
+      background-color: #04060a !important; /* Inverts to soft cool white #f9fbfb */
+    }
+    [data-theme="light"] .sidebar, 
+    [data-theme="light"] .details {
+      background-color: #000000 !important; /* Inverts to #ffffff */
+      border-color: #111827 !important; /* Inverts to light gray border */
+    }
+
+    /* CARDS & LIST ITEMS */
+    [data-theme="light"] .card, 
+    [data-theme="light"] .list-item, 
+    [data-theme="light"] .timeline-item {
+      background-color: #000000; /* Let inline blue processing backgrounds win naturally */
+      border-color: #111827 !important;
+    }
+    [data-theme="light"] .card:hover, 
+    [data-theme="light"] .list-item:hover, 
+    [data-theme="light"] .timeline-item:hover {
+      background-color: #060910; /* Soft gray hover */
+    }
+
+    /* INPUTS & TEXT AREAS */
+    [data-theme="light"] input[type="text"],
+    [data-theme="light"] input[type="password"],
+    [data-theme="light"] input[type="number"],
+    [data-theme="light"] .search,
+    [data-theme="light"] .setting {
+      background-color: #000000 !important;
+      border: 1px solid #1a202c !important; /* Crisp border */
+      color: #d1d5db !important; /* Dark text */
+    }
+    [data-theme="light"] input::placeholder {
+      color: #4b5563 !important; /* Light placeholder */
+    }
+
+    /* BUTTONS */
+    [data-theme="light"] .btn-secondary:not(.preserve-colors) {
+      background-color: #000000; /* White button */
+      border: 1px solid #111827;
+      color: #d1d5db; /* Dark text */
+    }
+    [data-theme="light"] .btn-secondary:not(.preserve-colors):hover {
+      background-color: #0a0d14; /* Light gray hover */
+    }
+
+    /* MEDIA PRESERVATION */
+    [data-theme="light"] img,
+    [data-theme="light"] video,
+    [data-theme="light"] canvas {
+      filter: invert(1) hue-rotate(180deg) contrast(1.05) brightness(1.02);
+    }
+
+    /* SHADOWS & FLOATING PANELS */
+    [data-theme="light"] * {
+      box-shadow: none !important;
+    }
+    [data-theme="light"] .floating-panel {
+      background-color: #000000 !important;
+      border: 1px solid #111827 !important;
+      box-shadow: 0 10px 25px -5px rgba(255, 255, 255, 0.15) !important; /* Inverts to dark shadow */
+    }
+
+    /* NATIVE CONTROLS */
+    [data-theme="light"] input[type="radio"],
+    [data-theme="light"] input[type="checkbox"],
+    [data-theme="light"] input[type="range"] {
+      filter: invert(1) hue-rotate(180deg);
+      accent-color: #3b82f6;
+    }
+    [data-theme="light"] select {
+      filter: invert(1) hue-rotate(180deg);
+      color-scheme: light;
+      background-color: #ffffff !important;
+      color: #0f172a !important;
+      border: 1px solid #cbd5e1 !important;
+    }
+    [data-theme="light"] select option {
+      background-color: #ffffff !important;
+      color: #0f172a !important;
+    }
+
+    /* ICONS & COLORFUL BUTTONS */
+    [data-theme="light"] svg {
+      filter: invert(1) hue-rotate(180deg);
+    }
+    [data-theme="light"] .preserve-colors {
+      filter: invert(1) hue-rotate(180deg);
+      box-shadow: 0 4px 6px -1px rgba(255,255,255,0.1) !important; /* Restores button depth */
+    }
+    [data-theme="light"] .preserve-colors svg {
+      filter: none !important;
+    }
+    [data-theme="light"] button:not(.preserve-colors) svg:not([style*="color"]),
+    [data-theme="light"] .overlay svg {
+      filter: none;
+    }
+
+    /* SCROLLBARS */
+    [data-theme="light"] ::-webkit-scrollbar {
+      width: 14px;
+      height: 14px;
+    }
+    [data-theme="light"] ::-webkit-scrollbar-track {
+      background: #000000;
+    }
+    [data-theme="light"] ::-webkit-scrollbar-thumb {
+      background: #111827;
+      border-radius: 8px;
+      border: 4px solid #000000;
+    }
+    [data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+      background: #1e293b;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  `}
+</style>
 {isShutdown ? (
   <div style={{
     position: 'fixed',
@@ -2168,6 +2461,7 @@ return(
     <h1 style={{ marginTop: '24px', fontSize: '32px' }}>Shutting Down...</h1>
     <p style={{ color: '#94a3b8', fontSize: '18px', marginTop: '8px' }}>Saving database and stopping background tasks. Please wait.</p>
     <button 
+      className="preserve-colors"
       onClick={handleForceShutdown}
       style={{
         marginTop: '32px',
@@ -2182,14 +2476,6 @@ return(
       }}>
       Force Shutdown
     </button>
-    <style>
-      {`
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-      `}
-    </style>
   </div>
 ) : (
 <>
@@ -2201,7 +2487,7 @@ return(
       <AppIcon size={40} />
       <div>
         <h2 style={{ margin: 0, fontSize: '20px', color: '#f8fafc' }}>WABS</h2>
-        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta.5</div>
+        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta.6</div>
       </div>
     </div>
 
@@ -2298,7 +2584,7 @@ return(
     style={{ flex: 1, margin: 0, paddingRight: '70px' }}
   />
   {suggestionsData.type !== 'none' && suggestionsData.suggestions.length > 0 && (
-    <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: '70px', background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', padding: '12px', zIndex: 90, boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)' }}>
+    <div className="floating-panel" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: '70px', background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', padding: '12px', zIndex: 90, boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)' }}>
       {suggestionsData.type === 'did_you_mean' && (
         <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '8px' }}>Did you mean:</div>
       )}
@@ -2341,7 +2627,7 @@ return(
     </ActionButton>
   </div>
   {showSearchHelp && (
-    <div style={{ position: 'absolute', top: 'calc(100% + 8px)', right: '0', background: '#1e293b', border: '1px solid #334155', padding: '16px', zIndex: 100, borderRadius: '12px', width: '320px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)', color: '#cbd5e1', fontSize: '13px' }}>
+    <div className="floating-panel" style={{ position: 'absolute', top: 'calc(100% + 8px)', right: '0', background: '#1e293b', border: '1px solid #334155', padding: '16px', zIndex: 100, borderRadius: '12px', width: '320px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)', color: '#cbd5e1', fontSize: '13px' }}>
       <h4 style={{ margin: '0 0 10px 0', color: '#f8fafc', fontSize: '14px' }}>Search Patterns Supported</h4>
       <ul style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
         <li><b>type:</b>audio <i>(or video, document)</i></li>
@@ -2796,7 +3082,7 @@ page==='people' &&
 )}
 
 {checkedPeople.size > 0 && (
-  <div style={{ position: 'sticky', bottom: '20px', zIndex: 50, padding: '10px 18px', background: '#1e293b', border: '1px solid #334155', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginTop: '16px', borderRadius: '12px', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)' }}>
+  <div className="floating-panel" style={{ position: 'sticky', bottom: '20px', zIndex: 50, padding: '10px 18px', background: '#1e293b', border: '1px solid #334155', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginTop: '16px', borderRadius: '12px', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)' }}>
     <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedPeople.size} person(s) selected</span>
     {checkedPeople.size > 1 && (
       <ActionButton disabled={indexer.face_scanner_running} className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={mergeSelectedPeople} title={indexer.face_scanner_running ? "Stop the scanner to merge profiles" : ""}>Merge Selected</ActionButton>
@@ -3053,6 +3339,7 @@ page==='person_files' &&
     <ActionButton className="btn btn-secondary" onClick={() => { 
       setPage('people'); 
       setCheckedFiles(new Set()); 
+      setSelected(null);
       setSimilarUnknowns(null); 
       loadPeople(); 
       setTimeout(() => {
@@ -3063,40 +3350,51 @@ page==='person_files' &&
       }, 100);
     }}>&larr; Back to People</ActionButton>
     <h2 style={{margin: 0}}>{currentPerson?.name}'s Photos</h2>
-    {!currentPerson?.name?.startsWith('Unknown Person') && (
-        isFindingSimilar ? (
-            <ActionButton 
-                className="btn btn-secondary" 
-                style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px', color: '#ef4444', borderColor: '#b91c1c' }}
-                onClick={stopFindSimilarUnknowns}
-            >
-                <CloseIcon fontSize="small" /> Stop Searching
-            </ActionButton>
-        ) : (
-            showSimilarPanel || similarUnknowns ? (
-            <ActionButton 
-                className="btn btn-secondary" 
-                style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px', color: '#ef4444', borderColor: '#b91c1c' }}
-                onClick={() => {
-                  setShowSimilarPanel(false);
-                  setSimilarUnknowns(null);
-                  setCheckedSimilar(new Set());
-                  if (selected?.is_person) setSelected(null);
-                }}
-            >
-                <CloseIcon fontSize="small" /> Close Panel
-            </ActionButton>
+    <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <ActionButton 
+            className="btn btn-secondary" 
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#10b981', borderColor: '#059669' }}
+            onClick={() => autoSuggestThumbnail(currentPerson.id)}
+            title="Automatically analyze photos to pick the clearest and largest face for the cover."
+        >
+            <ImageIcon fontSize="small" /> Auto-Pick Cover
+        </ActionButton>
+        {!currentPerson?.name?.startsWith('Unknown Person') && (
+            isFindingSimilar ? (
+                <ActionButton 
+                    className="btn btn-secondary" 
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#ef4444', borderColor: '#b91c1c' }}
+                    onClick={stopFindSimilarUnknowns}
+                >
+                    <CloseIcon fontSize="small" /> Stop Searching
+                </ActionButton>
             ) : (
-            <ActionButton 
-                className="btn btn-secondary" 
-                style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px', color: '#38bdf8', borderColor: '#3b82f6' }}
-                onClick={() => setShowSimilarPanel(true)}
-            >
-                <FaceIcon fontSize="small" /> Find Similar Unknowns
-            </ActionButton>
+                showSimilarPanel || similarUnknowns ? (
+                <ActionButton 
+                    className="btn btn-secondary" 
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#ef4444', borderColor: '#b91c1c' }}
+                    onClick={() => {
+                      setShowSimilarPanel(false);
+                      setSimilarUnknowns(null);
+                      setSimilarUnknownsPage(1);
+                      setCheckedSimilar(new Set());
+                      if (selected?.is_person) setSelected(null);
+                    }}
+                >
+                    <CloseIcon fontSize="small" /> Close Panel
+                </ActionButton>
+                ) : (
+                <ActionButton 
+                    className="btn btn-secondary" 
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#38bdf8', borderColor: '#3b82f6' }}
+                    onClick={() => setShowSimilarPanel(true)}
+                >
+                    <FaceIcon fontSize="small" /> Find Similar Unknowns
+                </ActionButton>
+                )
             )
-        )
-    )}
+        )}
+    </div>
 </div>
 
 {(showSimilarPanel || similarUnknowns) && (
@@ -3109,7 +3407,7 @@ page==='person_files' &&
         <span style={{ color: '#94a3b8', fontSize: '14px' }}>Similarity Threshold:</span>
         <input 
           type="range" 
-          min="0.4" max="0.8" step="0.01" 
+          min="0.35" max="0.85" step="0.01" 
               disabled={isFindingSimilar}
           value={similarityThreshold} 
           onChange={(e) => setSimilarityThreshold(parseFloat(e.target.value))} 
@@ -3118,22 +3416,31 @@ page==='person_files' &&
         <ActionButton disabled={isFindingSimilar} className="btn btn-primary" style={{ padding: '4px 10px' }} onClick={() => findSimilarUnknowns(currentPerson.id, similarityThreshold)}>
           {similarUnknowns ? 'Update Search' : 'Start Search'}
         </ActionButton>
-        <ActionButton className="btn btn-secondary" style={{ padding: '4px 10px' }} onClick={() => { setSimilarUnknowns(null); setShowSimilarPanel(false); setCheckedSimilar(new Set()); if (selected?.is_person) setSelected(null); }}>Close</ActionButton>
+        <ActionButton className="btn btn-secondary" style={{ padding: '4px 10px' }} onClick={() => { setSimilarUnknowns(null); setSimilarUnknownsPage(1); setShowSimilarPanel(false); setCheckedSimilar(new Set()); if (selected?.is_person) setSelected(null); }}>Close</ActionButton>
       </div>
     </div>
     
     {isFindingSimilar ? (
       <div style={{ padding: '20px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', color: '#38bdf8' }}>
-        <HourglassEmptyIcon style={{ fontSize: '32px', marginBottom: '8px' }} />
+        <HourglassEmptyIcon style={{ fontSize: '32px', marginBottom: '8px', animation: 'spin 2s linear infinite' }} />
         <p style={{ margin: 0 }}>Searching for similar unknown profiles...</p>
       </div>
     ) : similarUnknowns ? (
-      similarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id)).length === 0 ? (
+      visibleSimilar.length === 0 ? (
       <p style={{ color: '#94a3b8' }}>No similar unknown profiles found at this threshold. Try lowering the slider.</p>
     ) : (
       <>
+        {visibleSimilar.length > 500 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+            <span style={{ color: '#94a3b8', fontSize: '13px' }}>Page {similarUnknownsPage} of {Math.ceil(visibleSimilar.length / 500)} ({visibleSimilar.length} total)</span>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <ActionButton disabled={similarUnknownsPage === 1} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setSimilarUnknownsPage(prev => Math.max(1, prev - 1))}>Previous</ActionButton>
+              <ActionButton disabled={similarUnknownsPage >= Math.ceil(visibleSimilar.length / 500)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setSimilarUnknownsPage(prev => prev + 1)}>Next</ActionButton>
+            </div>
+          </div>
+        )}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '16px', marginBottom: '16px', maxHeight: '300px', overflowY: 'auto', paddingRight: '8px' }}>
-          {similarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id)).map(p => (
+          {visibleSimilar.slice((similarUnknownsPage - 1) * 500, similarUnknownsPage * 500).map(p => (
              <div key={p.id} style={{background:'#111827', padding:'10px', borderRadius:'12px', border: checkedSimilar.has(p.id) ? '2px solid #3b82f6' : '1px solid #24324a', cursor:'pointer', position: 'relative'}} onClick={() => {
                 const next = new Set(checkedSimilar);
                 if (next.has(p.id)) next.delete(p.id);
@@ -3153,6 +3460,8 @@ page==='person_files' &&
                <div style={{ fontSize: '13px', color: '#f8fafc', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.name}>{p.name}</div>
                <div style={{ fontSize: '12px', color: '#38bdf8' }}>{Math.round(p.similarity * 100)}% Match</div>
                <div style={{ fontSize: '12px', color: '#94a3b8' }}>{p.face_count} photo{p.face_count !== 1 ? 's' : ''}</div>
+               {p.context_score > 0 && !p.inSamePhoto && <div style={{ fontSize: '11px', color: '#10b981', fontWeight: 'bold', marginTop: '2px' }}>★ Context Match</div>}
+               {p.inSamePhoto && <div style={{ fontSize: '11px', color: '#ef4444', fontWeight: 'bold', marginTop: '2px' }} title="This person appears in the exact same photo as the named person. They are likely a different person.">⚠️ Group Photo</div>}
              </div>
           ))}
         </div>
@@ -3167,6 +3476,7 @@ page==='person_files' &&
                 await axios.post(`${API}/people/merge`, { person_ids: [currentPerson.id, ...Array.from(checkedSimilar)] });
                 showToastMessage(`Merged ${checkedSimilar.size} profiles successfully.`);
                 setSimilarUnknowns(null);
+                setSimilarUnknownsPage(1);
                   setShowSimilarPanel(false);
                 setCheckedSimilar(new Set());
                 if (selected?.is_person) setSelected(null);
@@ -3183,7 +3493,7 @@ page==='person_files' &&
               if (checkedSimilar.size === visibleSimilar.length && visibleSimilar.length > 0) setCheckedSimilar(new Set());
               else setCheckedSimilar(new Set(visibleSimilar.map(p => p.id)));
            }}>
-              {checkedSimilar.size === similarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id)).length && similarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id)).length > 0 ? 'Deselect All' : 'Select All'}
+              {checkedSimilar.size === visibleSimilar.length && visibleSimilar.length > 0 ? 'Deselect All' : 'Select All'}
            </ActionButton>
         </div>
       </>
@@ -3207,6 +3517,19 @@ page==='person_files' &&
             <PlaceIcon fontSize="small" /> Locate in Explorer
         </ActionButton>
     )}
+    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
+      <ActionButton disabled={actionInProgress} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingPerson ? '#334155' : undefined, whiteSpace: 'nowrap' }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); loadPeople(); }}>Move to Person</ActionButton>
+      {isTaggingPerson && Array.isArray(people) && (
+        <select 
+          onChange={(e) => movePhotosToPerson(e.target.value, Array.from(checkedFiles))} 
+          style={{ padding: '6px 12px', background: '#1e293b', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none' }}
+          value=""
+        >
+          <option value="" disabled>Select person...</option>
+          {[...people].filter(p => !(settings.hidden_people || []).includes(p.id) && !(p.name || '').startsWith('Unknown Person') && p.id !== currentPerson?.id).sort((a,b) => (a.name || '').localeCompare(b.name || '')).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+      )}
+    </div>
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', whiteSpace: 'nowrap' }} onClick={() => {
          const fileIds = Array.from(checkedFiles).map(path => globalFileCache.current.get(path)?.id).filter(id => id);
          removePersonPhotosBulk(currentPerson.id, fileIds);
@@ -3696,14 +4019,6 @@ page==='settings' &&
 
     {settingsTab === 'data' && (
       <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
-        <style>
-          {`
-            @keyframes spin {
-              0% { transform: rotate(0deg); }
-              100% { transform: rotate(360deg); }
-            }
-          `}
-        </style>
         <h3 style={{ margin: '0 0 16px 0' }}>Data Management</h3>
         <div style={{ display: 'grid', gap: '16px' }}>
           <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
@@ -3722,6 +4037,33 @@ page==='settings' &&
                 <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Cleaning...</>
               ) : 'Run Cleanup'}
             </ActionButton>
+          </div>
+          <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+            <div>
+              <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Purge Small Unknown Profiles</h4>
+              <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Permanently delete unknown people with fewer than the specified number of photos to save space.</p>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span style={{ fontSize: '13px', color: '#94a3b8' }}>Photos &lt;</span>
+              <input 
+                type="number" 
+                min="1" 
+                value={purgeThreshold} 
+                onChange={(e) => setPurgeThreshold(parseInt(e.target.value) || 3)}
+                style={{ width: '60px', padding: '6px 10px', borderRadius: '6px', border: '1px solid #334155', background: '#1e293b', color: '#f8fafc', outline: 'none' }}
+              />
+              <ActionButton 
+                disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} 
+                className="btn btn-secondary" 
+                onClick={purgeSmallUnknowns}
+                title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to purge" : ""}
+                style={{ background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '8px' }}
+              >
+                {dataOpProgress && dataOpProgress.id === 'purge' ? (
+                  <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Purging...</>
+                ) : 'Purge'}
+              </ActionButton>
+            </div>
           </div>
           <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
             <div>
@@ -3744,24 +4086,6 @@ page==='settings' &&
             <div style={{ flex: 1, minWidth: '250px' }}>
               <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Known People (Faces)</h4>
               <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Export or import named people and their face embeddings as a portable JSON file.</p>
-              {dataOpProgress && dataOpProgress.id === 'people' && (
-                <div style={{ marginTop: '12px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                    <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-                      {dataOpProgress.action === 'export' ? 'Exporting...' : 'Importing...'}
-                    </span>
-                    {dataOpProgress.action === 'import' && (
-                      <span 
-                        onClick={() => abortDataOpRef.current = true}
-                        style={{ fontSize: '12px', color: '#ef4444', cursor: 'pointer', textDecoration: 'underline' }}
-                      >
-                        Cancel
-                      </span>
-                    )}
-                  </div>
-                  <ProgressBar current={dataOpProgress.current} total={dataOpProgress.total} color="#10b981" />
-                </div>
-              )}
             </div>
             <div style={{ display: 'flex', gap: '10px' }}>
               <ActionButton 
@@ -3769,16 +4093,28 @@ page==='settings' &&
                 className="btn btn-secondary" 
                 onClick={exportKnownPeople}
                 title={(indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running) ? "Stop scanning tasks to export data" : ""}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
               >
-                Export JSON
+                {dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'export' ? (
+                  <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Exporting...</>
+                ) : 'Export JSON'}
               </ActionButton>
               <ActionButton 
-                disabled={actionInProgress || indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running} 
+                disabled={(actionInProgress && !(dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'import')) || indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running} 
                 className="btn btn-secondary" 
-                onClick={importKnownPeople}
+                onClick={() => {
+                  if (dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'import') {
+                    abortDataOpRef.current = true;
+                  } else {
+                    importKnownPeople();
+                  }
+                }}
                 title={(indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running) ? "Stop scanning tasks to import data" : ""}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
               >
-                Import JSON
+                {dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'import' ? (
+                  <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Cancel Import</>
+                ) : 'Import JSON'}
               </ActionButton>
             </div>
           </div>
@@ -3786,24 +4122,6 @@ page==='settings' &&
             <div style={{ flex: 1, minWidth: '250px' }}>
               <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Object &amp; Custom Tags</h4>
               <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Export or import all applied tags mapped to file paths as a portable JSON file.</p>
-              {dataOpProgress && dataOpProgress.id === 'tags' && (
-                <div style={{ marginTop: '12px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                    <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-                      {dataOpProgress.action === 'export' ? 'Exporting...' : 'Importing...'}
-                    </span>
-                    {dataOpProgress.action === 'import' && (
-                      <span 
-                        onClick={() => abortDataOpRef.current = true}
-                        style={{ fontSize: '12px', color: '#ef4444', cursor: 'pointer', textDecoration: 'underline' }}
-                      >
-                        Cancel
-                      </span>
-                    )}
-                  </div>
-                  <ProgressBar current={dataOpProgress.current} total={dataOpProgress.total} color="#38bdf8" />
-                </div>
-              )}
             </div>
             <div style={{ display: 'flex', gap: '10px' }}>
               <ActionButton 
@@ -3811,16 +4129,28 @@ page==='settings' &&
                 className="btn btn-secondary" 
                 onClick={exportTags}
                 title={(indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running) ? "Stop scanning tasks to export data" : ""}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
               >
-                Export JSON
+                {dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'export' ? (
+                  <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Exporting...</>
+                ) : 'Export JSON'}
               </ActionButton>
               <ActionButton 
-                disabled={actionInProgress || indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running} 
+                disabled={(actionInProgress && !(dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import')) || indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running} 
                 className="btn btn-secondary" 
-                onClick={importTags}
+                onClick={() => {
+                  if (dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import') {
+                    abortDataOpRef.current = true;
+                  } else {
+                    importTags();
+                  }
+                }}
                 title={(indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running) ? "Stop scanning tasks to import data" : ""}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
               >
-                Import JSON
+                {dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import' ? (
+                  <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Cancel Import</>
+                ) : 'Import JSON'}
               </ActionButton>
             </div>
           </div>
@@ -3844,6 +4174,13 @@ page==='settings' &&
 
     {settingsTab === 'ui' && (
       <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+        <h3 style={{ margin: '0 0 16px 0' }}>Theme</h3>
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px', cursor:'pointer'}}>
+          <input type='radio' name="theme" checked={(settings.theme || 'dark') === 'dark'} onChange={()=>updateUIPreferences({ theme: 'dark' })} /> Dark Mode
+        </label>
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'24px', cursor:'pointer'}}>
+          <input type='radio' name="theme" checked={settings.theme === 'light'} onChange={()=>updateUIPreferences({ theme: 'light' })} /> Light Mode
+        </label>
         <h3 style={{ margin: '0 0 16px 0' }}>View Preferences</h3>
         <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
           <input type='checkbox' checked={showSidebar} onChange={toggleSidebar} /> Show Sidebar
@@ -4124,7 +4461,7 @@ page==='about' &&
     <div style={{background:'#8b5cf61a', padding:'10px', borderRadius:'10px', color:'#8b5cf6', display:'flex'}}><InfoIcon /></div>
     <div>
       <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Version Info</h3>
-      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta.5</strong></p>
+      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta.6</strong></p>
     </div>
   </div>
 
@@ -4199,7 +4536,7 @@ page==='about' &&
 </>
 )}
 {showToast && (
-  <div style={{
+  <div className="floating-panel" style={{
     position: 'fixed',
     bottom: '24px',
     right: '24px',

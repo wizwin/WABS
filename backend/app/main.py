@@ -159,6 +159,86 @@ sys.stderr = PrintLogger(sys.stderr)
 face_scanner_thread = None
 face_scanner_running = False
 
+from collections import OrderedDict
+
+class LRUCache:
+    def __init__(self, capacity: int):
+        self.cache = OrderedDict()
+        self.capacity = capacity
+        self.lock = threading.Lock()
+
+    def get(self, key):
+        with self.lock:
+            if key not in self.cache:
+                return None
+            self.cache.move_to_end(key)
+            return self.cache[key]
+
+    def put(self, key, value):
+        with self.lock:
+            self.cache[key] = value
+            self.cache.move_to_end(key)
+            if len(self.cache) > self.capacity:
+                self.cache.popitem(last=False)
+            
+    def pop(self, key, default=None):
+        with self.lock:
+            return self.cache.pop(key, default)
+
+EXEMPLAR_CACHE = LRUCache(capacity=50)
+
+def _evaluate_image_faces(file_path: Path, yunet_path: str):
+    import numpy as np
+    try:
+        img_array = np.fromfile(str(file_path), np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if img is None:
+            return []
+        
+        height, width, _ = img.shape
+        target_dim = 800
+        scale = 1.0
+        if max(height, width) > target_dim:
+            scale = target_dim / max(height, width)
+            new_w, new_h = int(width * scale), int(height * scale)
+            det_img = cv2.resize(img, (new_w, new_h))
+        else:
+            det_img = img
+
+        detector = cv2.FaceDetectorYN.create(yunet_path, "", (det_img.shape[1], det_img.shape[0]))
+        success, faces = detector.detect(det_img)
+        
+        results = []
+        if faces is not None:
+            if scale != 1.0:
+                faces[:, :14] /= scale
+            for face in faces:
+                x, y, w, h = [int(v) for v in face[:4]]
+                x, y = max(0, x), max(0, y)
+                face_area = w * h
+                face_crop = img[y:y+h, x:x+w]
+                sharpness = 0.0
+                if face_crop.size > 0:
+                    gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+                    sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+                results.append({
+                    "area": face_area,
+                    "sharpness": sharpness,
+                    "score": float(np.sqrt(face_area)) * sharpness if face_area > 0 else 0.0
+                })
+        return results
+    except Exception:
+        return []
+
+@app.middleware("http")
+async def add_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.method == "GET" and response.status_code == 200:
+        path = request.url.path
+        if path.endswith("/thumbnail") or "/preview/" in path:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -706,7 +786,7 @@ def search_suggestions(q: str = "", limit: int = 5):
     return {"type": "none", "suggestions": [], "last_word": last_word}
 
 @app.get("/preview/{item_id}")
-def preview(item_id:int):
+def preview(item_id:int, theme: str = "dark"):
     with SessionLocal() as session:
         item = session.get(FileIndex, item_id)
         if not item:
@@ -836,11 +916,14 @@ def preview(item_id:int):
                         
                         if doc.needs_pass:
                             doc.close()
-                            placeholder = """
+                            bg_fill = '#f8fafc' if theme == 'light' else '#111827'
+                            text_fill_1 = '#0f172a' if theme == 'light' else '#94a3b8'
+                            text_fill_2 = '#334155' if theme == 'light' else '#64748b'
+                            placeholder = f"""
 <svg xmlns='http://www.w3.org/2000/svg' width='400' height='300' viewBox='0 0 400 300'>
-  <rect width='400' height='300' fill='#111827'/>
-  <text x='50%' y='45%' fill='#94a3b8' font-family='Segoe UI,Arial' font-size='22' text-anchor='middle'>Preview unavailable</text>
-  <text x='50%' y='60%' fill='#64748b' font-family='Segoe UI,Arial' font-size='16' text-anchor='middle'>ENCRYPTED PDF</text>
+  <rect width='400' height='300' fill='{bg_fill}'/>
+  <text x='50%' y='45%' fill='{text_fill_1}' font-family='Segoe UI,Arial' font-size='22' text-anchor='middle'>Preview unavailable</text>
+  <text x='50%' y='60%' fill='{text_fill_2}' font-family='Segoe UI,Arial' font-size='16' text-anchor='middle'>ENCRYPTED PDF</text>
 </svg>
 """
                             return Response(content=placeholder, media_type='image/svg+xml')
@@ -864,14 +947,16 @@ def preview(item_id:int):
                         if len(lines) >= 11:
                             break
                     
+                    text_fill = '#0f172a' if theme == 'light' else '#cbd5e1'
                     svg_lines = ""
                     y = 28
                     for line in lines:
                         safe_line = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')[:50]
-                        svg_lines += f"<text x='16' y='{y}' fill='#cbd5e1' font-family='monospace' font-size='13'>{safe_line}</text>\n"
+                        svg_lines += f"<text x='16' y='{y}' fill='{text_fill}' font-family='monospace' font-size='13'>{safe_line}</text>\n"
                         y += 24
                         
-                    text_svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300' viewBox='0 0 400 300'>\n  <rect width='400' height='300' fill='#0f172a'/>\n{svg_lines}</svg>"
+                    bg_fill = '#f8fafc' if theme == 'light' else '#0f172a'
+                    text_svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300' viewBox='0 0 400 300'>\n  <rect width='400' height='300' fill='{bg_fill}'/>\n{svg_lines}</svg>"
                     return Response(content=text_svg, media_type='image/svg+xml')
                 except Exception as e:
                     print(f"ERROR: DOCX thumbnail error for {file_path}: {e}")
@@ -882,26 +967,31 @@ def preview(item_id:int):
                         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                             lines = [f.readline().rstrip('\n') for _ in range(11)]
                         
+                        text_fill = '#0f172a' if theme == 'light' else '#cbd5e1'
                         svg_lines = ""
                         y = 28
                         for line in lines:
                             safe_line = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')[:50]
-                            svg_lines += f"<text x='16' y='{y}' fill='#cbd5e1' font-family='monospace' font-size='13'>{safe_line}</text>\n"
+                            svg_lines += f"<text x='16' y='{y}' fill='{text_fill}' font-family='monospace' font-size='13'>{safe_line}</text>\n"
                             y += 24
                             
-                        text_svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300' viewBox='0 0 400 300'>\n  <rect width='400' height='300' fill='#0f172a'/>\n{svg_lines}</svg>"
+                        bg_fill = '#f8fafc' if theme == 'light' else '#0f172a'
+                        text_svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300' viewBox='0 0 400 300'>\n  <rect width='400' height='300' fill='{bg_fill}'/>\n{svg_lines}</svg>"
                         return Response(content=text_svg, media_type='image/svg+xml')
                     except Exception as e:
                         print(f"ERROR: Text thumbnail error for {file_path}: {e}")
                         traceback.print_exc()
 
-    placeholder = """
+    bg_fill = '#f8fafc' if theme == 'light' else '#111827'
+    text_fill_1 = '#0f172a' if theme == 'light' else '#94a3b8'
+    text_fill_2 = '#334155' if theme == 'light' else '#64748b'
+    placeholder = f"""
 <svg xmlns='http://www.w3.org/2000/svg' width='400' height='300' viewBox='0 0 400 300'>
-  <rect width='400' height='300' fill='#111827'/>
-  <text x='50%' y='45%' fill='#94a3b8' font-family='Segoe UI,Arial' font-size='22' text-anchor='middle'>Preview unavailable</text>
-  <text x='50%' y='60%' fill='#64748b' font-family='Segoe UI,Arial' font-size='16' text-anchor='middle'>{}</text>
+  <rect width='400' height='300' fill='{bg_fill}'/>
+  <text x='50%' y='45%' fill='{text_fill_1}' font-family='Segoe UI,Arial' font-size='22' text-anchor='middle'>Preview unavailable</text>
+  <text x='50%' y='60%' fill='{text_fill_2}' font-family='Segoe UI,Arial' font-size='16' text-anchor='middle'>{file_category.upper()}</text>
 </svg>
-""".format(file_category.upper())
+"""
     return Response(content=placeholder, media_type='image/svg+xml')
 
 @app.post("/open/{item_id}")
@@ -1349,6 +1439,7 @@ def settings():
         "database_path": "archive.db",
         "thumbnail_path": "thumbnails",
         "enable_logging": False,
+        "theme": "dark",
         "enable_photo_thumbnail_cache": False,
         "photo_thumbnail_size_limit_mb": 5,
         "allow_unverified_deletion": False,
@@ -1954,7 +2045,7 @@ def get_people(min_unknown_photos: int = 1):
         return []
 
 @app.get("/people/{person_id}/similar-unknowns")
-def get_similar_unknowns(person_id: int, threshold: float = 0.60):
+def get_similar_unknowns(person_id: int, threshold: float = 0.55):
     cfg = load_config()
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
@@ -1966,7 +2057,7 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.60):
         
         try:
             # Fetch known person's embeddings
-            cursor.execute("SELECT embedding_json FROM faces WHERE person_id = ? AND embedding_json != '[]'", (person_id,))
+            cursor.execute("SELECT id, file_id, embedding_json FROM faces WHERE person_id = ? AND embedding_json != '[]'", (person_id,))
             known_rows = cursor.fetchall()
         except sqlite3.OperationalError as e:
             if "no such table" not in str(e).lower():
@@ -1975,8 +2066,93 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.60):
         if not known_rows:
             raise HTTPException(status_code=404, detail="Known person faces not found.")
         
-        known_embeddings = [json.loads(row[0]) for row in known_rows if row[0]]
-        
+        current_face_count = len(known_rows)
+        cached = EXEMPLAR_CACHE.get(person_id)
+        if cached and cached.get("count") == current_face_count:
+            known_embeddings = cached["embeddings"]
+        else:
+            # Calculate Curated Reference Embeddings
+            file_id_to_embs = {}
+            for face_id, file_id, emb_json in known_rows:
+                if file_id not in file_id_to_embs:
+                    file_id_to_embs[file_id] = []
+                file_id_to_embs[file_id].append(json.loads(emb_json))
+                
+            import numpy as np
+            file_ids = list(file_id_to_embs.keys())
+            
+            with SessionLocal() as s:
+                files_info = []
+                for i in range(0, len(file_ids), 900):
+                    chunk = file_ids[i:i+900]
+                    chunk_info = s.query(FileIndex.id, FileIndex.modified, FileIndex.path).filter(FileIndex.id.in_(chunk)).all()
+                    files_info.extend(chunk_info)
+                    
+            files_info.sort(key=lambda x: str(x.modified or ""))
+            
+            # Sample up to 50 images evenly distributed across their timeline
+            sample_size = min(50, len(files_info))
+            if len(files_info) > sample_size:
+                indices = np.linspace(0, len(files_info)-1, sample_size, dtype=int)
+                sample_files = [files_info[i] for i in indices]
+            else:
+                sample_files = files_info
+                
+            yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
+            
+            analyzed_files = []
+            import concurrent.futures
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {}
+                for f_item in sample_files:
+                    file_path = _resolve_path(Path(f_item.path))
+                    if file_path.exists():
+                        futures[executor.submit(_evaluate_image_faces, file_path, yunet_path)] = f_item
+                        
+                for future in concurrent.futures.as_completed(futures):
+                    f_item = futures[future]
+                    metrics = future.result()
+                    if metrics:
+                        best_metric = max(metrics, key=lambda x: x["score"])
+                        analyzed_files.append({
+                            "file_id": f_item.id, "date": str(f_item.modified or ""),
+                            "area": best_metric["area"], "sharpness": best_metric["sharpness"]
+                        })
+                        
+            selected_file_ids = set()
+            if analyzed_files:
+                analyzed_files.sort(key=lambda x: x["sharpness"], reverse=True)
+                non_blurry = analyzed_files[:max(25, int(len(analyzed_files) * 0.75))]
+                
+                if non_blurry:
+                    non_blurry.sort(key=lambda x: x["date"], reverse=True)
+                    for item in non_blurry[:5]: selected_file_ids.add(item["file_id"])
+                    non_blurry.sort(key=lambda x: x["date"])
+                    for item in non_blurry[:5]: selected_file_ids.add(item["file_id"])
+                    mid_idx = len(non_blurry) // 2
+                    start_mid = max(0, mid_idx - 2)
+                    for item in non_blurry[start_mid:start_mid+5]: selected_file_ids.add(item["file_id"])
+                    non_blurry.sort(key=lambda x: x["area"], reverse=True)
+                    for item in non_blurry[:5]: selected_file_ids.add(item["file_id"])
+                    non_blurry.sort(key=lambda x: x["area"])
+                    valid_far = [x for x in non_blurry if x["area"] > 0]
+                    for item in valid_far[:5]: selected_file_ids.add(item["file_id"])
+                    
+            selected_embeddings = []
+            for fid in selected_file_ids:
+                if fid in file_id_to_embs:
+                    selected_embeddings.extend(file_id_to_embs[fid])
+                    
+            if len(selected_embeddings) < 25:
+                all_embs = [json.loads(row[2]) for row in known_rows if row[2]]
+                for emb in all_embs:
+                    if len(selected_embeddings) >= 25: break
+                    if emb not in selected_embeddings: selected_embeddings.append(emb)
+                        
+            known_embeddings = selected_embeddings[:25]
+            EXEMPLAR_CACHE.put(person_id, {"count": current_face_count, "embeddings": known_embeddings})
+
         # Fetch all unknown persons and their embeddings
         cursor.execute("""
             SELECT p.id, p.name, f.embedding_json, 
@@ -2025,11 +2201,24 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.60):
                         "face_count": photo_count, "thumbnail": f"/people/{unk_person_id}/thumbnail?v={file_id}_{photo_count}"
                     }
         results = list(similar_profiles.values())
+        
+        with SessionLocal() as s:
+            for match in results:
+                # Get a sample of file IDs for this unknown person
+                cursor.execute("SELECT file_id FROM faces WHERE person_id = ? LIMIT 10", (match["id"],))
+                file_ids = [r[0] for r in cursor.fetchall()]
+                
+                if file_ids:
+                    # Look up their paths and dates in the main database
+                    files_info = s.query(FileIndex.path, FileIndex.modified).filter(FileIndex.id.in_(file_ids)).all()
+                    match["sample_paths"] = "|".join([str(f.path) for f in files_info if f.path])
+                    match["sample_dates"] = "|".join([str(f.modified) for f in files_info if f.modified])
+                    
         results.sort(key=lambda x: x["similarity"], reverse=True)
         return results
 
 @app.get("/people/{person_id}/thumbnail")
-def get_person_thumbnail(person_id: int):
+def get_person_thumbnail(person_id: int, theme: str = "dark"):
     if cv2 is None:
         raise HTTPException(status_code=500, detail="OpenCV not installed")
         
@@ -2062,7 +2251,7 @@ def get_person_thumbnail(person_id: int):
             cursor.execute("SELECT file_id FROM faces WHERE person_id = ? ORDER BY id DESC LIMIT 1", (person_id,))
             fallback = cursor.fetchone()
             if fallback:
-                return preview(fallback[0])
+                return preview(fallback[0], theme)
             raise HTTPException(status_code=404, detail="Person not found")
         file_id, emb_json = face_row
         target_embedding = json.loads(emb_json)
@@ -2097,7 +2286,7 @@ def get_person_thumbnail(person_id: int):
                 print(f"Pillow face thumbnail fallback failed for {file_path.name}: {e}")
                 
         if img is None:
-            return preview(file_id)
+            return preview(file_id, theme)
 
         yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
         sface_path = get_bundled_model_path("face_recognition_sface_2021dec.onnx")
@@ -2179,7 +2368,7 @@ def get_person_thumbnail(person_id: int):
         print(f"Failed to generate face thumbnail: {e}")
 
     # Fallback to the full image thumbnail if face crop fails
-    return preview(file_id)
+    return preview(file_id, theme)
 
 @app.get("/people/{person_id}/photos")
 def get_person_photos(person_id: int, offset: int = 0, limit: int = 50):
@@ -2227,6 +2416,9 @@ def set_person_thumbnail(person_id: int, payload: dict = Body(...)):
     if not file_id:
         raise HTTPException(status_code=400, detail="file_id is required")
 
+    # Invalidate cache for this person
+    EXEMPLAR_CACHE.pop(person_id)
+
     cfg = load_config()
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
@@ -2248,11 +2440,84 @@ def set_person_thumbnail(person_id: int, payload: dict = Body(...)):
             
     return {"success": True}
 
+@app.post("/people/{person_id}/suggest-thumbnail")
+def auto_suggest_thumbnail(person_id: int):
+    if cv2 is None:
+        raise HTTPException(status_code=500, detail="OpenCV not installed")
+        
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+         raise HTTPException(status_code=404, detail="Database not found")
+
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        
+        # Fetch up to 30 recent faces to evaluate (to avoid locking the CPU for too long)
+        cursor.execute("""
+            SELECT file_id 
+            FROM faces 
+            WHERE person_id = ? AND embedding_json != '[]' 
+            ORDER BY id DESC LIMIT 30
+        """, (person_id,))
+        face_rows = cursor.fetchall()
+
+    if not face_rows:
+        raise HTTPException(status_code=404, detail="No valid faces found for this person.")
+
+    yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
+
+    best_file_id = None
+    best_score = -1.0
+
+    import concurrent.futures
+    
+    file_items = []
+    with SessionLocal() as s:
+        for (file_id,) in face_rows:
+            file_item = s.query(FileIndex).filter(FileIndex.id == file_id).first()
+            if file_item:
+                file_items.append((file_id, _resolve_path(Path(file_item.path))))
+                
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(_evaluate_image_faces, fp, yunet_path): fid for fid, fp in file_items if fp.exists()}
+        for future in concurrent.futures.as_completed(futures):
+            fid = futures[future]
+            metrics = future.result()
+            for fm in metrics:
+                if fm["score"] > best_score:
+                    best_score = fm["score"]
+                    best_file_id = fid
+
+    if best_file_id:
+        # Save the best thumbnail back to the database
+        with sqlite3.connect(ai_db_path, timeout=15) as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE people SET thumbnail_file_id = ? WHERE id = ?", (best_file_id, person_id))
+            conn.commit()
+            
+        # Clear the old cached thumbnail so it regenerates on next load
+        thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
+        cached_face = thumb_dir / f"person_{person_id}.jpg"
+        if cached_face.exists():
+            try:
+                cached_face.unlink()
+            except Exception:
+                pass
+                
+        return {"success": True, "new_thumbnail_id": best_file_id, "score": best_score}
+        
+    raise HTTPException(status_code=400, detail="Could not determine a suitable thumbnail.")
+
 @app.post("/people/{person_id}/remove-photo")
 def remove_person_photo(person_id: int, payload: dict = Body(...)):
     file_id = payload.get("file_id")
     if not file_id:
         raise HTTPException(status_code=400, detail="file_id is required")
+
+    # Invalidate cache for this person
+    EXEMPLAR_CACHE.pop(person_id)
 
     cfg = load_config()
     ai_db_path = get_ai_db_path()
@@ -2366,6 +2631,8 @@ def rename_person(person_id: int, payload: dict = Body(...)):
         
         if existing_person:
             target_id = existing_person[0]
+            # Invalidate both caches if a merge happens
+            EXEMPLAR_CACHE.pop(target_id)
             # Auto-Merge: Reassign all faces to the existing person, then delete the duplicate
             cursor.execute("UPDATE OR IGNORE faces SET person_id = ? WHERE person_id = ?", (target_id, person_id))
             cursor.execute("DELETE FROM faces WHERE person_id = ?", (person_id,))
@@ -2374,6 +2641,7 @@ def rename_person(person_id: int, payload: dict = Body(...)):
             # Standard Rename
             cursor.execute("UPDATE people SET name = ? WHERE id = ?", (new_name, person_id))
             
+        EXEMPLAR_CACHE.pop(person_id)
         conn.commit()
         
     if file_ids:
@@ -2405,6 +2673,8 @@ def delete_person(person_id: int):
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
          
+    EXEMPLAR_CACHE.pop(person_id)
+
     with sqlite3.connect(ai_db_path, timeout=15) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
@@ -2470,7 +2740,9 @@ def merge_people(payload: dict = Body(...)):
             cursor.execute("UPDATE OR IGNORE faces SET person_id = ? WHERE person_id = ?", (primary_id, old_id))
             cursor.execute("DELETE FROM faces WHERE person_id = ?", (old_id,))
             cursor.execute("DELETE FROM people WHERE id = ?", (old_id,))
+            EXEMPLAR_CACHE.pop(old_id)
             
+        EXEMPLAR_CACHE.pop(primary_id)
         conn.commit()
         
     return {"success": True, "merged_into": primary_id}
@@ -3000,6 +3272,59 @@ def system_cleanup():
         logging.info(f"Database cleanup finished: {len(missing_ids)} dead files removed, {deleted_thumbnails_count} orphaned thumbnails deleted, empty profiles cleared, and databases vacuumed.")
 
     return {"status": "success", "removed_files": len(missing_ids), "removed_thumbnails": deleted_thumbnails_count, "message": "Cleanup and optimization complete."}
+
+@app.post("/system/purge-unknowns")
+def purge_unknowns(payload: dict = Body(...)):
+    # Purge Unknown profiles with fewer faces than the threshold (default: 3)
+    threshold = int(payload.get("threshold", 3))
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    
+    if not ai_db_path.exists():
+        raise HTTPException(status_code=404, detail="AI Database not found")
+        
+    purged_count = 0
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        
+        # 1. Find all Unknown People with faces less than the threshold
+        cursor.execute("""
+            SELECT p.id 
+            FROM people p 
+            LEFT JOIN faces f ON p.id = f.person_id 
+            WHERE p.name LIKE 'Unknown Person%' 
+            GROUP BY p.id 
+            HAVING COUNT(f.id) < ?
+        """, (threshold,))
+        
+        ids_to_delete = [r[0] for r in cursor.fetchall()]
+        
+        if ids_to_delete:
+            for i in range(0, len(ids_to_delete), 900):
+                chunk = ids_to_delete[i:i+900]
+                placeholders = ",".join("?" * len(chunk))
+                
+                # 2. Delete the heavy embeddings, face records, and person profile
+                cursor.execute(f"DELETE FROM faces WHERE person_id IN ({placeholders})", chunk)
+                cursor.execute(f"DELETE FROM people WHERE id IN ({placeholders})", chunk)
+                
+                # Note: We intentionally DO NOT delete from 'processed_files'.
+                # This guarantees the AI scanner will permanently skip these photos in the future.
+                for pid in chunk:
+                    EXEMPLAR_CACHE.pop(pid)
+                    
+            purged_count = len(ids_to_delete)
+            conn.commit()
+            
+    # Trigger native system cleanup to vacuum the DB and delete orphaned thumbnails
+    system_cleanup()
+    
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Purged {purged_count} small unknown profiles to reclaim space.")
+        
+    return {"status": "success", "purged_profiles": purged_count}
 
 @app.get("/system/export-people")
 def export_people():

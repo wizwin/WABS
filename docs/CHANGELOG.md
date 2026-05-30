@@ -8,6 +8,10 @@
 *   **Video Date Extraction:** Added native video container date parsing (`creation_time`, `\xa9day`) via `mutagen`. Video files now map perfectly into the chronological timeline alongside your photos.
 *   **Video Tag Parsing:** Added support for extracting native video metadata tags via `mutagen` for enriched searchability.
 *   **Person Previews:** Selecting an unknown profile now displays a helpful sample grid of their photos in the Details pane, ensuring you know exactly who you are managing before merging.
+*   **Light & Dark Theme Support:** Full application theme toggling added to Settings, utilizing a highly-efficient CSS inversion approach that perfectly preserves media and icon colors.
+*   **Auto-Pick Cover Photo:** A new smart UI button that automatically evaluates bounding box sizes and Laplacian variance (sharpness) across a person's photos to pick the best possible thumbnail.
+*   **Purge Small Unknowns:** A dedicated database management routine in Settings allowing you to instantly delete noisy "Unknown Person" profiles that contain fewer than a specified number of photos.
+*   **Direct Move to Person:** You can now select specific photos from any profile (or Unknown group) and instantly reassign them to another named person via a convenient UI dropdown.
 
 ### ✨ UI/UX Enhancements
 *   **Data Management Tab:** Reorganized Settings to feature a dedicated "Data Management" tab, cleanly grouping your DB Cleanup, Export/Backup, JSON tools, and Cache clearing operations.
@@ -16,12 +20,20 @@
 *   **Smooth Fade-ins:** Replaced harsh image placeholders with a smooth CSS opacity fade-in once face thumbnails finish loading.
 *   **Animated Operation Spinners:** Added real-time animated hourglass spinners and text updates to the Database Cleanup and Backup buttons to clearly indicate active synchronous operations.
 *   **Date Normalization:** Robust parsing and normalization of EXIF and modified dates for flawless chronological sorting and Timeline grouping, overcoming browser-specific date parsing inconsistencies.
+*   **Similar Faces Pagination & Sorting:** The "Find Similar Unknowns" panel now supports pagination (500 profiles per page) and intelligently sorts ties by matching the photo counts and directory/time context.
+*   **Lightning-Fast Thumbnails:** Replaced artificial JavaScript load delays with native HTML lazy-loading and aggressive backend `Cache-Control` headers, instantly snapping thumbnails into view from browser memory.
+*   **Refined Similarity Threshold:** Adjusted the default Cosine Similarity threshold to 55% (and lowered the slider minimum) to drastically improve matching on side-profiles and diverse lighting.
+*   **Streamlined Details Pane:** Removed unused UI elements and added sleek, globally available spinning loading animations.
 
 ### 🛠 Build & CI
 *   **Windows Executable Polish:** The GitHub Actions Windows build now automatically uses the `--noconsole` flag (hiding the background command prompt) and utilizes per-matrix icon embedding for a custom application icon (`.ico`).
 *   **ARM Compatibility:** Switched the GitHub Actions ARM build runner to `ubuntu-22.04` for enhanced build stability and compatibility.
 
 ### 🐞 Bug Fixes & Performance
+*   **LRU Exemplar Matrix Cache:** Implemented a highly optimized, thread-safe memory cache that builds a curated 25-photo baseline for each person. It dramatically improves AI accuracy by dropping blurry outliers and speeding up matrix multiplications.
+*   **Dynamic Cache Invalidation:** The similarity caches are now explicitly invalidated and recalculated instantly whenever you rename, merge, delete, or manually tag a person.
+*   **Theme-Aware SVG Placeholders:** The backend now dynamically generates offline text and document preview SVGs based on your active UI theme, fixing invisible black text in Light Mode.
+*   **Thread-Safe Components:** Bulletproofed backend memory structures to handle rapid UI clicks without triggering concurrent mutation crashes.
 *   **Vectorized AI Similarity:** Replaced slow native Python math loops with highly optimized `numpy` vector operations for cosine similarity, slashing face clustering times.
 *   **Database Synchronization & Ghost Faces:** Fixed a major bug where the `ai_metadata.db` retained "ghost" faces for files that were moved or deleted. The `System Cleanup` routine now flawlessly cross-references the main database and completely purges all orphaned AI records.
 *   **Scanner Commit Bug:** Fixed a catastrophic indentation bug in the unified scanner loop where the final batch of database commits (up to 499 files) was rolled back, resulting in missing index records and `404: Image not found` errors.
@@ -68,6 +80,7 @@
 *   **Robust Tagging Engine:**
     *   Eliminated a subtle bug where manually adding or removing a person from a photo could fail if another person with a similar name was also tagged (e.g., "Ben" vs. "Benjamin"). All tag operations now use strict set-based logic.
     *   Fixed a fatal `IndentationError` in the `import-tags` API endpoint.
+...
 *   **Optimized Bulk Operations:** Refactored the `delete_person` and `rename_person` endpoints to use optimized bulk updates, preventing crashes and ensuring instant tag removal/updates even on profiles with thousands of photos.
 *   **Schema Consistency:** Unified the AI database schema creation to eliminate redundant error handling and improve overall code reliability.
 *   **Database Cleanup & Optimization:** Added a dedicated routine in Settings to scan for missing files, remove dead links, purge orphaned AI profiles, and vacuum the SQLite databases to reclaim disk space.
