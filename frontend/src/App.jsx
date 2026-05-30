@@ -378,6 +378,7 @@ const [isShutdown, setIsShutdown] = useState(false)
 const [isShuttingDown, setIsShuttingDown] = useState(false)
 const [toastMessage, setToastMessage] = useState('');
 const [showToast, setShowToast] = useState(false);
+const [toastAction, setToastAction] = useState(null);
 const toastTimeoutRef = useRef(null);
 const [suggestionsData, setSuggestionsData] = useState({ type: 'none', suggestions: [], lastWord: '' });
 const suggestionTimeout = useRef(null);
@@ -418,12 +419,29 @@ const [similarUnknowns, setSimilarUnknowns] = useState(null);
 const [similarUnknownsPage, setSimilarUnknownsPage] = useState(1);
 const [isFindingSimilar, setIsFindingSimilar] = useState(false);
 const [checkedSimilar, setCheckedSimilar] = useState(new Set());
-const [similarityThreshold, setSimilarityThreshold] = useState(0.55);
-const [purgeThreshold, setPurgeThreshold] = useState(3);
+const [similarityThreshold, setSimilarityThreshold] = useState(() => {
+  try {
+    const saved = localStorage.getItem('wabs_similarity_threshold');
+    return saved !== null ? parseFloat(saved) : 0.55;
+  } catch (e) {
+    return 0.55;
+  }
+});
+const [showUnknownsActions, setShowUnknownsActions] = useState(false);
+const [showSelectedUnknownsActions, setShowSelectedUnknownsActions] = useState(false);
+const [purgeThreshold, setPurgeThreshold] = useState(() => {
+  try {
+    const saved = localStorage.getItem('wabs_purge_threshold');
+    return saved !== null ? parseInt(saved) : 3;
+  } catch (e) {
+    return 3;
+  }
+});
 const [showSimilarPanel, setShowSimilarPanel] = useState(false);
 const [settingsTab, setSettingsTab] = useState('general');
 const findSimilarAbortController = useRef(null);
 const abortDataOpRef = useRef(false);
+const aiActionAbortController = useRef(null);
 const [fullTimelineData, setFullTimelineData] = useState([]);
 const [personPreviewPhotos, setPersonPreviewPhotos] = useState([]);
 
@@ -445,6 +463,14 @@ useEffect(() => {
 useEffect(() => {
   localStorage.setItem('wabs_combined_options', JSON.stringify(combinedOptions));
 }, [combinedOptions]);
+
+useEffect(() => {
+  localStorage.setItem('wabs_similarity_threshold', similarityThreshold.toString());
+}, [similarityThreshold]);
+
+useEffect(() => {
+  localStorage.setItem('wabs_purge_threshold', purgeThreshold.toString());
+}, [purgeThreshold]);
 
 useEffect(() => {
   if (Array.isArray(files)) files.forEach(f => globalFileCache.current.set(f.path, f));
@@ -805,14 +831,16 @@ async function loadSettings(){
  }
 }
 
-const showToastMessage = (message) => {
+const showToastMessage = (message, action = null) => {
   setToastMessage(message);
+  setToastAction(action);
   setShowToast(true);
   if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
   toastTimeoutRef.current = setTimeout(() => {
     setShowToast(false);
     setToastMessage('');
-  }, 3000); // Hide after 3 seconds
+    setToastAction(null);
+  }, action ? 6000 : 3000); // Hide after 6 seconds if there is an action, else 3
 };
 
 async function saveSettings(){
@@ -986,6 +1014,219 @@ const deletePerson = async (e, id, name) => {
   }
 };
 
+function cancelAiAction() {
+  if (aiActionAbortController.current) {
+    aiActionAbortController.current.abort();
+    aiActionAbortController.current = null;
+  }
+}
+
+async function clusterSelectedUnknowns() {
+  if (indexer.face_scanner_running) {
+    alert("Please stop the Face Scanner before modifying profiles.");
+    return;
+  }
+  const unknownIds = Array.from(checkedPeople).filter(id => {
+    const p = globalPeopleMap.get(id);
+    return p && (p.name || '').startsWith('Unknown Person');
+  });
+  
+  if (unknownIds.length === 0) {
+    alert("Please select at least one Unknown Person to cluster.");
+    return;
+  }
+  
+  if (!window.confirm(`Are you sure you want to compare ${unknownIds.length} unknown profile(s) against ALL other unknown profiles? Matches above ${Math.round(similarityThreshold * 100)}% will be clustered together.`)) return;
+  
+  if (aiActionAbortController.current) aiActionAbortController.current.abort();
+  aiActionAbortController.current = new AbortController();
+  
+  setActionInProgress(true);
+  setDataOpProgress({ id: 'clusterSelected', current: 0, total: unknownIds.length });
+  try {
+    showToastMessage(`Clustering ${unknownIds.length} unknown profile(s)...`);
+    let totalMerged = 0;
+    const chunkSize = 250;
+    for (let i = 0; i < unknownIds.length; i += chunkSize) {
+      setDataOpProgress({ id: 'clusterSelected', current: i, total: unknownIds.length });
+      const chunk = unknownIds.slice(i, i + chunkSize);
+      const r = await axios.post(`${API}/people/cluster-unknowns`, 
+        { person_ids: chunk, threshold: similarityThreshold },
+        { signal: aiActionAbortController.current.signal }
+      );
+      totalMerged += r.data.merged_count;
+    }
+    setDataOpProgress({ id: 'clusterSelected', current: unknownIds.length, total: unknownIds.length });
+    showToastMessage(`Successfully clustered ${totalMerged} profile(s).`);
+    setCheckedPeople(new Set());
+    loadPeople();
+  } catch (err) {
+    if (axios.isCancel(err)) {
+      showToastMessage('Clustering cancelled by user.');
+      setCheckedPeople(new Set());
+      loadPeople();
+    } else {
+      alert('Error clustering people: ' + (err?.response?.data?.detail || err.message));
+    }
+  } finally {
+    setActionInProgress(false);
+    setDataOpProgress(null);
+  }
+}
+
+async function clusterAllUnknowns() {
+  if (indexer.face_scanner_running) {
+    alert("Please stop the Face Scanner before modifying profiles.");
+    return;
+  }
+  const allUnknownIds = filteredUnknownPeople.map(p => p.id);
+  
+  if (allUnknownIds.length === 0) {
+    alert("No Unknown Persons found.");
+    return;
+  }
+  
+  if (!window.confirm(`Are you sure you want to compare ALL ${allUnknownIds.length} unknown profile(s) against each other? This may take several moments. Matches above ${Math.round(similarityThreshold * 100)}% will be clustered together.`)) return;
+  
+  if (aiActionAbortController.current) aiActionAbortController.current.abort();
+  aiActionAbortController.current = new AbortController();
+  
+  setActionInProgress(true);
+  setDataOpProgress({ id: 'clusterAll', current: 0, total: allUnknownIds.length });
+  try {
+    showToastMessage(`Clustering ${allUnknownIds.length} unknown profile(s)...`);
+    let totalMerged = 0;
+    const chunkSize = 250;
+    for (let i = 0; i < allUnknownIds.length; i += chunkSize) {
+      setDataOpProgress({ id: 'clusterAll', current: i, total: allUnknownIds.length });
+      const chunk = allUnknownIds.slice(i, i + chunkSize);
+      const r = await axios.post(`${API}/people/cluster-unknowns`, 
+        { person_ids: chunk, threshold: similarityThreshold },
+        { signal: aiActionAbortController.current.signal }
+      );
+      totalMerged += r.data.merged_count;
+    }
+    setDataOpProgress({ id: 'clusterAll', current: allUnknownIds.length, total: allUnknownIds.length });
+    showToastMessage(`Successfully clustered ${totalMerged} profile(s).`);
+    setCheckedPeople(new Set());
+    loadPeople();
+  } catch (err) {
+    if (axios.isCancel(err)) {
+      showToastMessage('Clustering cancelled by user.');
+      setCheckedPeople(new Set());
+      loadPeople();
+    } else {
+      alert('Error clustering people: ' + (err?.response?.data?.detail || err.message));
+    }
+  } finally {
+    setActionInProgress(false);
+    setDataOpProgress(null);
+  }
+}
+
+async function reclassifySelectedUnknowns() {
+  if (indexer.face_scanner_running) {
+    alert("Please stop the Face Scanner before modifying profiles.");
+    return;
+  }
+  const unknownIds = Array.from(checkedPeople).filter(id => {
+    const p = globalPeopleMap.get(id);
+    return p && (p.name || '').startsWith('Unknown Person');
+  });
+  
+  if (unknownIds.length === 0) {
+    alert("Please select at least one Unknown Person to reclassify.");
+    return;
+  }
+  
+  if (!window.confirm(`Are you sure you want to re-evaluate ${unknownIds.length} unknown profile(s)? This will break them apart and re-cluster their faces using your current Similarity Threshold (${Math.round(similarityThreshold * 100)}%).`)) return;
+  
+  if (aiActionAbortController.current) aiActionAbortController.current.abort();
+  aiActionAbortController.current = new AbortController();
+  
+  setActionInProgress(true);
+  setDataOpProgress({ id: 'reclassifySelected', current: 0, total: unknownIds.length });
+  try {
+    showToastMessage(`Reclassifying ${unknownIds.length} unknown profile(s)...`);
+    let totalReclassified = 0;
+    const chunkSize = 250;
+    for (let i = 0; i < unknownIds.length; i += chunkSize) {
+      setDataOpProgress({ id: 'reclassifySelected', current: i, total: unknownIds.length });
+      const chunk = unknownIds.slice(i, i + chunkSize);
+      const r = await axios.post(`${API}/people/reclassify`, 
+        { person_ids: chunk, threshold: similarityThreshold },
+        { signal: aiActionAbortController.current.signal }
+      );
+      totalReclassified += r.data.reclassified_count;
+    }
+    setDataOpProgress({ id: 'reclassifySelected', current: unknownIds.length, total: unknownIds.length });
+    showToastMessage(`Successfully reclassified faces.`);
+    setCheckedPeople(new Set());
+    loadPeople();
+  } catch (err) {
+    if (axios.isCancel(err)) {
+      showToastMessage('Reclassification cancelled by user.');
+      setCheckedPeople(new Set());
+      loadPeople();
+    } else {
+      alert('Error reclassifying people: ' + (err?.response?.data?.detail || err.message));
+    }
+  } finally {
+    setActionInProgress(false);
+    setDataOpProgress(null);
+  }
+}
+
+async function reclassifyAllUnknowns() {
+  if (indexer.face_scanner_running) {
+    alert("Please stop the Face Scanner before modifying profiles.");
+    return;
+  }
+  const allUnknownIds = filteredUnknownPeople.map(p => p.id);
+  
+  if (allUnknownIds.length === 0) {
+    alert("No Unknown Persons found.");
+    return;
+  }
+  
+  if (!window.confirm(`Are you sure you want to re-evaluate ALL ${allUnknownIds.length} unknown profile(s)? This will break them apart and re-cluster all their faces using your current Similarity Threshold (${Math.round(similarityThreshold * 100)}%). This may take a few moments.`)) return;
+  
+  if (aiActionAbortController.current) aiActionAbortController.current.abort();
+  aiActionAbortController.current = new AbortController();
+  
+  setActionInProgress(true);
+  setDataOpProgress({ id: 'reclassifyAll', current: 0, total: allUnknownIds.length });
+  try {
+    showToastMessage(`Reclassifying ${allUnknownIds.length} unknown profile(s)...`);
+    let totalReclassified = 0;
+    const chunkSize = 250;
+    for (let i = 0; i < allUnknownIds.length; i += chunkSize) {
+      setDataOpProgress({ id: 'reclassifyAll', current: i, total: allUnknownIds.length });
+      const chunk = allUnknownIds.slice(i, i + chunkSize);
+      const r = await axios.post(`${API}/people/reclassify`, 
+        { person_ids: chunk, threshold: similarityThreshold },
+        { signal: aiActionAbortController.current.signal }
+      );
+      totalReclassified += r.data.reclassified_count;
+    }
+    setDataOpProgress({ id: 'reclassifyAll', current: allUnknownIds.length, total: allUnknownIds.length });
+    showToastMessage(`Successfully reclassified faces.`);
+    setCheckedPeople(new Set());
+    loadPeople();
+  } catch (err) {
+    if (axios.isCancel(err)) {
+      showToastMessage('Reclassification cancelled by user.');
+      setCheckedPeople(new Set());
+      loadPeople();
+    } else {
+      alert('Error reclassifying people: ' + (err?.response?.data?.detail || err.message));
+    }
+  } finally {
+    setActionInProgress(false);
+    setDataOpProgress(null);
+  }
+}
+
 async function mergeSelectedPeople() {
   if (indexer.face_scanner_running) {
     alert("Please stop the Face Scanner before merging profiles to prevent database conflicts.");
@@ -1042,15 +1283,39 @@ async function removePersonPhotosBulk(personId, fileIds) {
     return;
   }
   if (!window.confirm(`Are you sure you want to un-tag ${fileIds.length} photo(s) from this person?`)) return;
+  
+  setActionInProgress(true);
   try {
     for (const fileId of fileIds) {
       await axios.post(`${API}/people/${personId}/remove-photo`, { file_id: fileId });
     }
-    showToastMessage(`Removed ${fileIds.length} photo(s).`);
+    
+    const undoAction = {
+      label: 'Undo',
+      onClick: async () => {
+        setActionInProgress(true);
+        try {
+          for (const id of fileIds) {
+            await axios.post(`${API}/people/${personId}/add-photo`, { file_id: id });
+          }
+          showToastMessage('Removal undone successfully.');
+          loadPeople();
+          openPersonPhotos(currentPerson);
+        } catch (e) {
+          alert('Error undoing removal: ' + (e?.response?.data?.detail || e.message));
+        } finally {
+          setActionInProgress(false);
+        }
+      }
+    };
+    
+    showToastMessage(`Removed ${fileIds.length} photo(s).`, undoAction);
     setPersonFiles(prev => prev.filter(f => !fileIds.includes(f.id)));
     setCheckedFiles(new Set());
   } catch(err) {
     alert('Error removing photo(s): ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
   }
 }
 
@@ -1061,17 +1326,40 @@ async function assignPhotosToPerson(personId, filePaths) {
   }
   if (!personId) return;
   const fileIds = filePaths.map(p => globalFileCache.current.get(p)?.id).filter(id => id);
+  
+  setActionInProgress(true);
   try {
     for (const id of fileIds) {
       await axios.post(`${API}/people/${personId}/add-photo`, { file_id: id });
     }
-    showToastMessage(`Successfully tagged ${fileIds.length} photo(s).`);
+    
+    const undoAction = {
+      label: 'Undo',
+      onClick: async () => {
+        setActionInProgress(true);
+        try {
+          for (const id of fileIds) {
+            await axios.post(`${API}/people/${personId}/remove-photo`, { file_id: id });
+          }
+          showToastMessage('Tagging undone successfully.');
+          loadPeople();
+        } catch (e) {
+          alert('Error undoing tag: ' + (e?.response?.data?.detail || e.message));
+        } finally {
+          setActionInProgress(false);
+        }
+      }
+    };
+    
+    showToastMessage(`Successfully tagged ${fileIds.length} photo(s).`, undoAction);
     setIsTaggingPerson(false);
     setCheckedFiles(new Set());
     if (page === 'explorer') loadFiles(0, false, filterCategory);
     else if (page === 'search') doSearch(query, filterCategory);
   } catch(err) {
     alert('Error tagging photo(s): ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
   }
 }
 
@@ -1085,12 +1373,36 @@ async function movePhotosToPerson(targetPersonId, filePaths) {
   if (fileIds.length === 0) return;
   
   setActionInProgress(true);
+  const sourcePersonId = currentPerson?.id;
   try {
     for (const id of fileIds) {
       await axios.post(`${API}/people/${targetPersonId}/add-photo`, { file_id: id });
       await axios.post(`${API}/people/${currentPerson?.id}/remove-photo`, { file_id: id });
     }
-    showToastMessage(`Successfully moved ${fileIds.length} photo(s).`);
+    
+    const undoAction = {
+      label: 'Undo',
+      onClick: async () => {
+        setActionInProgress(true);
+        try {
+          for (const id of fileIds) {
+            await axios.post(`${API}/people/${sourcePersonId}/add-photo`, { file_id: id });
+            await axios.post(`${API}/people/${targetPersonId}/remove-photo`, { file_id: id });
+          }
+          showToastMessage('Move undone successfully.');
+          loadPeople();
+          if (currentPerson && currentPerson.id === sourcePersonId) {
+             openPersonPhotos(currentPerson);
+          }
+        } catch (e) {
+          alert('Error undoing move: ' + (e?.response?.data?.detail || e.message));
+        } finally {
+          setActionInProgress(false);
+        }
+      }
+    };
+    
+    showToastMessage(`Successfully moved ${fileIds.length} photo(s).`, undoAction);
     setIsTaggingPerson(false);
     setCheckedFiles(new Set());
     setPersonFiles(prev => prev.filter(f => !fileIds.includes(f.id)));
@@ -1569,16 +1881,25 @@ async function purgeSmallUnknowns() {
   }
   if (!window.confirm(`Are you sure you want to permanently delete all Unknown Person profiles that have fewer than ${purgeThreshold} photos? This will also trigger a database cleanup and cannot be undone.`)) return;
   
+  if (aiActionAbortController.current) aiActionAbortController.current.abort();
+  aiActionAbortController.current = new AbortController();
+  
   setActionInProgress(true);
   setDataOpProgress({ id: 'purge' });
   try {
     showToastMessage(`Purging unknown profiles with < ${purgeThreshold} photos...`);
-    const r = await axios.post(`${API}/system/purge-unknowns`, { threshold: purgeThreshold });
+    const r = await axios.post(`${API}/system/purge-unknowns`, { threshold: purgeThreshold }, { signal: aiActionAbortController.current.signal });
     showToastMessage(`Purged ${r.data.purged_profiles} small unknown profiles successfully.`);
     await loadDashboard(); // Refresh dashboard stats
     if (page === 'people') await loadPeople();
   } catch (err) {
-    alert('Error purging profiles: ' + (err?.response?.data?.detail || err.message));
+    if (axios.isCancel(err)) {
+      showToastMessage('Purge cancelled by user.');
+      loadDashboard();
+      if (page === 'people') loadPeople();
+    } else {
+      alert('Error purging profiles: ' + (err?.response?.data?.detail || err.message));
+    }
   } finally {
     setActionInProgress(false);
     setDataOpProgress(null);
@@ -1862,7 +2183,10 @@ const handleCategoryClick = (category) => {
 };
 
 const sortedFiles = useMemo(() => {
-  let baseFiles = showSelectedOnly ? Array.from(checkedFiles).map(p => globalFileCache.current?.get(p) || files.find(f => f.path === p)).filter(Boolean) : (files || []);
+  let baseFiles = files || [];
+  if (showSelectedOnly) {
+    baseFiles = Array.from(checkedFiles).map(p => globalFileCache.current?.get(p)).filter(Boolean);
+  }
 
   if (filterCategory === 'duplicates' && !showSelectedOnly) {
     const sizeGroups = {};
@@ -2286,6 +2610,49 @@ const visibleSimilar = useMemo(() => {
   if (!sortedSimilarUnknowns) return [];
   return sortedSimilarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id));
 }, [sortedSimilarUnknowns, settings.hidden_people]);
+
+const namedPeopleBase = useMemo(() => {
+  if (!Array.isArray(people)) return [];
+  const hidden = new Set(settings.hidden_people || []);
+  return people.filter(p => !(p.name || '').startsWith('Unknown Person') && !hidden.has(p.id));
+}, [people, settings.hidden_people]);
+
+const filteredNamedPeople = useMemo(() => {
+  const query = namedPersonSearchQuery.toLowerCase();
+  if (!query) return namedPeopleBase;
+  return namedPeopleBase.filter(p => (p.name || '').toLowerCase().includes(query));
+}, [namedPeopleBase, namedPersonSearchQuery]);
+
+const filteredUnknownPeople = useMemo(() => {
+  if (!Array.isArray(people)) return [];
+  const hidden = new Set(settings.hidden_people || []);
+  return people.filter(p => (p.name || '').startsWith('Unknown Person') && !hidden.has(p.id));
+}, [people, settings.hidden_people]);
+
+const globalPeopleMap = useMemo(() => {
+  const map = new Map();
+  if (Array.isArray(people)) {
+    people.forEach(p => map.set(p.id, p));
+  }
+  return map;
+}, [people]);
+
+const hasUnknownSelected = useMemo(() => {
+  // O(N) Set check instead of O(N^2) Array.find loop
+  return filteredUnknownPeople.some(p => checkedPeople.has(p.id));
+}, [checkedPeople, filteredUnknownPeople]);
+
+const sortedNamedPeopleForUI = useMemo(() => {
+  return [...filteredNamedPeople].sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '') : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || '')));
+}, [filteredNamedPeople, peopleSortBy]);
+
+const sortedUnknownPeopleForUI = useMemo(() => {
+  return [...filteredUnknownPeople].sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }) : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' })));
+}, [filteredUnknownPeople, peopleSortBy]);
+
+const sortedNamedPeopleDropdown = useMemo(() => {
+  return [...namedPeopleBase].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+}, [namedPeopleBase]);
 
 return(
 <SettingsContext.Provider value={{ animationsEnabled: (settings.animations_enabled ?? settings.ui_preferences?.animations_enabled) !== false, theme: settings.theme || 'dark' }}>
@@ -2822,7 +3189,7 @@ return(
           value=""
         >
           <option value="" disabled>Select person...</option>
-          {[...people].filter(p => !(settings.hidden_people || []).includes(p.id)).sort((a,b) => (a.name || '').localeCompare(b.name || '')).map(p => <option key={p.id} value={p.id}>{p.name || `Unknown Person #${p.id}`}</option>)}
+          {sortedNamedPeopleDropdown.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
       )}
     </div>
@@ -3084,6 +3451,46 @@ page==='people' &&
 {checkedPeople.size > 0 && (
   <div className="floating-panel" style={{ position: 'sticky', bottom: '20px', zIndex: 50, padding: '10px 18px', background: '#1e293b', border: '1px solid #334155', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginTop: '16px', borderRadius: '12px', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)' }}>
     <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto' }}>{checkedPeople.size} person(s) selected</span>
+    
+    {hasUnknownSelected && (
+       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
+           <ActionButton disabled={actionInProgress} className="btn btn-secondary" style={{ padding: '6px 12px', background: showSelectedUnknownsActions ? '#334155' : undefined }} onClick={() => setShowSelectedUnknownsActions(!showSelectedUnknownsActions)}>
+               <SettingsApplicationsIcon fontSize="small" style={{ marginRight: '6px', verticalAlign: 'middle', display: 'inline-flex' }} /> AI Actions
+           </ActionButton>
+           {showSelectedUnknownsActions && (
+             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
+                 <div style={{ display: 'flex', gap: '6px', alignItems: 'center', padding: '0 8px' }}>
+                   <span style={{ color: '#94a3b8', fontSize: '13px' }}>Threshold:</span>
+                   <input 
+                     type="range" 
+                     min="0.35" max="0.85" step="0.01" 
+                     disabled={actionInProgress}
+                     value={similarityThreshold} 
+                     onChange={(e) => setSimilarityThreshold(parseFloat(e.target.value))} 
+                     style={{ width: '60px', accentColor: '#10b981' }}
+                   />
+                   <span style={{ color: '#10b981', fontSize: '13px', minWidth: '35px', fontWeight: 'bold' }}>{Math.round(similarityThreshold * 100)}%</span>
+                 </div>
+                 <ActionButton disabled={indexer.face_scanner_running || (actionInProgress && dataOpProgress?.id !== 'clusterSelected')} className="btn btn-secondary" style={{ padding: '6px 12px', color: dataOpProgress?.id === 'clusterSelected' ? '#ef4444' : '#10b981', borderColor: dataOpProgress?.id === 'clusterSelected' ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'clusterSelected' ? cancelAiAction : clusterSelectedUnknowns} title="Compare selected unknown people against other unknowns and merge matches automatically.">
+                   {dataOpProgress && dataOpProgress.id === 'clusterSelected' ? 
+                     <><CloseIcon fontSize="small" /> Cancel</> : 
+                     <><FaceIcon fontSize="small" /> Cluster Selected</>}
+                 </ActionButton>
+                 <ActionButton disabled={indexer.face_scanner_running || (actionInProgress && dataOpProgress?.id !== 'reclassifySelected')} className="btn btn-secondary" style={{ padding: '6px 12px', color: dataOpProgress?.id === 'reclassifySelected' ? '#ef4444' : '#f59e0b', borderColor: dataOpProgress?.id === 'reclassifySelected' ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'reclassifySelected' ? cancelAiAction : reclassifySelectedUnknowns} title="Break apart selected profiles and re-evaluate each face against all knowns and unknowns.">
+                   {dataOpProgress && dataOpProgress.id === 'reclassifySelected' ? 
+                     <><CloseIcon fontSize="small" /> Cancel</> : 
+                     <><FaceIcon fontSize="small" /> Reclassify Selected</>}
+                 </ActionButton>
+                 {dataOpProgress && (dataOpProgress.id === 'clusterSelected' || dataOpProgress.id === 'reclassifySelected') && dataOpProgress.total > 0 && (
+                   <div style={{ width: '100%', flexBasis: '100%', marginTop: '8px', padding: '0 8px' }}>
+                     <ProgressBar current={dataOpProgress.current} total={dataOpProgress.total} color={dataOpProgress.id === 'clusterSelected' ? '#10b981' : '#f59e0b'} />
+                   </div>
+                 )}
+             </div>
+           )}
+       </div>
+    )}
+
     {checkedPeople.size > 1 && (
       <ActionButton disabled={indexer.face_scanner_running} className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={mergeSelectedPeople} title={indexer.face_scanner_running ? "Stop the scanner to merge profiles" : ""}>Merge Selected</ActionButton>
     )}
@@ -3104,7 +3511,7 @@ page==='people' &&
       </select>
     </div>
 
-    {people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length > 0 && (
+    {namedPeopleBase.length > 0 && (
       <>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '24px', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
@@ -3117,13 +3524,13 @@ page==='people' &&
               style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #334155', background: '#1e293b', color: '#f8fafc', width: '100%', maxWidth: '250px', outline: 'none' }}
             />
           </div>
-          {people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length > 50 && (
+          {filteredNamedPeople.length > 50 && (
             <div style={{ display: 'flex', gap: '16px' }}>
               <ActionButton disabled={namedPeoplePage === 1} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setNamedPeoplePage(prev => Math.max(1, prev - 1))}>
                 Previous
               </ActionButton>
-              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)}</span>
-              <ActionButton disabled={namedPeoplePage >= Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
+              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(filteredNamedPeople.length / 50)}</span>
+              <ActionButton disabled={namedPeoplePage >= Math.ceil(filteredNamedPeople.length / 50)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
                 Next
               </ActionButton>
             </div>
@@ -3131,7 +3538,7 @@ page==='people' &&
         </div>
         
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
-        {people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '') : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || ''))).slice((namedPeoplePage - 1) * 50, namedPeoplePage * 50).map(p => (
+        {sortedNamedPeopleForUI.slice((namedPeoplePage - 1) * 50, namedPeoplePage * 50).map(p => (
           <div key={p.id} id={`person-card-${p.id}`} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
              <input 
                type="checkbox" 
@@ -3189,17 +3596,17 @@ page==='people' &&
         ))}
         </div>
 
-        {people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length === 0 && namedPersonSearchQuery && (
+        {filteredNamedPeople.length === 0 && namedPersonSearchQuery && (
           <p style={{ color: '#94a3b8', marginTop: '16px' }}>No named people match your search.</p>
         )}
         
-        {people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length > 50 && (
+        {filteredNamedPeople.length > 50 && (
           <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '32px', marginBottom: '24px' }}>
             <ActionButton disabled={namedPeoplePage === 1} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setNamedPeoplePage(prev => Math.max(1, prev - 1))}>
               Previous
             </ActionButton>
-            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)}</span>
-            <ActionButton disabled={namedPeoplePage >= Math.ceil(people.filter(p => !(p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id) && (p.name || '').toLowerCase().includes(namedPersonSearchQuery.toLowerCase())).length / 50)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
+            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {namedPeoplePage} of {Math.ceil(filteredNamedPeople.length / 50)}</span>
+            <ActionButton disabled={namedPeoplePage >= Math.ceil(filteredNamedPeople.length / 50)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setNamedPeoplePage(prev => prev + 1)}>
               Next
             </ActionButton>
           </div>
@@ -3208,25 +3615,100 @@ page==='people' &&
       </>
     )}
 
-    {people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length > 0 && (
+    {filteredUnknownPeople.length > 0 && (
       <>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '32px', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
-          <h2 id="unknown-people-section" style={{ margin: 0, color: '#f8fafc', fontSize: '20px' }}>Unknown People</h2>
-          {people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length > 50 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+            <h2 id="unknown-people-section" style={{ margin: 0, color: '#f8fafc', fontSize: '20px' }}>Unknown People</h2>
+            <ActionButton 
+              className="btn btn-secondary" 
+              style={{ padding: '4px 10px', color: showUnknownsActions ? '#38bdf8' : '#94a3b8', borderColor: showUnknownsActions ? '#3b82f6' : '#334155', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', background: showUnknownsActions ? '#0f172a' : undefined }} 
+              onClick={() => setShowUnknownsActions(!showUnknownsActions)}
+            >
+              <SettingsApplicationsIcon fontSize="small" /> AI Actions
+            </ActionButton>
+          </div>
+          {filteredUnknownPeople.length > 50 && (
             <div style={{ display: 'flex', gap: '16px' }}>
               <ActionButton disabled={unknownPeoplePage === 1} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setUnknownPeoplePage(prev => Math.max(1, prev - 1))}>
                 Previous
               </ActionButton>
-              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length / 50)}</span>
-              <ActionButton disabled={unknownPeoplePage >= Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length / 50)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
+              <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(filteredUnknownPeople.length / 50)}</span>
+              <ActionButton disabled={unknownPeoplePage >= Math.ceil(filteredUnknownPeople.length / 50)} className="btn btn-secondary" style={{ padding: '4px 12px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
                 Next
               </ActionButton>
             </div>
           )}
         </div>
         
+        {showUnknownsActions && (
+          <div style={{ background: '#0f172a', padding: '16px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '24px' }}>
+             <h3 style={{ margin: '0 0 16px 0', fontSize: '15px', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '8px' }}><SettingsApplicationsIcon fontSize="small" style={{ color: '#3b82f6' }} /> Bulk AI Operations</h3>
+             
+             <div style={{ paddingBottom: '16px', borderBottom: '1px solid #1e293b', marginBottom: '16px' }}>
+                 <p style={{ margin: '0 0 12px 0', fontSize: '13px', color: '#94a3b8', lineHeight: '1.5' }}>Select how strict the AI should be when comparing faces. Lower percentages will aggressively group faces together, while higher percentages ensure fewer false-positives.</p>
+                 <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', background: '#1e293b', padding: '6px 16px', borderRadius: '8px', border: '1px solid #334155' }}>
+                       <span style={{ color: '#94a3b8', fontSize: '13px' }}>Similarity Threshold:</span>
+                       <input 
+                         type="range" 
+                         min="0.35" max="0.85" step="0.01" 
+                         disabled={actionInProgress}
+                         value={similarityThreshold} 
+                         onChange={(e) => setSimilarityThreshold(parseFloat(e.target.value))} 
+                         style={{ width: '120px', accentColor: '#10b981' }}
+                       />
+                       <span style={{ color: '#10b981', fontSize: '14px', minWidth: '40px', fontWeight: 'bold' }}>{Math.round(similarityThreshold * 100)}%</span>
+                    </div>
+                <ActionButton disabled={indexer.face_scanner_running || (actionInProgress && dataOpProgress?.id !== 'clusterAll')} className="btn btn-secondary" style={{ padding: '8px 16px', color: dataOpProgress?.id === 'clusterAll' ? '#ef4444' : '#10b981', borderColor: dataOpProgress?.id === 'clusterAll' ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'clusterAll' ? cancelAiAction : clusterAllUnknowns} title="Compare ALL unknown people against each other and merge matches automatically.">
+                      {dataOpProgress && dataOpProgress.id === 'clusterAll' ? 
+                    <><CloseIcon fontSize="small" /> Cancel Clustering</> : 
+                        <><FaceIcon fontSize="small" /> Cluster All Unknowns</>}
+                    </ActionButton>
+                <ActionButton disabled={indexer.face_scanner_running || (actionInProgress && dataOpProgress?.id !== 'reclassifyAll')} className="btn btn-secondary" style={{ padding: '8px 16px', color: dataOpProgress?.id === 'reclassifyAll' ? '#ef4444' : '#f59e0b', borderColor: dataOpProgress?.id === 'reclassifyAll' ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'reclassifyAll' ? cancelAiAction : reclassifyAllUnknowns} title="Break apart all unknown profiles and re-evaluate each face against all knowns and unknowns.">
+                      {dataOpProgress && dataOpProgress.id === 'reclassifyAll' ? 
+                    <><CloseIcon fontSize="small" /> Cancel Reclassifying</> : 
+                        <><FaceIcon fontSize="small" /> Reclassify All Unknowns</>}
+                    </ActionButton>
+                 </div>
+                {dataOpProgress && (dataOpProgress.id === 'clusterAll' || dataOpProgress.id === 'reclassifyAll') && dataOpProgress.total > 0 && (
+                  <div style={{ marginTop: '16px' }}>
+                    <ProgressBar current={dataOpProgress.current} total={dataOpProgress.total} color={dataOpProgress.id === 'clusterAll' ? '#10b981' : '#f59e0b'} />
+                  </div>
+                )}
+             </div>
+
+             <div>
+                 <p style={{ margin: '0 0 12px 0', fontSize: '13px', color: '#94a3b8', lineHeight: '1.5' }}>Permanently delete unknown profiles that have fewer than the specified number of photos. This frees up database space and removes noisy blurry faces.</p>
+                 <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
+                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center', background: '#1e293b', padding: '6px 16px', borderRadius: '8px', border: '1px solid #334155' }}>
+                         <span style={{ color: '#94a3b8', fontSize: '13px' }}>Photos &lt;</span>
+                         <input 
+                           type="number" 
+                           min="1" 
+                           value={purgeThreshold} 
+                           onChange={(e) => setPurgeThreshold(parseInt(e.target.value) || 3)}
+                           style={{ width: '60px', padding: '2px 8px', borderRadius: '4px', border: '1px solid #334155', background: '#0f172a', color: '#f8fafc', outline: 'none' }}
+                         />
+                     </div>
+                     <ActionButton 
+                       disabled={(actionInProgress && dataOpProgress?.id !== 'purge') || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} 
+                       className="btn btn-secondary" 
+                       onClick={dataOpProgress?.id === 'purge' ? cancelAiAction : purgeSmallUnknowns}
+                       title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to purge" : ""}
+                       style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '6px' }}
+                     >
+                       {dataOpProgress && dataOpProgress.id === 'purge' ? (
+                         <><CloseIcon fontSize="small" /> Cancel Purging</>
+                       ) : 'Purge Small Profiles'}
+                     </ActionButton>
+                 </div>
+             </div>
+          </div>
+        )}
+
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
-        {people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }) : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }))).slice((unknownPeoplePage - 1) * 50, unknownPeoplePage * 50).map(p => (
+        {sortedUnknownPeopleForUI.slice((unknownPeoplePage - 1) * 50, unknownPeoplePage * 50).map(p => (
           <div key={p.id} id={`person-card-${p.id}`} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
              <input 
                type="checkbox" 
@@ -3284,13 +3766,13 @@ page==='people' &&
         ))}
         </div>
 
-        {people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length > 50 && (
+        {filteredUnknownPeople.length > 50 && (
           <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '32px', marginBottom: '24px' }}>
             <ActionButton disabled={unknownPeoplePage === 1} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setUnknownPeoplePage(prev => Math.max(1, prev - 1))}>
               Previous
             </ActionButton>
-            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length / 50)}</span>
-            <ActionButton disabled={unknownPeoplePage >= Math.ceil(people.filter(p => (p.name || '').startsWith('Unknown Person') && !(settings.hidden_people || []).includes(p.id)).length / 50)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
+            <span style={{ display: 'flex', alignItems: 'center', color: '#94a3b8', fontSize: '14px' }}>Page {unknownPeoplePage} of {Math.ceil(filteredUnknownPeople.length / 50)}</span>
+            <ActionButton disabled={unknownPeoplePage >= Math.ceil(filteredUnknownPeople.length / 50)} className="btn btn-secondary" style={{ padding: '8px 16px' }} onClick={() => setUnknownPeoplePage(prev => prev + 1)}>
               Next
             </ActionButton>
           </div>
@@ -3526,7 +4008,7 @@ page==='person_files' &&
           value=""
         >
           <option value="" disabled>Select person...</option>
-          {[...people].filter(p => !(settings.hidden_people || []).includes(p.id) && !(p.name || '').startsWith('Unknown Person') && p.id !== currentPerson?.id).sort((a,b) => (a.name || '').localeCompare(b.name || '')).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {sortedNamedPeopleDropdown.filter(p => p.id !== currentPerson?.id).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
       )}
     </div>
@@ -4040,33 +4522,6 @@ page==='settings' &&
           </div>
           <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
             <div>
-              <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Purge Small Unknown Profiles</h4>
-              <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Permanently delete unknown people with fewer than the specified number of photos to save space.</p>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ fontSize: '13px', color: '#94a3b8' }}>Photos &lt;</span>
-              <input 
-                type="number" 
-                min="1" 
-                value={purgeThreshold} 
-                onChange={(e) => setPurgeThreshold(parseInt(e.target.value) || 3)}
-                style={{ width: '60px', padding: '6px 10px', borderRadius: '6px', border: '1px solid #334155', background: '#1e293b', color: '#f8fafc', outline: 'none' }}
-              />
-              <ActionButton 
-                disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} 
-                className="btn btn-secondary" 
-                onClick={purgeSmallUnknowns}
-                title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to purge" : ""}
-                style={{ background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '8px' }}
-              >
-                {dataOpProgress && dataOpProgress.id === 'purge' ? (
-                  <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Purging...</>
-                ) : 'Purge'}
-              </ActionButton>
-            </div>
-          </div>
-          <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-            <div>
               <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Full Database Backup</h4>
               <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Create a safe, portable copy of your archive.db, ai_metadata.db, and config.yaml.</p>
             </div>
@@ -4425,7 +4880,7 @@ page==='settings' &&
               <span style={{ color: '#64748b', fontSize: '13px' }}>No hidden people.</span>
             )}
             {(settings.hidden_people || []).map(id => {
-               const p = Array.isArray(people) ? people.find(x => x.id === id) : null;
+               const p = globalPeopleMap.get(id);
                const name = p ? p.name : `Person #${id}`;
                return (
                  <div key={id} style={{ background: '#0f172a', border: '1px solid #334155', padding: '6px 12px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#cbd5e1' }}>
@@ -4548,12 +5003,36 @@ page==='about' &&
     zIndex: 9999,
     display: 'flex',
     alignItems: 'center',
-    gap: '8px',
+    gap: '16px',
     fontSize: '14px',
     fontWeight: '500',
     transition: 'opacity 0.3s ease-in-out'
   }}>
-    {toastMessage}
+    <span>{toastMessage}</span>
+    {toastAction && (
+      <button 
+        onClick={() => {
+          toastAction.onClick();
+          setShowToast(false);
+          if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+        }}
+        style={{
+          background: 'rgba(255, 255, 255, 0.2)',
+          color: '#ffffff',
+          border: 'none',
+          padding: '4px 10px',
+          borderRadius: '4px',
+          cursor: 'pointer',
+          fontWeight: 'bold',
+          fontSize: '13px',
+          transition: 'background 0.2s ease'
+        }}
+        onMouseEnter={(e) => e.target.style.background = 'rgba(255, 255, 255, 0.3)'}
+        onMouseLeave={(e) => e.target.style.background = 'rgba(255, 255, 255, 0.2)'}
+      >
+        {toastAction.label}
+      </button>
+    )}
   </div>
 )}
 </div>

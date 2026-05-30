@@ -45,8 +45,12 @@ except ModuleNotFoundError:
 
 app = FastAPI()
 
+APP_SHUTTING_DOWN = False
+
 @app.on_event("shutdown")
 def graceful_os_shutdown():
+    global APP_SHUTTING_DOWN
+    APP_SHUTTING_DOWN = True
     import time
     import logging
     try:
@@ -188,6 +192,8 @@ class LRUCache:
 EXEMPLAR_CACHE = LRUCache(capacity=50)
 
 def _evaluate_image_faces(file_path: Path, yunet_path: str):
+    if APP_SHUTTING_DOWN:
+        return []
     import numpy as np
     try:
         img_array = np.fromfile(str(file_path), np.uint8)
@@ -1501,6 +1507,8 @@ def clear_cache():
 
 @app.post("/shutdown")
 def shutdown(request: Request):
+    global APP_SHUTTING_DOWN
+    APP_SHUTTING_DOWN = True
     import logging
     logging_enabled = load_config().get("enable_logging")
     # To achieve a graceful shutdown, we access the server instance stored in the app state
@@ -2506,6 +2514,10 @@ def auto_suggest_thumbnail(person_id: int):
             except Exception:
                 pass
                 
+        if cfg.get("enable_logging"):
+            import logging
+            logging.info(f"Auto-suggested cover photo {best_file_id} for person {person_id} with score {round(best_score, 2)}")
+            
         return {"success": True, "new_thumbnail_id": best_file_id, "score": best_score}
         
     raise HTTPException(status_code=400, detail="Could not determine a suitable thumbnail.")
@@ -2745,7 +2757,323 @@ def merge_people(payload: dict = Body(...)):
         EXEMPLAR_CACHE.pop(primary_id)
         conn.commit()
         
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Merged {len(ids_to_merge)} unknown profiles into person {primary_id}.")
+        
     return {"success": True, "merged_into": primary_id}
+
+@app.post("/people/cluster-unknowns")
+def cluster_unknowns(payload: dict = Body(...)):
+    person_ids = payload.get("person_ids", [])
+    threshold = payload.get("threshold", 0.55)
+    if not person_ids:
+        return {"merged_count": 0, "results": []}
+        
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+         raise HTTPException(status_code=404, detail="Database not found")
+         
+    with sqlite3.connect(ai_db_path, timeout=60) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        
+        # Fetch ONLY Unknown People embeddings to cluster them together
+        cursor.execute("""
+            SELECT p.id, p.name, f.embedding_json
+            FROM people p
+            JOIN faces f ON p.id = f.person_id
+            WHERE p.name LIKE 'Unknown Person%' AND f.embedding_json != '[]'
+        """)
+        
+        all_rows = cursor.fetchall()
+        if not all_rows:
+            return {"merged_count": 0, "message": "No unknown persons to compare against.", "results": []}
+            
+        import numpy as np
+        
+        person_embs = {}
+        person_names = {}
+        
+        # OOM PREVENTION: Cap the maximum number of embeddings per cluster.
+        # Unknown profiles are highly cohesive. 15 faces perfectly represent the cluster's variations
+        # and completely prevent massive O(N^2) memory spikes during the matrix dot product.
+        MAX_EMBS_PER_PERSON = 15
+        
+        for pid, pname, emb_json in all_rows:
+            if pid not in person_embs:
+                person_embs[pid] = []
+            if len(person_embs[pid]) < MAX_EMBS_PER_PERSON:
+                person_embs[pid].append(json.loads(emb_json))
+            person_names[pid] = pname
+            
+        # Sort all PIDs by number of faces DESC so smaller clusters merge into larger ones
+        sorted_pids = sorted(person_embs.keys(), key=lambda k: len(person_embs[k]), reverse=True)
+        
+        canonical_embs = []
+        canonical_pids = []
+        for pid in sorted_pids:
+            canonical_embs.extend(person_embs[pid])
+            canonical_pids.extend([pid] * len(person_embs[pid]))
+            
+        # Cast to float32 to instantly halve the memory requirements of the matrix
+        k_matrix = np.array(canonical_embs, dtype=np.float32)
+        k_norms = np.linalg.norm(k_matrix, axis=1, keepdims=True)
+        k_matrix_norm = k_matrix / np.where(k_norms == 0, 1, k_norms)
+        
+        merged_count = 0
+        results = []
+        merged_away = set() # Track already-merged IDs so they aren't processed twice
+        
+        # Order target IDs ascending by size so small cards fold into large ones
+        target_ids = sorted([pid for pid in person_ids if pid in person_embs], key=lambda k: len(person_embs[k]))
+        
+        # Batch targets to prevent out-of-memory errors on massive 30,000x30,000 matrix operations
+        batch_size_embs = 250
+        batches, current_batch_pids = [], []
+        current_batch_embs_count = 0
+        
+        for pid in target_ids:
+            num_embs = len(person_embs[pid])
+            if current_batch_embs_count + num_embs > batch_size_embs and current_batch_pids:
+                batches.append(current_batch_pids)
+                current_batch_pids = []
+                current_batch_embs_count = 0
+            current_batch_pids.append(pid)
+            current_batch_embs_count += num_embs
+        if current_batch_pids:
+            batches.append(current_batch_pids)
+            
+        for batch_pids in batches:
+            if APP_SHUTTING_DOWN:
+                break
+            valid_batch_pids = [pid for pid in batch_pids if pid not in merged_away]
+            if not valid_batch_pids:
+                continue
+                
+            batch_embs = []
+            for pid in valid_batch_pids:
+                batch_embs.extend(person_embs[pid])
+                
+            unk_matrix = np.array(batch_embs, dtype=np.float32)
+            unk_norms = np.linalg.norm(unk_matrix, axis=1, keepdims=True)
+            unk_matrix_norm = unk_matrix / np.where(unk_norms == 0, 1, unk_norms)
+
+            similarities = np.dot(k_matrix_norm, unk_matrix_norm.T)
+            
+            col_offset = 0
+            for pid in valid_batch_pids:
+                if pid in merged_away:
+                    col_offset += len(person_embs[pid])
+                    continue
+                    
+                num_embs = len(person_embs[pid])
+                pid_similarities = similarities[:, col_offset:col_offset+num_embs]
+                col_offset += num_embs
+                
+                max_sims_per_canonical = np.max(pid_similarities, axis=1)
+                sorted_indices = np.argsort(max_sims_per_canonical)[::-1]
+                
+                best_match_id = None
+                max_sim = 0.0
+                
+                for idx in sorted_indices:
+                    match_pid = canonical_pids[idx]
+                    sim = float(max_sims_per_canonical[idx])
+                    if sim < threshold:
+                        break # Sorted DESC, so anything below is a guaranteed fail
+                        
+                    if match_pid != pid and match_pid not in merged_away:
+                        best_match_id = match_pid
+                        max_sim = sim
+                        break
+                        
+                if best_match_id is not None:
+                    cursor.execute("UPDATE OR IGNORE faces SET person_id = ? WHERE person_id = ?", (best_match_id, pid))
+                    cursor.execute("DELETE FROM faces WHERE person_id = ?", (pid,))
+                    cursor.execute("DELETE FROM people WHERE id = ?", (pid,))
+                    EXEMPLAR_CACHE.pop(pid)
+                    EXEMPLAR_CACHE.pop(best_match_id)
+                    merged_away.add(pid)
+                    merged_count += 1
+                    results.append({
+                        "id": pid, "merged_into": best_match_id, 
+                        "name": person_names[best_match_id], "similarity": round(max_sim, 3)
+                    })
+                    
+        conn.commit()
+        
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Clustered {merged_count} unknown profiles together.")
+        
+    return {"merged_count": merged_count, "results": results}
+
+@app.post("/people/reclassify")
+def reclassify_people(payload: dict = Body(...)):
+    person_ids = payload.get("person_ids", [])
+    threshold = payload.get("threshold", 0.55)
+    
+    if not person_ids:
+        return {"reclassified_count": 0}
+        
+    cfg = load_config()
+    ai_db_path = get_ai_db_path()
+    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
+    if not ai_db_path.exists():
+         raise HTTPException(status_code=404, detail="Database not found")
+         
+    with sqlite3.connect(ai_db_path, timeout=60) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        
+        # 1. Fetch all embeddings for the target unknown profiles in safe chunks
+        faces_to_reclassify = []
+        for i in range(0, len(person_ids), 900):
+            chunk = person_ids[i:i+900]
+            placeholders = ",".join("?" * len(chunk))
+            cursor.execute(f"""
+                SELECT f.id, f.file_id, f.embedding_json, p.id
+                FROM faces f
+                JOIN people p ON p.id = f.person_id
+                WHERE p.id IN ({placeholders}) AND p.name LIKE 'Unknown Person%' AND f.embedding_json != '[]'
+            """, chunk)
+            faces_to_reclassify.extend(cursor.fetchall())
+            
+        if not faces_to_reclassify:
+            return {"reclassified_count": 0, "message": "No valid faces to reclassify."}
+            
+        target_person_ids = list(set([r[3] for r in faces_to_reclassify]))
+        
+        # 2. Fetch the exemplar embeddings for all OTHER profiles (Named and Unselected Unknowns)
+        cursor.execute("""
+            SELECT p.id, f.embedding_json
+            FROM people p
+            JOIN faces f ON p.id = f.person_id
+            WHERE f.embedding_json != '[]'
+        """)
+        
+        target_ids_set = set(person_ids)
+        clusters = {}
+        for pid, emb_json in cursor.fetchall():
+            if pid in target_ids_set:
+                continue
+            if pid not in clusters:
+                clusters[pid] = []
+            if len(clusters[pid]) < 15:
+                clusters[pid].append(json.loads(emb_json))
+                
+        # 3. Delete the old targeted profiles and their faces
+        for pid in target_person_ids:
+            cursor.execute("DELETE FROM faces WHERE person_id = ?", (pid,))
+            cursor.execute("DELETE FROM people WHERE id = ?", (pid,))
+            EXEMPLAR_CACHE.pop(pid)
+            old_thumb = thumb_dir / f"person_{pid}.jpg"
+            if old_thumb.exists():
+                try: old_thumb.unlink()
+                except Exception: pass
+            
+        # Determine the current max person ID for generating new Unknowns
+        cursor.execute("SELECT MAX(id) FROM people")
+        p_row = cursor.fetchone()
+        p_count = p_row[0] if (p_row and p_row[0]) else 0
+        
+        import numpy as np
+        
+        cluster_embs = []
+        cluster_ids_list = []
+        for pid, embs in clusters.items():
+            cluster_ids_list.extend([pid] * len(embs))
+            cluster_embs.extend(embs)
+            
+        if cluster_embs:
+            cm = np.array(cluster_embs, dtype=np.float32)
+            cn = np.linalg.norm(cm, axis=1, keepdims=True)
+            cluster_matrix_norm = cm / np.where(cn == 0, 1, cn)
+        else:
+            cluster_matrix_norm = None
+            
+        # 4. Re-cluster the faces
+        reclassified_count = 0
+        files_to_tag = {}
+        
+        cursor.execute("SELECT id, name FROM people WHERE name NOT LIKE 'Unknown Person%'")
+        named_people_map = {r[0]: r[1] for r in cursor.fetchall()}
+        
+        for face_id, file_id, emb_json, old_pid in faces_to_reclassify:
+            if APP_SHUTTING_DOWN:
+                break
+            embedding = json.loads(emb_json)
+            emb_np = np.array(embedding, dtype=np.float32)
+            emb_norm = np.linalg.norm(emb_np)
+            emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
+            
+            best_match_id = None
+            
+            if cluster_matrix_norm is not None:
+                similarities = np.dot(cluster_matrix_norm, emb_np_norm)
+                max_idx = np.argmax(similarities)
+                max_sim = similarities[max_idx]
+                
+                if max_sim >= threshold:
+                    best_match_id = cluster_ids_list[max_idx]
+                    
+            if best_match_id is None:
+                while True:
+                    p_count += 1
+                    cursor.execute("INSERT OR IGNORE INTO people (name) VALUES (?)", (f"Unknown Person #{p_count}",))
+                    if cursor.rowcount > 0:
+                        best_match_id = cursor.lastrowid
+                        break
+                clusters[best_match_id] = [embedding]
+                if cluster_matrix_norm is None:
+                    cluster_matrix_norm = np.array([emb_np_norm])
+                    cluster_ids_list = [best_match_id]
+                else:
+                    cluster_matrix_norm = np.vstack([cluster_matrix_norm, emb_np_norm])
+                    cluster_ids_list.append(best_match_id)
+            else:
+                if len(clusters[best_match_id]) < 15:
+                    clusters[best_match_id].append(embedding)
+                    cluster_matrix_norm = np.vstack([cluster_matrix_norm, emb_np_norm])
+                    cluster_ids_list.append(best_match_id)
+                    
+            cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
+                            (best_match_id, file_id, emb_json))
+            reclassified_count += 1
+            
+            if best_match_id in named_people_map:
+                name = named_people_map[best_match_id]
+                if name not in files_to_tag:
+                    files_to_tag[name] = set()
+                files_to_tag[name].add(file_id)
+                
+        conn.commit()
+        
+    if files_to_tag:
+        with SessionLocal() as s:
+            for name, f_ids in files_to_tag.items():
+                f_ids_list = list(f_ids)
+                for i in range(0, len(f_ids_list), 900):
+                    chunk = f_ids_list[i:i + 900]
+                    files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
+                    mappings = []
+                    for f_id, tags in files_to_update:
+                        current_tags_set = set((tags or "").split())
+                        new_tag = f"person:{name}"
+                        if new_tag not in current_tags_set:
+                            current_tags_set.add(new_tag)
+                            mappings.append({"id": f_id, "tags": " ".join(sorted(current_tags_set))})
+                    if mappings:
+                        s.bulk_update_mappings(FileIndex, mappings)
+                        s.commit()
+                        
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Reclassified {reclassified_count} faces from unknown profiles.")
+                        
+    return {"reclassified_count": reclassified_count}
 
 object_scanner_running = False
 object_scanner_thread = None

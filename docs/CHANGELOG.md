@@ -4,6 +4,8 @@
 **Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.6
 
 ### 🚀 Major New Features
+*   **Cluster Unknowns:** Added a powerful new "Cluster Unknowns" feature on the People page. It allows you to instantly compare Unknown Persons against other Unknown Persons and automatically merges them if they meet your configured Similarity Threshold, significantly reducing clutter before you assign names.
+*   **Reclassify Unknowns:** Added a powerful new "Reclassify" feature that breaks apart wrongly-clustered Unknown profiles and re-evaluates every single face against all Named profiles and other Unknowns using your current Similarity Threshold. This allows you to effortlessly correct profiles that were grouped with the wrong threshold settings!
 *   **Hidden People:** Added the ability to explicitly "Hide" specific Known or Unknown people from the UI and Search Auto-Suggest. Hidden profiles are kept in the database to prevent the AI from repeatedly rescanning them.
 *   **Video Date Extraction:** Added native video container date parsing (`creation_time`, `\xa9day`) via `mutagen`. Video files now map perfectly into the chronological timeline alongside your photos.
 *   **Video Tag Parsing:** Added support for extracting native video metadata tags via `mutagen` for enriched searchability.
@@ -14,6 +16,10 @@
 *   **Direct Move to Person:** You can now select specific photos from any profile (or Unknown group) and instantly reassign them to another named person via a convenient UI dropdown.
 
 ### ✨ UI/UX Enhancements
+*   **Undo Action for Tagging:** Added an intuitive "Undo" button to the Toast notifications, allowing you to instantly reverse accidental photo assignments, removals, or profile moves.
+*   **Live Chunked Progress Bars:** Re-engineered the frontend to send bulk AI operations in safe chunks of 250 profiles. This prevents HTTP connection timeouts on massive 30,000+ databases and provides a smooth, real-time progress bar for the user.
+*   **Long-Running Task Cancellations:** Added the ability to gracefully cancel massive AI clustering or reclassification tasks midway. The UI dynamically switches the action buttons to "Cancel" during processing.
+*   **AI Actions Menu:** Grouped all advanced similarity sliders, clustering, and purge operations into a clean, collapsible "AI Actions" panel to keep the main People UI uncluttered.
 *   **Data Management Tab:** Reorganized Settings to feature a dedicated "Data Management" tab, cleanly grouping your DB Cleanup, Export/Backup, JSON tools, and Cache clearing operations.
 *   **Intelligent Scroll Memory:** Navigating back to the People page from a specific person's photo grid now automatically snaps you back to your exact scroll position and active page.
 *   **Thumbnail Debouncing:** Added a 250ms Javascript debounce wrapper to face thumbnails. Rapidly paginating through the People grid no longer hammers the backend with hundreds of queued OpenCV tasks!
@@ -32,6 +38,8 @@
 ### 🐞 Bug Fixes & Performance
 *   **LRU Exemplar Matrix Cache:** Implemented a highly optimized, thread-safe memory cache that builds a curated 25-photo baseline for each person. It dramatically improves AI accuracy by dropping blurry outliers and speeding up matrix multiplications.
 *   **Dynamic Cache Invalidation:** The similarity caches are now explicitly invalidated and recalculated instantly whenever you rename, merge, delete, or manually tag a person.
+*   **React O(N²) Render Bottleneck:** Fixed a catastrophic browser freeze when selecting thousands of unknown profiles by replacing inline array `.find()` and `.sort()` operations with highly optimized O(1) Hash Maps and strict memoization.
+*   **Comprehensive Backend Logging:** The backend now fully logs summary statistics for all Bulk AI operations (Auto-Pick Cover, Merges, Clusters, Reclassifications) to the `wabs.log` file when Background Logging is enabled.
 *   **Theme-Aware SVG Placeholders:** The backend now dynamically generates offline text and document preview SVGs based on your active UI theme, fixing invisible black text in Light Mode.
 *   **Thread-Safe Components:** Bulletproofed backend memory structures to handle rapid UI clicks without triggering concurrent mutation crashes.
 *   **Vectorized AI Similarity:** Replaced slow native Python math loops with highly optimized `numpy` vector operations for cosine similarity, slashing face clustering times.
