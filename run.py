@@ -76,4 +76,7 @@ if __name__ == "__main__":
     # Attach the server object to the app's state so it can be accessed from endpoints
     app.state.server = server
 
-    server.run()
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        print("\nWABS Server stopped by user.")

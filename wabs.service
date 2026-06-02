@@ -1,0 +1,18 @@
+[Unit]
+Description=WABS AI Scanner Server
+After=network.target
+
+[Service]
+Type=simple
+# Change this to your actual Linux username
+User=root
+# Adjust these paths to where WABS is located on your Linux machine
+WorkingDirectory=/opt/WABS
+ExecStart=/opt/WABS/WABS-Linux
+# Optional: Limit CPU usage for background processing (as noted in README)
+Environment="OPENBLAS_NUM_THREADS=2"
+Environment="OMP_NUM_THREADS=2"
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

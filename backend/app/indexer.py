@@ -182,8 +182,8 @@ def extract_metadata_for_file(path, category):
             elif path.suffix.lower() in [".txt", ".md", ".csv", ".log"]:
                 try:
                     if path.stat().st_size < 10 * 1024 * 1024:  # Skip line counting for text files > 10MB
-                        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                            lines = sum(1 for _ in f)
+                        with open(path, 'rb') as f:
+                            lines = f.read().count(b'\n')
                         metadata["lines"] = lines
                         metadata["pages"] = max(1, (lines + 49) // 50)  # Estimate ~50 lines per page
                 except Exception:
@@ -191,8 +191,8 @@ def extract_metadata_for_file(path, category):
         elif category == "code":
             try:
                 if path.stat().st_size < 10 * 1024 * 1024:  # Skip line counting for code files > 10MB
-                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                        metadata["loc"] = sum(1 for _ in f)
+                    with open(path, 'rb') as f:
+                        metadata["loc"] = f.read().count(b'\n')
             except Exception:
                 pass
         elif category == "video":
@@ -327,6 +327,9 @@ def llm_classify(metadata, ext, cfg):
         "Authorization": f"Bearer {api_key}"
     })
     
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info("Requesting classification data from LLM...")
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
             res = json.loads(response.read().decode())
@@ -485,6 +488,21 @@ def run():
         with SessionLocal() as session:
             STATE["status"] = "Discovering files..."
             
+            # --- Apply Path Mappings if configured ---
+            path_mappings = cfg.get("path_mappings")
+            if path_mappings and isinstance(path_mappings, dict):
+                mapped_count = 0
+                for old_prefix, new_prefix in path_mappings.items():
+                    items = session.query(FileIndex).filter(FileIndex.path.startswith(old_prefix)).all()
+                    for item in items:
+                        mapped_path = item.path.replace(old_prefix, new_prefix, 1)
+                        # Universally normalize slashes so DB strings perfectly match the host OS
+                        mapped_path = mapped_path.replace('\\', os.sep).replace('/', os.sep)
+                        item.path = os.path.normpath(mapped_path)
+                        mapped_count += 1
+                if mapped_count > 0:
+                    session.commit()
+
             global_excluded_str = cfg.get("global_excluded_paths", "")
             global_excluded_list = [p.strip() for p in global_excluded_str.split(",") if p.strip()]
             
@@ -520,14 +538,27 @@ def run():
                 valid_roots_prefixes = [str(r) + os.sep if not str(r).endswith(os.sep) else str(r) for r in valid_roots]
                 raw_files_set = set(raw_files)
                 paths_to_delete = []
+                unmapped_paths = []
                 
                 for ep in existing_paths_set:
                     # Only consider database paths that belong to currently connected/active drives
                     if any(ep.startswith(prefix) for prefix in valid_roots_prefixes):
                         if ep not in raw_files_set:
                             paths_to_delete.append(ep)
+                    else:
+                        unmapped_paths.append(ep)
+                                
+                if unmapped_paths and not STATE.get("force_reindex"):
+                    STATE["status"] = "Unmapped paths detected! Setup Path Mapping or force re-index."
+                    STATE["running"] = False
+                    return
                             
                 if paths_to_delete:
+                    if not STATE.get("force_reindex") and not cfg.get("allow_delete_missing"):
+                        STATE["status"] = f"{len(paths_to_delete)} missing files. Enable mapping or force re-index to remove."
+                        STATE["running"] = False
+                        return
+
                     STATE["status"] = f"Removing {len(paths_to_delete)} missing/excluded files..."
                     for i in range(0, len(paths_to_delete), 500):
                         chunk = paths_to_delete[i:i+500]

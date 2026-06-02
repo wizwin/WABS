@@ -14,8 +14,8 @@ import time
 
 from fastapi import FastAPI, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
-from sqlalchemy import func, or_, Integer
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from sqlalchemy import func, or_, Integer, text
 from fastapi.staticfiles import StaticFiles
 
 try:
@@ -44,6 +44,33 @@ except ModuleNotFoundError:
     from indexer import start as start_indexing, STATE as STATE
 
 app = FastAPI()
+
+import asyncio
+
+@app.on_event("startup")
+async def suppress_harmless_asyncio_errors():
+    # Create expression indexes to make chronological and size sorting instantaneous
+    try:
+        from backend.app.database import SessionLocal
+        with SessionLocal() as s:
+            s.execute(text("CREATE INDEX IF NOT EXISTS idx_files_best_date ON files (coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10)))"))
+            s.execute(text("CREATE INDEX IF NOT EXISTS idx_files_size ON files (CAST(size AS INTEGER))"))
+            s.commit()
+    except Exception as e:
+        print("Database optimization index creation failed:", e)
+
+    if sys.platform == "win32":
+        loop = asyncio.get_running_loop()
+        default_handler = loop.get_exception_handler()
+        def custom_exception_handler(loop, context):
+            exc = context.get('exception')
+            if isinstance(exc, ConnectionResetError) and getattr(exc, 'winerror', None) == 10054:
+                return # Silence harmless browser disconnection errors
+            if default_handler:
+                default_handler(loop, context)
+            else:
+                loop.default_exception_handler(context)
+        loop.set_exception_handler(custom_exception_handler)
 
 APP_SHUTTING_DOWN = False
 
@@ -468,22 +495,32 @@ def _build_search_query(query, s, q_base=None):
             continue
         if lower_token.startswith("date:"):
             val = lower_token[len("date:"):]
-            # Date range like YYYY-YYYY
+            
+            exif_date = func.json_extract(FileIndex.metadata_json, '$.date')
+            exif_date_norm = func.replace(exif_date, ':', '-')
+            
+            def date_filter(term):
+                return or_(
+                    func.lower(func.coalesce(FileIndex.modified, "")).contains(term),
+                    func.lower(func.coalesce(exif_date, "")).contains(term),
+                    func.lower(func.coalesce(exif_date_norm, "")).contains(term)
+                )
+
             if m_range := re.match(r"^(\d{4})-(\d{4})$", val):
                 start_year, end_year = m_range.groups()
                 if int(start_year) <= int(end_year):
-                    specific_filters.append(FileIndex.modified >= f"{start_year}-01-01")
-                    specific_filters.append(FileIndex.modified < f"{int(end_year) + 1}-01-01")
-            # Intelligently parse mm/dd/yyyy or dd/mm/yyyy
+                    specific_filters.append(or_(
+                        func.substr(func.coalesce(exif_date_norm, FileIndex.modified, "0000"), 1, 4).between(f"{start_year}", f"{int(end_year)}")
+                    ))
             elif m := re.match(r"^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$", val):
                 p1, p2, year = m.groups()
                 p1, p2 = p1.zfill(2), p2.zfill(2)
                 specific_filters.append(or_(
-                    text_filter(FileIndex.modified, f"{year}-{p1}-{p2}"),
-                    text_filter(FileIndex.modified, f"{year}-{p2}-{p1}")
+                    date_filter(f"{year}-{p1}-{p2}"),
+                    date_filter(f"{year}-{p2}-{p1}")
                 ))
             else:
-                specific_filters.append(text_filter(FileIndex.modified, val))
+                specific_filters.append(date_filter(val))
         elif lower_token.startswith("+tag:"):
             and_tag_tokens.append(token[len("+tag:"):].lower())
         elif lower_token.startswith("tag:"):
@@ -648,7 +685,7 @@ def _build_search_query(query, s, q_base=None):
     return q
 
 @app.get("/files")
-def files(category:str="all", offset:int=0, limit:int=50):
+def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", sort_order:str="desc"):
     cfg = load_config()
     ui_prefs = cfg.get("ui_preferences") or {}
     cache_enabled = cfg.get("enable_photo_thumbnail_cache")
@@ -656,23 +693,55 @@ def files(category:str="all", offset:int=0, limit:int=50):
         cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
     cache_flag = "&tc=1" if cache_enabled else ""
 
-    with SessionLocal() as s:
-        q = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
-        if category != "all":
-            if category == "other":
-                standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
-                q = q.filter(~FileIndex.category.in_(standard))
-            elif category == "duplicates":
-                dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
-                q = q.filter(FileIndex.size.in_(dup_sizes))
-                q = q.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
-            else:
-                q = q.filter(FileIndex.category == category)
-        rows = q.offset(offset).limit(limit).all()
-        return [_build_item(r, cache_flag) for r in rows]
+    def generate():
+        with SessionLocal() as s:
+            q = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
+            if category != "all":
+                if category == "other":
+                    standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
+                    q = q.filter(~FileIndex.category.in_(standard))
+                elif category == "duplicates":
+                    dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
+                    q = q.filter(FileIndex.size.in_(dup_sizes))
+                    q = q.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
+                else:
+                    q = q.filter(FileIndex.category == category)
+                    
+            if category != "duplicates":
+                if sort_by == "date":
+                    order_expr = "coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))"
+                    if sort_order == "asc":
+                        q = q.order_by(text(f"{order_expr} ASC"), FileIndex.id)
+                    else:
+                        q = q.order_by(text(f"{order_expr} DESC"), FileIndex.id)
+                elif sort_by == "size":
+                    if sort_order == "asc":
+                        q = q.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id)
+                    else:
+                        q = q.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id)
+                elif sort_by == "filename":
+                    if sort_order == "asc":
+                        q = q.order_by(FileIndex.filename.asc(), FileIndex.id)
+                    else:
+                        q = q.order_by(FileIndex.filename.desc(), FileIndex.id)
+                elif sort_by == "extension":
+                    if sort_order == "asc":
+                        q = q.order_by(FileIndex.extension.asc(), FileIndex.id)
+                    else:
+                        q = q.order_by(FileIndex.extension.desc(), FileIndex.id)
+
+            yield "["
+            first = True
+            for r in q.offset(offset).limit(limit).yield_per(1000):
+                if not first: yield ","
+                first = False
+                yield json.dumps(_build_item(r, cache_flag))
+            yield "]"
+            
+    return StreamingResponse(generate(), media_type="application/json")
 
 @app.get("/search")
-def search(query:str="", category:str="all", offset:int=0, limit:int=50):
+def search(query:str="", category:str="all", offset:int=0, limit:int=50, sort_by:str="date", sort_order:str="desc"):
     cfg = load_config()
     ui_prefs = cfg.get("ui_preferences") or {}
     cache_enabled = cfg.get("enable_photo_thumbnail_cache")
@@ -680,71 +749,123 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50):
         cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
     cache_flag = "&tc=1" if str(cache_enabled).lower() in ("true", "1", "yes") else ""
 
-    from sqlalchemy import text
-    with SessionLocal() as s:
-        q_base = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
-        if category != "all":
-            if category == "other":
-                standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
-                q_base = q_base.filter(~FileIndex.category.in_(standard))
-            elif category == "duplicates":
-                dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
-                q_base = q_base.filter(FileIndex.size.in_(dup_sizes))
-                q_base = q_base.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
-            else:
-                q_base = q_base.filter(FileIndex.category == category)
+    def generate():
+        from sqlalchemy import text
+        with SessionLocal() as s:
+            q_base = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
+            if category != "all":
+                if category == "other":
+                    standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
+                    q_base = q_base.filter(~FileIndex.category.in_(standard))
+                elif category == "duplicates":
+                    dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
+                    q_base = q_base.filter(FileIndex.size.in_(dup_sizes))
+                    q_base = q_base.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
+                else:
+                    q_base = q_base.filter(FileIndex.category == category)
 
-        query = query.strip()
-        if not query:
-            rows = q_base.offset(offset).limit(limit).all()
-            return [_build_item(r, cache_flag) for r in rows]
+            if category != "duplicates":
+                if sort_by == "date":
+                    order_expr = "coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))"
+                    if sort_order == "asc":
+                        q_base = q_base.order_by(text(f"{order_expr} ASC"), FileIndex.id)
+                    else:
+                        q_base = q_base.order_by(text(f"{order_expr} DESC"), FileIndex.id)
+                elif sort_by == "size":
+                    if sort_order == "asc":
+                        q_base = q_base.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id)
+                    else:
+                        q_base = q_base.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id)
+                elif sort_by == "filename":
+                    if sort_order == "asc":
+                        q_base = q_base.order_by(FileIndex.filename.asc(), FileIndex.id)
+                    else:
+                        q_base = q_base.order_by(FileIndex.filename.desc(), FileIndex.id)
+                elif sort_by == "extension":
+                    if sort_order == "asc":
+                        q_base = q_base.order_by(FileIndex.extension.asc(), FileIndex.id)
+                    else:
+                        q_base = q_base.order_by(FileIndex.extension.desc(), FileIndex.id)
 
-        regex = _parse_regex_pattern(query)
-        if regex:
-            filtered = []
-            match_count = 0
-            # yield_per prevents loading millions of rows into memory at once
-            for r in q_base.yield_per(1000):
-                haystack = f"{r.filename or ''} {r.path or ''} {r.tags or ''} {r.metadata_json or ''}"
-                if regex.search(haystack):
-                    if match_count >= offset:
-                        filtered.append(r)
-                    match_count += 1
-                    if len(filtered) == limit:
-                        break
-            return [_build_item(r, cache_flag) for r in filtered]
+            q_clean = query.strip()
+            if not q_clean:
+                yield "["
+                first = True
+                for r in q_base.offset(offset).limit(limit).yield_per(1000):
+                    if not first: yield ","
+                    first = False
+                    yield json.dumps(_build_item(r, cache_flag))
+                yield "]"
+                return
 
-        # Fallback to standard builder for custom search parameters (date:, size:, etc)
-        search_prefixes = [
-            "date:", "tag:", "type:", "name:", "size:", "length:", "object:", "person:",
-            "camera:", "resolution:", "fps:", "artist:", "album:", "genre:", "meta:"
-        ]
-        if any(prefix in query.lower() for prefix in search_prefixes) or "*" in query or query.startswith("-") or " -" in query or query.startswith("+") or " +" in query:
-            q = _build_search_query(query, s, q_base)
-            rows = q.offset(offset).limit(limit).all()
-            return [_build_item(r, cache_flag) for r in rows]
+            regex = _parse_regex_pattern(q_clean)
+            if regex:
+                filtered = []
+                match_count = 0
+                yield "["
+                first = True
+                # yield_per prevents loading millions of rows into memory at once
+                for r in q_base.yield_per(1000):
+                    haystack = f"{r.filename or ''} {r.path or ''} {r.tags or ''} {r.metadata_json or ''}"
+                    if regex.search(haystack):
+                        if match_count >= offset:
+                            if not first: yield ","
+                            first = False
+                            yield json.dumps(_build_item(r, cache_flag))
+                            filtered.append(r)
+                        match_count += 1
+                        if len(filtered) == limit:
+                            break
+                yield "]"
+                return
+
+            # Fallback to standard builder for custom search parameters (date:, size:, etc)
+            search_prefixes = [
+                "date:", "tag:", "type:", "name:", "size:", "length:", "object:", "person:",
+                "camera:", "resolution:", "fps:", "artist:", "album:", "genre:", "meta:"
+            ]
+            if any(prefix in q_clean.lower() for prefix in search_prefixes) or "*" in q_clean or q_clean.startswith("-") or " -" in q_clean or q_clean.startswith("+") or " +" in q_clean:
+                q = _build_search_query(q_clean, s, q_base)
+                yield "["
+                first = True
+                for r in q.offset(offset).limit(limit).yield_per(1000):
+                    if not first: yield ","
+                    first = False
+                    yield json.dumps(_build_item(r, cache_flag))
+                yield "]"
+                return
+                
+            # FTS5 Lightning-Fast Search Path
+            safe_query = q_clean.replace('"', '""').replace("'", "''")
+            fts_terms = [f'"{word}" *' for word in safe_query.split() if word]
+            if not fts_terms:
+                yield "[]"
+                return
+                
+            fts_query = " AND ".join(fts_terms)
             
-        # FTS5 Lightning-Fast Search Path
-        safe_query = query.replace('"', '""').replace("'", "''")
-        fts_terms = [f'"{word}" *' for word in safe_query.split() if word]
-        if not fts_terms:
-            return []
-            
-        fts_query = " AND ".join(fts_terms)
-        
-        matching_ids = s.execute(
-            text("SELECT rowid FROM files_fts WHERE files_fts MATCH :q ORDER BY rank LIMIT 1000"),
-            {"q": fts_query}
-        ).scalars().all()
+            matching_ids = s.execute(
+                text("SELECT rowid FROM files_fts WHERE files_fts MATCH :q ORDER BY rank LIMIT 1000"),
+                {"q": fts_query}
+            ).scalars().all()
 
-        if not matching_ids:
-            return []
+            if not matching_ids:
+                yield "[]"
+                return
+                
+            rows = q_base.filter(FileIndex.id.in_(matching_ids)).all()
+            id_to_row = {r.id: r for r in rows}
+            sorted_rows = [id_to_row[i] for i in matching_ids if i in id_to_row]
             
-        rows = q_base.filter(FileIndex.id.in_(matching_ids)).all()
-        id_to_row = {r.id: r for r in rows}
-        sorted_rows = [id_to_row[i] for i in matching_ids if i in id_to_row]
-        
-        return [_build_item(r, cache_flag) for r in sorted_rows[offset:offset+limit]]
+            yield "["
+            first = True
+            for r in sorted_rows[offset:offset+limit]:
+                if not first: yield ","
+                first = False
+                yield json.dumps(_build_item(r, cache_flag))
+            yield "]"
+
+    return StreamingResponse(generate(), media_type="application/json")
 
 @app.get("/search/suggestions")
 def search_suggestions(q: str = "", limit: int = 5):
@@ -1228,7 +1349,13 @@ def stats():
 @app.get("/timeline")
 def timeline(category: str = "all"):
     with SessionLocal() as s:
-        q = s.query(func.date(FileIndex.modified).label("date"), func.count(FileIndex.id))
+        exif_date = func.json_extract(FileIndex.metadata_json, '$.date')
+        exif_date_norm = func.replace(func.substr(exif_date, 1, 10), ':', '-')
+        mod_date = func.substr(FileIndex.modified, 1, 10)
+        best_date_str = func.coalesce(exif_date_norm, mod_date)
+        best_date = func.date(best_date_str)
+        
+        q = s.query(best_date.label("date"), func.count(FileIndex.id))
         if category != "all":
             if category == "other":
                 standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
@@ -1239,7 +1366,8 @@ def timeline(category: str = "all"):
             else:
                 q = q.filter(FileIndex.category == category)
         
-        q = q.filter(FileIndex.modified.isnot(None))
+        q = q.filter(best_date.isnot(None))
+        q = q.filter(func.substr(best_date, 1, 4) > '1900')
         q = q.group_by('date').order_by('date')
         rows = q.all()
         return [{"date": r[0], "count": r[1]} for r in rows if r[0]]
@@ -2391,32 +2519,40 @@ def get_person_photos(person_id: int, offset: int = 0, limit: int = 50):
         cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
     cache_flag = "&tc=1" if str(cache_enabled).lower() in ("true", "1", "yes") else ""
 
-    with sqlite3.connect(ai_db_path, timeout=15) as conn:
-        conn.execute("PRAGMA journal_mode=WAL;")
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                "SELECT file_id FROM faces WHERE person_id = ? GROUP BY file_id ORDER BY file_id DESC LIMIT ? OFFSET ?", 
-                (person_id, limit, offset)
-            )
-            file_ids = [r[0] for r in cursor.fetchall()]
-        except sqlite3.OperationalError as e:
-            if "no such table" not in str(e).lower():
-                raise HTTPException(status_code=500, detail=f"Database locked or unavailable: {e}")
-            return []
-    if not file_ids:
-        return []
-    with SessionLocal() as s:
-        results = []
-        # Chunk queries to prevent SQLite IN() limitations and memory exhaustion
-        for i in range(0, len(file_ids), 900):
-            chunk = file_ids[i:i + 900]
-            photos = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json).filter(FileIndex.id.in_(chunk)).all()
-            
-            # Ensure the response maintains the exact ordered pagination from SQLite
-            photo_dict = {p.id: _build_item(p, cache_flag) for p in photos}
-            results.extend([photo_dict[fid] for fid in chunk if fid in photo_dict])
-        return results
+    def generate():
+        with sqlite3.connect(ai_db_path, timeout=15) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    "SELECT file_id FROM faces WHERE person_id = ? GROUP BY file_id ORDER BY file_id DESC LIMIT ? OFFSET ?", 
+                    (person_id, limit, offset)
+                )
+                file_ids = [r[0] for r in cursor.fetchall()]
+            except sqlite3.OperationalError as e:
+                if "no such table" not in str(e).lower():
+                    pass
+                file_ids = []
+
+        if not file_ids:
+            yield "[]"
+            return
+
+        with SessionLocal() as s:
+            yield "["
+            first = True
+            for i in range(0, len(file_ids), 900):
+                chunk = file_ids[i:i + 900]
+                photos = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json).filter(FileIndex.id.in_(chunk)).all()
+                photo_dict = {p.id: _build_item(p, cache_flag) for p in photos}
+                for fid in chunk:
+                    if fid in photo_dict:
+                        if not first: yield ","
+                        first = False
+                        yield json.dumps(photo_dict[fid])
+            yield "]"
+
+    return StreamingResponse(generate(), media_type="application/json")
 
 @app.post("/people/{person_id}/set-thumbnail")
 def set_person_thumbnail(person_id: int, payload: dict = Body(...)):

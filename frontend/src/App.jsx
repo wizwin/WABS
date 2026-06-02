@@ -63,6 +63,11 @@ axios.interceptors.response.use(
 
 const SettingsContext = createContext({ animationsEnabled: true, theme: 'dark' });
 
+const dateFormatter = new Intl.DateTimeFormat('default', { month: 'short', year: 'numeric' });
+const fileDateCache = new WeakMap();
+const placeholderCache = new Map();
+const sizeCache = new Map();
+
 function StatCard({ title, value, icon, color, onClick }) {
   const [isHovered, setIsHovered] = useState(false);
   const [isActive, setIsActive] = useState(false);
@@ -159,27 +164,46 @@ function ProgressBar({ current = 0, total = 0, color = '#3b82f6' }) {
 function formatSize(size) {
   if (!size || size === '0') return '0 B';
   const str = String(size);
-  if (/[a-zA-Z]/.test(str)) return str; // Already has a unit
+  if (sizeCache.has(str)) return sizeCache.get(str);
+  const lastChar = str[str.length - 1];
+  if ((lastChar >= 'A' && lastChar <= 'Z') || (lastChar >= 'a' && lastChar <= 'z')) {
+    sizeCache.set(str, str);
+    return str;
+  }
   const bytes = parseFloat(str.replace(/,/g, ''));
-  if (isNaN(bytes) || bytes === 0) return '0 B';
+  if (isNaN(bytes) || bytes === 0) {
+    sizeCache.set(str, '0 B');
+    return '0 B';
+  }
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  const result = parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  sizeCache.set(str, result);
+  return result;
 }
 
 function parseFileDate(file) {
+  if (fileDateCache.has(file)) return fileDateCache.get(file);
   let dateStr = file.metadata?.date || file.modified;
-  if (!dateStr) return null;
-  // Normalize EXIF date colons and ensure ISO format for robust browser parsing
+  if (Array.isArray(dateStr)) {
+    dateStr = dateStr[0];
+  }
+  if (!dateStr) {
+    fileDateCache.set(file, null);
+    return null;
+  }
   if (typeof dateStr === 'string') {
-    if (dateStr.match(/^\d{4}:\d{2}:\d{2}/)) {
-      dateStr = dateStr.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
+    dateStr = dateStr.trim();
+    if (dateStr.length >= 10 && dateStr[4] === ':' && dateStr[7] === ':') {
+      dateStr = dateStr.substring(0, 4) + '-' + dateStr.substring(5, 7) + '-' + dateStr.substring(8);
     }
-    dateStr = dateStr.replace(' ', 'T');
+    dateStr = dateStr.replace(/\s+/, 'T');
   }
   const d = new Date(dateStr);
-  return isNaN(d.getTime()) ? null : d;
+  const res = isNaN(d.getTime()) ? null : d;
+  fileDateCache.set(file, res);
+  return res;
 }
 
 function PersonThumb({ url, size = 60 }) {
@@ -226,11 +250,39 @@ function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContext
   const [isHovered, setIsHovered] = useState(false);
   const [isActive, setIsActive] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
+  const [imgError, setImgError] = useState(false);
   const { animationsEnabled } = useContext(SettingsContext);
+
+  const retryCount = useRef(0);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     setIsMounted(true);
   }, []);
+
+  // Reset error state if the item's underlying thumbnail changes
+  useEffect(() => {
+    setImgError(false);
+    retryCount.current = 0;
+    setRetryKey(0);
+  }, [item.thumbnail]);
+
+  const handleImageError = () => {
+    if (retryCount.current < 3) {
+      retryCount.current += 1;
+      setTimeout(() => {
+        setImgError(false);
+        setRetryKey(prev => prev + 1);
+      }, 1500 * retryCount.current); // Exponential backoff to bypass TCP queue limits
+    } else {
+      setImgError(true);
+    }
+  };
+
+  let currentSrc = imgError ? renderThumb({ ...item, thumbnail: null }) : renderThumb(item);
+  if (!imgError && retryKey > 0 && !currentSrc.startsWith('data:')) {
+      currentSrc += (currentSrc.includes('?') ? '&' : '?') + `retry=${retryKey}`;
+  }
 
   return (
     <div
@@ -255,11 +307,12 @@ function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContext
         <>
           <input type="checkbox" className="select-cb" checked={isChecked} onChange={(e) => onToggleCheck(e, item.path)} onClick={(e) => e.stopPropagation()} />
           <img
-            src={renderThumb(item)}
+            src={currentSrc}
             className='thumb'
             loading='lazy'
+            style={{ minHeight: '150px' }}
             onClick={(e) => { e.stopPropagation(); onSelectAndOpen(item); }}
-            onError={(e) => { e.target.src = renderThumb({ ...item, thumbnail: null }) }}
+            onError={handleImageError}
           />
           {item.category === 'video' && (
             <div className='overlay'>
@@ -284,11 +337,12 @@ function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContext
         <>
           <input type="checkbox" className="select-cb list-cb" checked={isChecked} onChange={(e) => onToggleCheck(e, item.path)} onClick={(e) => e.stopPropagation()} />
           <img
-            src={renderThumb(item)}
+            src={currentSrc}
             className='list-thumb'
             loading='lazy'
+            style={{ minHeight: '60px', minWidth: '60px' }}
             onClick={(e) => { e.stopPropagation(); onSelectAndOpen(item); }}
-            onError={(e) => { e.target.src = renderThumb({ ...item, thumbnail: null }) }}
+            onError={handleImageError}
           />
           <div className="list-info">
             <p className="list-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -343,6 +397,71 @@ function TimelineItem({ dateKey, isActiveDate, onClick }) {
   );
 }
 
+function DateGroup({ dateKey, filesGroup, viewMode, checkedFiles, toggleCheck, handleItemClick, openContainingFolder, setSelected, openFile, renderThumb, filterCategory, indexer, checkFileReadOnly }) {
+  const [isVisible, setIsVisible] = useState(false);
+  const [minHeight, setMinHeight] = useState('100px');
+  const groupRef = useRef(null);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        setIsVisible(true);
+      } else {
+        if (groupRef.current) {
+          const rect = groupRef.current.getBoundingClientRect();
+          if (rect.height > 50) {
+            setMinHeight(`${rect.height}px`);
+          }
+        }
+        setIsVisible(false);
+      }
+    }, { rootMargin: '2000px' });
+
+    if (groupRef.current) observer.observe(groupRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div id={`date-group-${dateKey}`} ref={groupRef} style={{ minHeight }}>
+      <h2 className="date-header" data-date={dateKey}>{dateKey}</h2>
+      {isVisible && (
+        <div className={viewMode === 'grid' ? 'grid' : 'list'}>
+          {(() => {
+            let isAlternateGroup = false;
+            return filesGroup.map((item, index) => {
+              const prevItem = index > 0 ? filesGroup[index - 1] : null;
+              const isNewDuplicateGroup = filterCategory === 'duplicates' && prevItem && prevItem.size !== item.size;
+              if (isNewDuplicateGroup) isAlternateGroup = !isAlternateGroup;
+              return (
+                <Fragment key={item.path}>
+                  {isNewDuplicateGroup && (
+                    <div style={{ gridColumn: '1 / -1', width: '100%', height: '2px', background: '#3b82f6', margin: viewMode === 'grid' ? '8px 0' : '4px 0', opacity: 0.5, borderRadius: '2px' }} />
+                  )}
+                  <FileCard
+                    item={item}
+                    viewMode={viewMode}
+                    isChecked={checkedFiles.has(item.path)}
+                    onToggleCheck={toggleCheck}
+                    onClick={handleItemClick}
+                    onContextMenu={openContainingFolder}
+                    onSelectAndOpen={(i) => { setSelected(i); openFile(i.path); }}
+                    renderThumb={renderThumb}
+                    isAltGroup={isAlternateGroup}
+                    showVerified={filterCategory === 'duplicates' && !!item.metadata?.sha256}
+                    showUnverified={filterCategory === 'duplicates' && !item.metadata?.sha256}
+                    isReadOnly={checkFileReadOnly(item.path)}
+                    isProcessing={filterCategory === 'duplicates' && indexer?.hasher_running && indexer?.hasher_current_file === item.path}
+                  />
+                </Fragment>
+              );
+            });
+          })()}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App(){
 
 const [page,setPage]=useState('dashboard')
@@ -352,8 +471,12 @@ const [query,setQuery]=useState('')
 const [settings,setSettings]=useState({})
 const [searchCache,setSearchCache]=useState([])
 const [offset,setOffset]=useState(0)
+const [startOffset, setStartOffset]=useState(0)
 const [hasMore,setHasMore]=useState(true)
 const [loadingMore,setLoadingMore]=useState(false)
+const loadingMoreRef = useRef(false)
+const [loadingPrevious, setLoadingPrevious]=useState(false)
+const loadingPreviousRef = useRef(false)
 const [stats,setStats]=useState({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0})
 const [indexer,setIndexer]=useState({running:false,paused:false,stopped:false,current:0,total:0,current_file:'',status:'Idle',indexed:0,face_scanner_running:false,object_scanner_running:false,hasher_running:false,hasher_current:0,hasher_total:0,face_scanner_current:0,face_scanner_total:0,object_scanner_current:0,object_scanner_total:0})
 const [sortBy,setSortBy]=useState('date')
@@ -441,9 +564,11 @@ const [showSimilarPanel, setShowSimilarPanel] = useState(false);
 const [settingsTab, setSettingsTab] = useState('general');
 const findSimilarAbortController = useRef(null);
 const abortDataOpRef = useRef(false);
+const [mergeConflictData, setMergeConflictData] = useState(null);
 const aiActionAbortController = useRef(null);
 const [fullTimelineData, setFullTimelineData] = useState([]);
 const [personPreviewPhotos, setPersonPreviewPhotos] = useState([]);
+const [timelineUpdateTick, setTimelineUpdateTick] = useState(0);
 
 useEffect(() => {
   if (selected && selected.is_person) {
@@ -505,13 +630,15 @@ const isSelectionReadOnly = useMemo(() => {
   return Array.from(checkedFiles).some(checkFileReadOnly);
 }, [checkedFiles, settings]);
 
-async function loadFiles(nextOffset = 0, append = false, cat = filterCategory){
+async function loadFiles(nextOffset = 0, append = false, cat = filterCategory, sBy = sortBy, sOrd = sortOrder){
   if (loadFilesAbortController.current) {
     loadFilesAbortController.current.abort();
   }
   loadFilesAbortController.current = new AbortController();
+  const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+  const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
   try {
-    const r = await axios.get(`${API}/files?category=${cat}&offset=${nextOffset}&limit=50`, {
+    const r = await axios.get(`${API}/files?category=${cat}&offset=${nextOffset}&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`, {
       signal: loadFilesAbortController.current.signal
     })
     if(append){
@@ -522,15 +649,17 @@ async function loadFiles(nextOffset = 0, append = false, cat = filterCategory){
       });
     } else {
       setFiles(r.data)
+      setStartOffset(nextOffset)
     }
     setOffset(nextOffset + r.data.length)
-    setHasMore(r.data.length === 50)
+    setHasMore(r.data.length === limit)
     if(!append){
       setSearchCache([])
     }
   } catch (err) {
     if (!axios.isCancel(err)) {
       console.warn('Load files failed', err);
+      setHasMore(false);
     }
   }
 }
@@ -623,7 +752,7 @@ const handleKeyDown = (e) => {
   }
 };
 
-function doSearch(value, cat = filterCategory){
+function doSearch(value, cat = filterCategory, sBy = sortBy, sOrd = sortOrder){
   setQuery(value)
 
   if(searchTimeout.current){
@@ -637,7 +766,7 @@ function doSearch(value, cat = filterCategory){
       }
       setSelected(null)
           setCheckedFiles(new Set())
-      await loadFiles(0, false, cat)
+      await loadFiles(0, false, cat, sBy, sOrd)
       return
     }
 
@@ -646,32 +775,37 @@ function doSearch(value, cat = filterCategory){
     }
     searchAbortController.current = new AbortController();
 
+    const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+    const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
     setLoadingMore(true)
     setSelected(null)
-        setCheckedFiles(new Set())
+    setCheckedFiles(new Set())
     const safeQuery = value.replace(/,/g, ' ');
     try {
-      const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=50`, {
+      const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`, {
         signal: searchAbortController.current.signal
       })
       setSearchCache(r.data)
       setFiles(r.data)
       setOffset(r.data.length)
-      setHasMore(r.data.length === 50)
+      setHasMore(r.data.length === limit)
       setPage('search')
       setLoadingMore(false)
     } catch (err) {
       if (!axios.isCancel(err)) {
         setLoadingMore(false)
         console.warn('Search failed', err);
+        setHasMore(false)
       }
     }
   }, 600)
 }
 
-async function goToSearch(cat = filterCategory){
+async function goToSearch(cat = filterCategory, sBy = sortBy, sOrd = sortOrder){
   setSelected(null)
   setCheckedFiles(new Set())
+  const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+  const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
   if(query){
     if (searchAbortController.current) {
       searchAbortController.current.abort();
@@ -681,32 +815,37 @@ async function goToSearch(cat = filterCategory){
     setLoadingMore(true)
     const safeQuery = query.replace(/,/g, ' ');
     try {
-      const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=50`, {
+      const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`, {
         signal: searchAbortController.current.signal
       })
       setSearchCache(r.data)
       setFiles(r.data)
       setOffset(r.data.length)
-      setHasMore(r.data.length === 50)
+      setStartOffset(0)
+      setHasMore(r.data.length === limit)
       setLoadingMore(false)
     } catch (err) {
       if (!axios.isCancel(err)) {
         setLoadingMore(false)
         console.warn('Search failed', err);
+        setHasMore(false)
       }
     }
   } else {
-    await loadFiles(0, false, cat)
+    await loadFiles(0, false, cat, sBy, sOrd)
   }
   setPage('search')
 }
 
 async function loadMore(){
-  if(loadingMore || !hasMore) return
+  if(loadingMore || loadingMoreRef.current || !hasMore) return
 
   setLoadingMore(true)
+  loadingMoreRef.current = true
+  const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+  const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
   if(page === 'explorer'){
-    await loadFiles(offset, true, filterCategory)
+    await loadFiles(offset, true, filterCategory, sortBy, sortOrder)
   } else if(page === 'search'){
     if (searchAbortController.current) {
       searchAbortController.current.abort();
@@ -715,7 +854,7 @@ async function loadMore(){
 
     const safeQuery = query.replace(/,/g, ' ');
     try {
-      const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${offset}&limit=50`, {
+      const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${offset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`, {
         signal: searchAbortController.current.signal
       })
       setFiles(prev => {
@@ -729,27 +868,95 @@ async function loadMore(){
         return [...prev, ...additions];
       });
       setOffset(offset + r.data.length)
-      setHasMore(r.data.length === 50)
+      setHasMore(r.data.length === limit)
     } catch (err) {
       if (!axios.isCancel(err)) {
         console.warn('Load more search failed', err);
+        setHasMore(false)
       }
     }
     } else if(page === 'person_files' && currentPerson) {
       try {
-        const r = await axios.get(`${API}/people/${currentPerson.id}/photos?offset=${offset}&limit=50`);
+        const r = await axios.get(`${API}/people/${currentPerson.id}/photos?offset=${offset}&limit=${limit}`);
         setPersonFiles(prev => {
           const existing = new Set(prev.map(f => f.path));
           const additions = r.data.filter(f => !existing.has(f.path));
           return [...prev, ...additions];
         });
         setOffset(offset + r.data.length);
-        setHasMore(r.data.length === 50);
+        setHasMore(r.data.length === limit);
       } catch (err) {
         console.warn('Load more person photos failed', err);
+        setHasMore(false)
       }
   }
   setLoadingMore(false)
+  loadingMoreRef.current = false
+}
+
+async function loadPrevious(){
+  if(loadingPrevious || loadingPreviousRef.current || startOffset <= 0) return
+
+  setLoadingPrevious(true)
+  loadingPreviousRef.current = true
+  const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+  const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
+  const fetchLimit = Math.min(limit, startOffset);
+  const nextStartOffset = startOffset - fetchLimit;
+
+  try {
+    let r;
+    if(page === 'explorer'){
+      r = await axios.get(`${API}/files?category=${filterCategory}&offset=${nextStartOffset}&limit=${fetchLimit}&sort_by=${sortBy}&sort_order=${sortOrder}`);
+    } else if(page === 'search'){
+      const safeQuery = query.replace(/,/g, ' ');
+      r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${nextStartOffset}&limit=${fetchLimit}&sort_by=${sortBy}&sort_order=${sortOrder}`);
+    } else if(page === 'person_files' && currentPerson) {
+      r = await axios.get(`${API}/people/${currentPerson.id}/photos?offset=${nextStartOffset}&limit=${fetchLimit}`);
+    }
+
+    if (r && r.data) {
+      const contentEl = document.querySelector('.content');
+      const oldScrollHeight = contentEl ? contentEl.scrollHeight : 0;
+      const oldScrollTop = contentEl ? contentEl.scrollTop : 0;
+
+      if (page === 'explorer' || page === 'search') {
+        setFiles(prev => {
+          const existing = new Set(prev.map(f => f.path));
+          const additions = r.data.filter(f => !existing.has(f.path));
+          return [...additions, ...prev];
+        });
+        if (page === 'search') {
+          setSearchCache(prev => {
+            const existing = new Set(prev.map(f => f.path));
+            const additions = r.data.filter(f => !existing.has(f.path));
+            return [...additions, ...prev];
+          });
+        }
+      } else if (page === 'person_files') {
+        setPersonFiles(prev => {
+          const existing = new Set(prev.map(f => f.path));
+          const additions = r.data.filter(f => !existing.has(f.path));
+          return [...additions, ...prev];
+        });
+      }
+      
+      setStartOffset(nextStartOffset);
+
+      setTimeout(() => {
+        if (contentEl) {
+          contentEl.scrollTop = oldScrollTop + (contentEl.scrollHeight - oldScrollHeight);
+        }
+      }, 50);
+    }
+  } catch (err) {
+    if (!axios.isCancel(err)) {
+      console.warn('Load previous failed', err);
+    }
+  }
+  
+  setLoadingPrevious(false)
+  loadingPreviousRef.current = false
 }
 
 const syncActiveDate = (containerElement) => {
@@ -787,6 +994,9 @@ function handleScroll(e){
   const {scrollTop, scrollHeight, clientHeight} = e.currentTarget
   if(scrollHeight - scrollTop - clientHeight < 120){
     loadMore()
+  }
+  if(scrollTop < 120 && startOffset > 0){
+    loadPrevious()
   }
   syncActiveDate(e.currentTarget);
 }
@@ -925,7 +1135,7 @@ async function loadTags() {
 
 async function loadPeople() {
   try {
-    const minPhotos = settings.min_unknown_photos !== undefined ? settings.min_unknown_photos : 1;
+    const minPhotos = (settings.min_unknown_photos !== undefined && settings.min_unknown_photos !== '') ? settings.min_unknown_photos : 1;
     const r = await axios.get(`${API}/people?min_unknown_photos=${minPhotos}&t=${Date.now()}`);
     if (Array.isArray(r.data)) {
       setPeople(r.data);
@@ -941,11 +1151,14 @@ async function loadPeople() {
 
 async function openPersonPhotos(person) {
   try {
-    const r = await axios.get(`${API}/people/${person.id}/photos?offset=0&limit=50`);
+    const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+    const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
+    const r = await axios.get(`${API}/people/${person.id}/photos?offset=0&limit=${limit}`);
     setPersonFiles(r.data);
     setCurrentPerson(person);
     setOffset(r.data.length);
-    setHasMore(r.data.length === 50);
+    setStartOffset(0);
+    setHasMore(r.data.length === limit);
     setPage('person_files');
     setSimilarUnknowns(null); // Clear previous similar faces results when opening a new person
     setSimilarUnknownsPage(1);
@@ -1227,21 +1440,43 @@ async function reclassifyAllUnknowns() {
   }
 }
 
-async function mergeSelectedPeople() {
-  if (indexer.face_scanner_running) {
-    alert("Please stop the Face Scanner before merging profiles to prevent database conflicts.");
-    return;
-  }
-  if (!window.confirm(`Are you sure you want to merge these ${checkedPeople.size} people into one?`)) return;
-  const ids = Array.from(checkedPeople);
+async function executeMerge(primaryId) {
+  const ids = [primaryId, ...Array.from(checkedPeople).filter(id => id !== primaryId)];
   try {
     await axios.post(`${API}/people/merge`, { person_ids: ids });
     showToastMessage('People merged successfully.');
     setCheckedPeople(new Set());
+    setMergeConflictData(null);
     loadPeople();
   } catch (err) {
     alert('Error merging people: ' + (err?.response?.data?.detail || err.message));
   }
+}
+
+function mergeSelectedPeople() {
+  if (indexer.face_scanner_running) {
+    alert("Please stop the Face Scanner before merging profiles to prevent database conflicts.");
+    return;
+  }
+
+  const selectedProfiles = Array.from(checkedPeople).map(id => globalPeopleMap.get(id)).filter(Boolean);
+  
+  // Find all distinct valid names (not starting with Unknown Person)
+  const validNames = Array.from(new Set(selectedProfiles
+    .map(p => p.name)
+    .filter(name => name && !name.startsWith('Unknown Person'))
+  ));
+
+  let primaryId = selectedProfiles[0].id;
+
+  if (validNames.length > 1) {
+    setMergeConflictData({ profiles: selectedProfiles, validNames });
+    return;
+  } else if (!window.confirm(`Are you sure you want to merge these ${checkedPeople.size} people into one?`)) {
+    return;
+  }
+
+  executeMerge(primaryId);
 }
 
 async function setPersonThumbnail(personId, fileId) {
@@ -1445,8 +1680,10 @@ function locateSelectedFileInExplorer() {
     }
     searchAbortController.current = new AbortController();
 
+    const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+    const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
     const safeQuery = q.replace(/,/g, ' ');
-    axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=all&offset=0&limit=50`, {
+    axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=all&offset=0&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`, {
         signal: searchAbortController.current.signal
     }).then(r => {
         let newFiles = r.data;
@@ -1456,16 +1693,16 @@ function locateSelectedFileInExplorer() {
         setSearchCache(newFiles);
         setFiles(newFiles);
         setOffset(r.data.length);
-        setHasMore(r.data.length === 50);
+        setHasMore(r.data.length === limit);
         setLoadingMore(false);
         setTimeout(() => {
             const escapedPath = file.path.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
             const el = document.querySelector(`[data-path="${escapedPath}"]`);
             if (el) {
-                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                el.scrollIntoView({ behavior: 'auto', block: 'center' });
             } else {
-                const dateKey = d ? d.toLocaleDateString('default', { month: 'short', year: 'numeric' }) : 'Unknown Date';
-                document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                const dateKey = d ? dateFormatter.format(d) : 'Unknown Date';
+                document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'auto', block: 'start' });
             }
         }, 300);
     }).catch((err) => {
@@ -1631,6 +1868,7 @@ async function indexerAction(action){
    setSelected(null)
    setCheckedFiles(new Set())
    setOffset(0)
+   setStartOffset(0)
    setHasMore(false)
    setStats({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0})
    setObjectTags([])
@@ -1879,7 +2117,8 @@ async function purgeSmallUnknowns() {
     alert("Please stop all background tasks (Indexing, Face/Object Scanning, Hash Verification) before running the purge routine.");
     return;
   }
-  if (!window.confirm(`Are you sure you want to permanently delete all Unknown Person profiles that have fewer than ${purgeThreshold} photos? This will also trigger a database cleanup and cannot be undone.`)) return;
+  const thresholdToUse = purgeThreshold === '' ? 3 : purgeThreshold;
+  if (!window.confirm(`Are you sure you want to permanently delete all Unknown Person profiles that have fewer than ${thresholdToUse} photos? This will also trigger a database cleanup and cannot be undone.`)) return;
   
   if (aiActionAbortController.current) aiActionAbortController.current.abort();
   aiActionAbortController.current = new AbortController();
@@ -1887,8 +2126,8 @@ async function purgeSmallUnknowns() {
   setActionInProgress(true);
   setDataOpProgress({ id: 'purge' });
   try {
-    showToastMessage(`Purging unknown profiles with < ${purgeThreshold} photos...`);
-    const r = await axios.post(`${API}/system/purge-unknowns`, { threshold: purgeThreshold }, { signal: aiActionAbortController.current.signal });
+    showToastMessage(`Purging unknown profiles with < ${thresholdToUse} photos...`);
+    const r = await axios.post(`${API}/system/purge-unknowns`, { threshold: thresholdToUse }, { signal: aiActionAbortController.current.signal });
     showToastMessage(`Purged ${r.data.purged_profiles} small unknown profiles successfully.`);
     await loadDashboard(); // Refresh dashboard stats
     if (page === 'people') await loadPeople();
@@ -2163,9 +2402,9 @@ const handleFilterChange = (e) => {
   }
   setSelected(null);
   if (page === 'explorer') {
-    loadFiles(0, false, newCat);
+    loadFiles(0, false, newCat, newCat === 'duplicates' ? 'size' : sortBy, newCat === 'duplicates' ? 'desc' : sortOrder);
   } else if (page === 'search') {
-    doSearch(query, newCat);
+    doSearch(query, newCat, newCat === 'duplicates' ? 'size' : sortBy, newCat === 'duplicates' ? 'desc' : sortOrder);
   }
 };
 
@@ -2179,7 +2418,7 @@ const handleCategoryClick = (category) => {
     setSortBy('size');
     setSortOrder('desc');
   }
-  loadFiles(0, false, category);
+  loadFiles(0, false, category, category === 'duplicates' ? 'size' : sortBy, category === 'duplicates' ? 'desc' : sortOrder);
 };
 
 const sortedFiles = useMemo(() => {
@@ -2250,31 +2489,33 @@ const sortedFiles = useMemo(() => {
 
 const groupedFiles = useMemo(() => {
   if (filterCategory === 'duplicates') {
-    return { 'Duplicate Files': sortedFiles };
+    const map = new Map();
+    map.set('Duplicate Files', sortedFiles);
+    return map;
   }
-  const groups = {};
+  const groups = new Map();
   sortedFiles.forEach(file => {
     let key = 'Unknown Date';
     const d = parseFileDate(file);
     if (d) {
-      key = d.toLocaleDateString('default', { month: 'short', year: 'numeric' });
+      key = dateFormatter.format(d);
     }
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(file);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(file);
   });
   return groups;
 }, [sortedFiles, filterCategory]);
 
 const groupedPersonFiles = useMemo(() => {
-  const groups = {};
+  const groups = new Map();
   personFiles.forEach(file => {
     let key = 'Unknown Date';
     const d = parseFileDate(file);
     if (d) {
-      key = d.toLocaleDateString('default', { month: 'short', year: 'numeric' });
+      key = dateFormatter.format(d);
     }
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(file);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(file);
   });
   return groups;
 }, [personFiles]);
@@ -2344,35 +2585,52 @@ useEffect(() => {
 
 useEffect(() => {
   const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
-  if (showFull && (page === 'explorer' || page === 'search' || page === 'person_files')) {
+  if (showFull) {
     axios.get(`${API}/timeline?category=${filterCategory}`).then(r => {
       const groups = new Map();
       r.data.forEach(item => {
         if (!item.date) return;
         const d = new Date(item.date);
         if (!isNaN(d.getTime())) {
-          const key = d.toLocaleDateString('default', { month: 'short', year: 'numeric' });
+          const key = dateFormatter.format(d);
           if (!groups.has(key)) {
             groups.set(key, { 
               key, 
-              yearMonth: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}` 
+              yearMonth: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`,
+              timestamp: d.getTime(),
+              count: 0
             });
           }
+          groups.get(key).count += (item.count || 0);
         }
       });
-      setFullTimelineData(Array.from(groups.values()));
+      const sorted = Array.from(groups.values()).sort((a, b) => b.timestamp - a.timestamp);
+      
+      let currentOffsetDesc = 0;
+      for (let i = 0; i < sorted.length; i++) {
+        sorted[i].offsetDesc = currentOffsetDesc;
+        currentOffsetDesc += sorted[i].count;
+      }
+      
+      let currentOffsetAsc = 0;
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        sorted[i].offsetAsc = currentOffsetAsc;
+        currentOffsetAsc += sorted[i].count;
+      }
+
+      setFullTimelineData(sorted);
     }).catch(e => console.warn('Failed to load full timeline', e));
   }
-}, [settings.show_full_timeline, settings.ui_preferences?.show_full_timeline, filterCategory, page]);
+}, [settings.show_full_timeline, settings.ui_preferences?.show_full_timeline, filterCategory, indexer.running, timelineUpdateTick]);
 
 const timelineItems = useMemo(() => {
   const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
   if (showFull && fullTimelineData.length > 0) {
     let items = [...fullTimelineData];
-    if (page === 'person_files' || (sortBy === 'date' && sortOrder === 'desc')) items.reverse();
+    if (sortBy === 'date' && sortOrder === 'asc') items.reverse();
     return items.map(t => t.key);
   }
-  return page === 'person_files' ? Object.keys(groupedPersonFiles) : Object.keys(groupedFiles);
+  return page === 'person_files' ? Array.from(groupedPersonFiles.keys()) : Array.from(groupedFiles.keys());
 }, [settings.show_full_timeline, settings.ui_preferences?.show_full_timeline, fullTimelineData, groupedFiles, groupedPersonFiles, sortBy, sortOrder, page]);
 
 useEffect(() => {
@@ -2415,6 +2673,7 @@ useEffect(() => {
       // Refresh tags every 3 seconds while scanning to update the UI without causing heavy DB locks
       if (pollCount % 3 === 0) {
         await loadTags();
+          setTimelineUpdateTick(prev => prev + 1);
       }
 
       errorRetries = 0; // Reset counter on successful poll
@@ -2445,14 +2704,19 @@ useEffect(() => {
   } else {
     // Perform one final fetch when scanners stop to ensure all UI counters are fully up to date
     loadTags();
+    setTimelineUpdateTick(prev => prev + 1);
   }
   return () => { isMounted = false; clearTimeout(timeoutId); };
 }, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, indexer.combined_scanner_running, indexer.paused, page]);
 
 function getOfflinePlaceholder(text, bgColor, textColor) {
+  const key = `${text}-${bgColor}-${textColor}`;
+  if (placeholderCache.has(key)) return placeholderCache.get(key);
   const safeText = String(text).replace(/[<>&'"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','\'':'&apos;','"':'&quot;'}[c]));
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300"><rect width="400" height="300" fill="${bgColor}"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="${textColor}" font-family="sans-serif" font-size="24">${safeText}</text></svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  const result = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  placeholderCache.set(key, result);
+  return result;
 }
 
 function renderThumb(item){
@@ -3039,7 +3303,20 @@ return(
 
 {showTimeline && (
 <>
-<div className='timeline' style={{ width: timelineWidth }}>
+<div className='timeline' style={{ width: timelineWidth, position: 'relative' }}>
+  {timelineItems.length > 0 && (
+    <ActionButton
+      className="btn btn-secondary preserve-colors"
+      onClick={() => {
+        document.querySelector('.content')?.scrollTo({ top: 0, behavior: 'smooth' });
+        document.querySelector('.timeline')?.scrollTo({ top: 0, behavior: 'smooth' });
+      }}
+      style={{ margin: '8px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: '#0f172a', borderColor: '#3b82f6', color: '#38bdf8', position: 'sticky', top: '8px', zIndex: 10, boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)', borderRadius: '8px' }}
+      title="Jump to Top"
+    >
+      <ArrowUpwardIcon fontSize="small" /> Top
+    </ActionButton>
+  )}
   {timelineItems.map(dateKey => (
     <TimelineItem
       key={dateKey}
@@ -3048,19 +3325,77 @@ return(
       onClick={() => {
         const el = document.getElementById(`date-group-${dateKey}`);
         if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          el.scrollIntoView({ behavior: 'auto', block: 'start' });
         } else {
           const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
           if (showFull) {
             const tData = fullTimelineData.find(t => t.key === dateKey);
             if (tData) {
-              doSearch(`date:${tData.yearMonth}`);
+                  if (page === 'explorer') {
+                    const targetOffset = sortOrder === 'asc' ? tData.offsetAsc : tData.offsetDesc;
+                    const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+                    const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
+                    
+                    if (loadFilesAbortController.current) loadFilesAbortController.current.abort();
+                    loadFilesAbortController.current = new AbortController();
+                    
+                    setLoadingMore(true);
+                    axios.get(`${API}/files?category=${filterCategory}&offset=${targetOffset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`, {
+                      signal: loadFilesAbortController.current.signal
+                    }).then(res => {
+                      setFiles(res.data);
+                      setOffset(targetOffset + res.data.length);
+                      setStartOffset(targetOffset);
+                      setHasMore(res.data.length === limit);
+                      setLoadingMore(false);
+                      setTimeout(() => document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'auto', block: 'start' }), 100);
+                    }).catch(err => {
+                      if (!axios.isCancel(err)) setLoadingMore(false);
+                    });
+                  } else if (page === 'search') {
+                    const targetOffset = sortOrder === 'asc' ? tData.offsetAsc : tData.offsetDesc;
+                    const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+                    const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
+                    
+                    if (searchAbortController.current) searchAbortController.current.abort();
+                    searchAbortController.current = new AbortController();
+                    setLoadingMore(true);
+                    const safeQuery = query.replace(/,/g, ' ');
+                    axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${targetOffset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`, {
+                      signal: searchAbortController.current.signal
+                    }).then(res => {
+                      setFiles(res.data);
+                      setSearchCache(res.data);
+                      setOffset(targetOffset + res.data.length);
+                      setStartOffset(targetOffset);
+                      setHasMore(res.data.length === limit);
+                      setLoadingMore(false);
+                      setTimeout(() => document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'auto', block: 'start' }), 100);
+                    }).catch(err => {
+                      if (!axios.isCancel(err)) setLoadingMore(false);
+                    });
+                  }
             }
           }
         }
       }}
     />
   ))}
+  {timelineItems.length > 0 && (
+    <ActionButton
+      className="btn btn-secondary preserve-colors"
+      onClick={() => {
+        const content = document.querySelector('.content');
+        content?.scrollTo({ top: content.scrollHeight, behavior: 'smooth' });
+        const timeline = document.querySelector('.timeline');
+        timeline?.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' });
+      }}
+      style={{ margin: '8px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: '#0f172a', borderColor: '#3b82f6', color: '#38bdf8', position: 'sticky', bottom: '8px', zIndex: 10, boxShadow: '0 -10px 15px -3px rgba(0,0,0,0.5)', borderRadius: '8px' }}
+      title="Jump to Bottom"
+    >
+      <ArrowDownwardIcon fontSize="small" /> Bottom
+    </ActionButton>
+  )}
 </div>
 <div className={`resizer ${isResizing === 'timeline' ? 'active' : ''}`} onMouseDown={(e) => { e.preventDefault(); setIsResizing('timeline'); }} />
 </>
@@ -3107,13 +3442,22 @@ return(
   </select>
 
   <label style={{marginLeft:'10px'}}>Sort by:</label>
-  <select value={sortBy} onChange={(e)=>setSortBy(e.target.value)}>
+  <select value={sortBy} onChange={(e)=>{
+    setSortBy(e.target.value);
+    if(page === 'explorer') loadFiles(0, false, filterCategory, e.target.value, sortOrder);
+    else if(page === 'search') doSearch(query, filterCategory, e.target.value, sortOrder);
+  }}>
     <option value='date'>Date</option>
     <option value='size'>Size</option>
     <option value='filename'>Filename</option>
     <option value='extension'>Extension</option>
   </select>
-  <ActionButton className="" style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }} onClick={()=>setSortOrder(sortOrder==='asc'?'desc':'asc')}>
+  <ActionButton className="" style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }} onClick={()=>{
+    const newOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+    setSortOrder(newOrder);
+    if(page === 'explorer') loadFiles(0, false, filterCategory, sortBy, newOrder);
+    else if(page === 'search') doSearch(query, filterCategory, sortBy, newOrder);
+  }}>
     {sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />}
   </ActionButton>
 
@@ -3252,47 +3596,46 @@ return(
 
 <div className='content' onScroll={handleScroll} style={{ paddingTop: '18px' }}>
 
+{startOffset > 0 && (
+  <div style={{ textAlign: 'center', paddingTop: '150px', paddingBottom: '20px', color: '#94a3b8', display: 'flex', justifyContent: 'center', alignItems: 'flex-end', height: '200px', boxSizing: 'border-box' }}>
+    <div style={{ width: '250px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+      {loadingPrevious ? <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Loading previous files...</> : 'Scroll up to load previous files...'}
+    </div>
+  </div>
+)}
+
 {
-Object.entries(groupedFiles).map(([dateKey, filesGroup]) => (
-<div key={dateKey} id={`date-group-${dateKey}`}>
-<h2 className="date-header" data-date={dateKey}>{dateKey}</h2>
-<div className={viewMode === 'grid' ? 'grid' : 'list'}>
-{
-(() => {
-  let isAlternateGroup = false;
-  return filesGroup.map((item, index) => {
-    const prevItem = index > 0 ? filesGroup[index - 1] : null;
-    const isNewDuplicateGroup = filterCategory === 'duplicates' && prevItem && prevItem.size !== item.size;
-    if (isNewDuplicateGroup) isAlternateGroup = !isAlternateGroup;
-    return (
-      <Fragment key={item.path}>
-        {isNewDuplicateGroup && (
-          <div style={{ gridColumn: '1 / -1', width: '100%', height: '2px', background: '#3b82f6', margin: viewMode === 'grid' ? '8px 0' : '4px 0', opacity: 0.5, borderRadius: '2px' }} />
-        )}
-        <FileCard
-          item={item}
-          viewMode={viewMode}
-          isChecked={checkedFiles.has(item.path)}
-          onToggleCheck={toggleCheck}
-          onClick={handleItemClick}
-          onContextMenu={openContainingFolder}
-          onSelectAndOpen={(i) => { setSelected(i); openFile(i.path); }}
-          renderThumb={renderThumb}
-          isAltGroup={isAlternateGroup}
-          showVerified={filterCategory === 'duplicates' && !!item.metadata?.sha256}
-          showUnverified={filterCategory === 'duplicates' && !item.metadata?.sha256}
-          isReadOnly={checkFileReadOnly(item.path)}
-          isProcessing={filterCategory === 'duplicates' && indexer.hasher_running && indexer.hasher_current_file === item.path}
-        />
-      </Fragment>
-    );
-  });
-})()
-}
-</div>
-</div>
+Array.from(groupedFiles.entries()).map(([dateKey, filesGroup]) => (
+<DateGroup
+  key={dateKey}
+  dateKey={dateKey}
+  filesGroup={filesGroup}
+  viewMode={viewMode}
+  checkedFiles={checkedFiles}
+  toggleCheck={toggleCheck}
+  handleItemClick={handleItemClick}
+  openContainingFolder={openContainingFolder}
+  setSelected={setSelected}
+  openFile={openFile}
+  renderThumb={renderThumb}
+  filterCategory={filterCategory}
+  indexer={indexer}
+  checkFileReadOnly={checkFileReadOnly}
+/>
 ))
 }
+{hasMore && (
+  <div style={{ textAlign: 'center', padding: '20px 0 40px 0', color: '#94a3b8', display: 'flex', justifyContent: 'center', alignItems: 'center', height: '24px', boxSizing: 'content-box' }}>
+    <div style={{ width: '250px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+      {loadingMore ? <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Loading more files...</> : 'Scroll down to load more files...'}
+    </div>
+  </div>
+)}
+{!hasMore && sortedFiles.length > 0 && (
+  <div style={{ textAlign: 'center', padding: '20px 0 40px 0', color: '#475569' }}>
+    — End of results —
+  </div>
+)}
 </div>
 </div>
 
@@ -3327,7 +3670,7 @@ key={`person-${selected.id}`}
          <img 
            key={photo.path} 
            src={renderThumb(photo)} 
-           onError={(e) => { e.target.src = renderThumb({ ...photo, thumbnail: null }) }}
+                   onError={(e) => { e.target.onerror = null; e.target.src = renderThumb({ ...photo, thumbnail: null }) }}
            style={{ width: '100%', height: '80px', objectFit: 'cover', borderRadius: '8px', cursor: 'pointer', border: '1px solid #334155' }} 
            onClick={() => openFile(photo.path)}
            title={photo.filename}
@@ -3349,6 +3692,7 @@ cursor:'pointer'
 }}
 key={selected.path}
 onClick={()=>openFile(selected.path)}
+        onError={(e) => { e.target.onerror = null; e.target.src = renderThumb({ ...selected, thumbnail: null }) }}
 />
 
 <h2>{selected.filename}</h2>
@@ -3422,6 +3766,11 @@ onClick={()=>openFile(selected.path)}
 {
 page==='people' &&
 <div style={{padding:'20px', overflowY:'auto', height:'100%'}}>
+<datalist id="known-people-list">
+  {sortedNamedPeopleDropdown.map(p => (
+    <option key={p.id} value={p.name} />
+  ))}
+</datalist>
 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '16px' }}>
   <div>
     <h1 style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: 0, marginBottom: '8px' }}><FaceIcon fontSize="large" style={{ color: '#3b82f6' }} /> People (Face Recognition)</h1>
@@ -3571,6 +3920,7 @@ page==='people' &&
              </div>
              <div style={{display:'flex', alignItems:'center'}}>
                  <input 
+                    list="known-people-list"
                     value={editingNames[p.id] !== undefined ? editingNames[p.id] : (p.name || '')} 
                     onClick={e => e.stopPropagation()}
                     onChange={e => setEditingNames(prev => ({ ...prev, [p.id]: e.target.value }))}
@@ -3687,7 +4037,7 @@ page==='people' &&
                            type="number" 
                            min="1" 
                            value={purgeThreshold} 
-                           onChange={(e) => setPurgeThreshold(parseInt(e.target.value) || 3)}
+                           onChange={(e) => setPurgeThreshold(e.target.value === '' ? '' : parseInt(e.target.value))}
                            style={{ width: '60px', padding: '2px 8px', borderRadius: '4px', border: '1px solid #334155', background: '#0f172a', color: '#f8fafc', outline: 'none' }}
                          />
                      </div>
@@ -3741,6 +4091,7 @@ page==='people' &&
              </div>
              <div style={{display:'flex', alignItems:'center'}}>
                  <input 
+                    list="known-people-list"
                     value={editingNames[p.id] !== undefined ? editingNames[p.id] : (p.name || '')} 
                     onClick={e => e.stopPropagation()}
                     onChange={e => setEditingNames(prev => ({ ...prev, [p.id]: e.target.value }))}
@@ -3790,7 +4141,20 @@ page==='person_files' &&
 <div className='explorer'>
 {showTimeline && (
 <>
-<div className='timeline' style={{ width: timelineWidth }}>
+<div className='timeline' style={{ width: timelineWidth, position: 'relative' }}>
+  {timelineItems.length > 0 && (
+    <ActionButton
+      className="btn btn-secondary preserve-colors"
+      onClick={() => {
+        document.querySelector('.content')?.scrollTo({ top: 0, behavior: 'smooth' });
+        document.querySelector('.timeline')?.scrollTo({ top: 0, behavior: 'smooth' });
+      }}
+      style={{ margin: '8px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: '#0f172a', borderColor: '#3b82f6', color: '#38bdf8', position: 'sticky', top: '8px', zIndex: 10, boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)', borderRadius: '8px' }}
+      title="Jump to Top"
+    >
+      <ArrowUpwardIcon fontSize="small" /> Top
+    </ActionButton>
+  )}
   {timelineItems.map(dateKey => (
     <TimelineItem
       key={dateKey}
@@ -3800,18 +4164,46 @@ page==='person_files' &&
         const el = document.getElementById(`date-group-${dateKey}`);
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          el.scrollIntoView({ behavior: 'auto', block: 'start' });
         } else {
           const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
           if (showFull) {
             const tData = fullTimelineData.find(t => t.key === dateKey);
             if (tData) {
-              doSearch(`person:"${currentPerson?.name || ''}" date:${tData.yearMonth}`);
+                  const targetOffset = tData.offsetDesc;
+                  const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+                  const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
+                  
+                  setLoadingMore(true);
+                  axios.get(`${API}/people/${currentPerson.id}/photos?offset=${targetOffset}&limit=${limit}`).then(res => {
+                    setPersonFiles(res.data);
+                    setOffset(targetOffset + res.data.length);
+                    setStartOffset(targetOffset);
+                    setHasMore(res.data.length === limit);
+                    setLoadingMore(false);
+                    setTimeout(() => document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'auto', block: 'start' }), 100);
+                  }).catch(() => setLoadingMore(false));
             }
           }
         }
       }}
     />
   ))}
+  {timelineItems.length > 0 && (
+    <ActionButton
+      className="btn btn-secondary preserve-colors"
+      onClick={() => {
+        const content = document.querySelector('.content');
+        content?.scrollTo({ top: content.scrollHeight, behavior: 'smooth' });
+        const timeline = document.querySelector('.timeline');
+        timeline?.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' });
+      }}
+      style={{ margin: '8px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: '#0f172a', borderColor: '#3b82f6', color: '#38bdf8', position: 'sticky', bottom: '8px', zIndex: 10, boxShadow: '0 -10px 15px -3px rgba(0,0,0,0.5)', borderRadius: '8px' }}
+      title="Jump to Bottom"
+    >
+      <ArrowDownwardIcon fontSize="small" /> Bottom
+    </ActionButton>
+  )}
 </div>
 <div className={`resizer ${isResizing === 'timeline' ? 'active' : ''}`} onMouseDown={(e) => { e.preventDefault(); setIsResizing('timeline'); }} />
 </>
@@ -4021,35 +4413,50 @@ page==='person_files' &&
 )}
 
 <div className="content" onScroll={handleScroll} style={{paddingTop: '18px', paddingLeft: '18px', paddingRight: '18px', overflowY: 'auto'}}>
+
+{startOffset > 0 && (
+  <div style={{ textAlign: 'center', paddingTop: '150px', paddingBottom: '20px', color: '#94a3b8', display: 'flex', justifyContent: 'center', alignItems: 'flex-end', height: '200px', boxSizing: 'border-box' }}>
+    <div style={{ width: '250px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+      {loadingPrevious ? <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Loading previous photos...</> : 'Scroll up to load previous photos...'}
+    </div>
+  </div>
+)}
+
     {Array.isArray(personFiles) && personFiles.length === 0 ? (
         <div className={viewMode === 'grid' ? 'grid' : 'list'}>
             <p>No photos found for this person.</p>
         </div>
     ) : null}
-    {Object.entries(groupedPersonFiles).map(([dateKey, filesGroup]) => (
-        <div key={dateKey} id={`date-group-${dateKey}`}>
-            <h2 className="date-header" data-date={dateKey}>{dateKey}</h2>
-            <div className={viewMode === 'grid' ? 'grid' : 'list'}>
-                {filesGroup.map(item => (
-                    <FileCard
-                      key={item.path}
-                      item={item}
-                      viewMode={viewMode}
-                      isChecked={checkedFiles.has(item.path)}
-                      onToggleCheck={toggleCheck}
-                      onClick={handleItemClick}
-                      onContextMenu={openContainingFolder}
-                      onSelectAndOpen={(i) => { setSelected(i); openFile(i.path); }}
-                      renderThumb={renderThumb}
-                      isAltGroup={false}
-                      showVerified={false}
-                      showUnverified={false}
-                      isReadOnly={checkFileReadOnly(item.path)}
-                    />
-                ))}
-            </div>
-        </div>
+    {Array.from(groupedPersonFiles.entries()).map(([dateKey, filesGroup]) => (
+        <DateGroup
+          key={dateKey}
+          dateKey={dateKey}
+          filesGroup={filesGroup}
+          viewMode={viewMode}
+          checkedFiles={checkedFiles}
+          toggleCheck={toggleCheck}
+          handleItemClick={handleItemClick}
+          openContainingFolder={openContainingFolder}
+          setSelected={setSelected}
+          openFile={openFile}
+          renderThumb={renderThumb}
+          filterCategory="all"
+          indexer={indexer}
+          checkFileReadOnly={checkFileReadOnly}
+        />
     ))}
+{hasMore && (
+  <div style={{ textAlign: 'center', padding: '20px 0 40px 0', color: '#94a3b8', display: 'flex', justifyContent: 'center', alignItems: 'center', height: '24px', boxSizing: 'content-box' }}>
+    <div style={{ width: '250px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+      {loadingMore ? <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Loading more photos...</> : 'Scroll down to load more photos...'}
+    </div>
+  </div>
+)}
+{!hasMore && personFiles.length > 0 && (
+  <div style={{ textAlign: 'center', padding: '20px 0 40px 0', color: '#475569' }}>
+    — End of results —
+  </div>
+)}
 </div>
 </div>
 
@@ -4084,7 +4491,7 @@ key={`person-${selected.id}`}
          <img 
            key={photo.path} 
            src={renderThumb(photo)} 
-           onError={(e) => { e.target.src = renderThumb({ ...photo, thumbnail: null }) }}
+                   onError={(e) => { e.target.onerror = null; e.target.src = renderThumb({ ...photo, thumbnail: null }) }}
            style={{ width: '100%', height: '80px', objectFit: 'cover', borderRadius: '8px', cursor: 'pointer', border: '1px solid #334155' }} 
            onClick={() => openFile(photo.path)}
            title={photo.filename}
@@ -4106,6 +4513,7 @@ cursor:'pointer'
 }}
 key={selected.path}
 onClick={()=>openFile(selected.path)}
+        onError={(e) => { e.target.onerror = null; e.target.src = renderThumb({ ...selected, thumbnail: null }) }}
 />
 
 <h2>{selected.filename}</h2>
@@ -4663,7 +5071,24 @@ page==='settings' &&
               type='number'
               style={{ marginBottom: 0, width: '80px', padding: '4px 8px', fontSize: '14px' }}
               value={settings.photo_thumbnail_size_limit_mb !== undefined ? settings.photo_thumbnail_size_limit_mb : (settings.ui_preferences?.photo_thumbnail_size_limit_mb !== undefined ? settings.ui_preferences.photo_thumbnail_size_limit_mb : 5)}
-              onChange={(e)=>updateUIPreferences({ photo_thumbnail_size_limit_mb: parseFloat(e.target.value) || 0 })}
+                      onChange={(e)=>updateUIPreferences({ photo_thumbnail_size_limit_mb: e.target.value === '' ? '' : parseFloat(e.target.value) })}
+            />
+          </div>
+        )}
+        <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px', color:'#ef4444'}}>
+          <input type='checkbox' checked={settings.disable_lazy_loading || settings.ui_preferences?.disable_lazy_loading || false} onChange={(e)=>updateUIPreferences({ disable_lazy_loading: e.target.checked })} /> Load all files at once (High memory usage)
+        </label>
+        {!(settings.disable_lazy_loading || settings.ui_preferences?.disable_lazy_loading) && (
+          <div style={{display:'flex',gap:'10px', marginBottom: '10px', alignItems: 'center'}}>
+            <span style={{ color: '#94a3b8', fontSize: '14px' }}>Files to load per scroll:</span>
+            <input
+              className='setting'
+              type='number'
+              min='10'
+              max='1000'
+              style={{ marginBottom: 0, width: '80px', padding: '4px 8px', fontSize: '14px' }}
+              value={settings.lazy_load_chunk_size !== undefined ? settings.lazy_load_chunk_size : (settings.ui_preferences?.lazy_load_chunk_size !== undefined ? settings.ui_preferences.lazy_load_chunk_size : 50)}
+              onChange={(e)=>updateUIPreferences({ lazy_load_chunk_size: e.target.value === '' ? '' : parseInt(e.target.value) })}
             />
           </div>
         )}
@@ -4689,7 +5114,7 @@ page==='settings' &&
               <input
                 className='setting'
                 style={{ margin: 0, fontWeight: 'bold', background: 'transparent', border: 'none', color: '#f8fafc', fontSize: '16px', padding: '0 4px', width: '100%', maxWidth: '300px' }}
-                value={search.name || `Search ${index + 1}`}
+                value={search.name !== undefined ? search.name : `Search ${index + 1}`}
                 onChange={(e) => setSettings(prev => ({ ...prev, smart_searches: prev.smart_searches.map(s => s.id === search.id ? { ...s, name: e.target.value } : s) }))}
                 placeholder="Name your search"
               />
@@ -4727,7 +5152,7 @@ page==='settings' &&
               <input
                 className='setting'
                 style={{ margin: 0, fontWeight: 'bold', background: 'transparent', border: 'none', color: '#f8fafc', fontSize: '16px', padding: '0 4px', width: '100%', maxWidth: '300px' }}
-                value={config.name || `Backup Location ${index + 1}`}
+                value={config.name !== undefined ? config.name : `Backup Location ${index + 1}`}
                 onChange={(e) => setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.map(c => c.id === config.id ? { ...c, name: e.target.value } : c) }))}
                 placeholder="Name your backup location"
               />
@@ -4856,7 +5281,7 @@ page==='settings' &&
             className='setting'
             style={{ marginBottom: '16px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
             value={settings.min_unknown_photos !== undefined ? settings.min_unknown_photos : 1}
-            onChange={(e)=>setSettings({...settings, min_unknown_photos: parseInt(e.target.value) || 1})}
+            onChange={(e)=>setSettings({...settings, min_unknown_photos: e.target.value === '' ? '' : parseInt(e.target.value)})}
           />
 
           <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Object & Scene Detection</p>
@@ -5033,6 +5458,51 @@ page==='about' &&
         {toastAction.label}
       </button>
     )}
+  </div>
+)}
+{mergeConflictData && (
+  <div style={{
+    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+    background: 'rgba(15, 23, 42, 0.8)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    zIndex: 10000, backdropFilter: 'blur(4px)'
+  }}>
+    <div className="floating-panel" style={{
+      background: '#1e293b', border: '1px solid #334155', borderRadius: '16px',
+      padding: '24px', width: '100%', maxWidth: '400px', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.5)'
+    }}>
+      <h2 style={{ marginTop: 0, marginBottom: '16px', color: '#f8fafc', fontSize: '20px' }}>Resolve Name Conflict</h2>
+      <p style={{ color: '#94a3b8', fontSize: '14px', marginBottom: '20px', lineHeight: '1.5' }}>
+        You are merging profiles with different names. Please select which name you would like to keep as the primary profile:
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '300px', overflowY: 'auto' }}>
+        {mergeConflictData.validNames.map(name => {
+          const profile = mergeConflictData.profiles.find(p => p.name === name);
+          return (
+            <ActionButton
+              key={name}
+              className="btn btn-secondary preserve-colors"
+              onClick={() => executeMerge(profile.id)}
+              style={{
+                background: '#0f172a', borderColor: '#3b82f6', color: '#38bdf8',
+                padding: '8px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ width: '32px', height: '32px', borderRadius: '6px', overflow: 'hidden', background: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <PersonThumb url={getPersonThumbUrl(profile)} size={20} />
+                </div>
+                <span style={{ fontWeight: 'bold' }}>{name}</span>
+              </div>
+              <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 'normal' }}>{profile.face_count} photo(s)</span>
+            </ActionButton>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '24px' }}>
+        <ActionButton className="btn btn-secondary" onClick={() => setMergeConflictData(null)}>Cancel</ActionButton>
+      </div>
+    </div>
   </div>
 )}
 </div>
