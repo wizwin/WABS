@@ -5624,7 +5624,7 @@ page==='settings' &&
           <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Object & Scene Detection</p>
           <select
             className='setting'
-            style={{ marginBottom: '0', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
+            style={{ marginBottom: '16px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
             value={settings.object_sensitivity || 'medium'}
             onChange={(e)=>setSettings({...settings, object_sensitivity: e.target.value})}
           >
@@ -5632,6 +5632,17 @@ page==='settings' &&
             <option value='medium'>Balanced (Recommended)</option>
             <option value='low'>Detect fewer tags (More accurate)</option>
           </select>
+
+          <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Document Text Extraction Word Limit</p>
+          <input
+            type='number'
+            min='10'
+            className='setting'
+            style={{ marginBottom: '8px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
+            value={settings.text_extraction_limit !== undefined ? settings.text_extraction_limit : 300}
+            onChange={(e)=>setSettings({...settings, text_extraction_limit: e.target.value === '' ? '' : parseInt(e.target.value)})}
+          />
+          <p style={{ margin: '0 0 0 0', fontSize: '12px', color: '#f59e0b' }}>Tip: Increasing this limit significantly can bloat the database size.</p>
         </div>
 
         <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>

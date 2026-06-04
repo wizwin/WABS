@@ -1683,6 +1683,7 @@ def settings():
         "face_clustering_sensitivity": "medium",
         "object_sensitivity": "medium",
         "min_unknown_photos": 1,
+        "text_extraction_limit": 300,
         "run_face_scan": False,
         "run_object_scan": False,
         "backup_configs": [],
@@ -1942,7 +1943,10 @@ STOP_WORDS = frozenset({
     "my", "me", "am", "i", "he", "she", "his", "hers", "him", "her", "us", "you", "yours"
 })
 
-def extract_top_keywords(text: str, max_words: int = 300) -> str:
+def extract_top_keywords(text: str, max_words: int = None) -> str:
+    if max_words is None:
+        max_words = int(load_config().get("text_extraction_limit", 300))
+
     from collections import Counter
 
     # Extract all words and numbers (3 or more characters to drop noise)
@@ -2319,7 +2323,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             
                             extracted_text = extracted_text.strip()
                             if extracted_text:
-                                optimized_text = extract_top_keywords(extracted_text, max_words=300)
+                                optimized_text = extract_top_keywords(extracted_text)
                                 optimized_text = optimized_text.replace('\x00', ' ')
                                 session.execute(text("INSERT INTO file_text_fts (file_id, content) VALUES (:f, :c)"), {"f": db_item_id, "c": optimized_text})
                         except Exception:

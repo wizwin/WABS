@@ -76,6 +76,12 @@ WABS supports using local LLMs (like LM Studio or Ollama) to automatically categ
    * *Ollama:* `http://127.0.0.1:11434/v1/chat/completions`
 3. You can leave the **OpenAI API Key** field completely empty!
 
+## Notes & Limitations
+
+* **AI Recognition Accuracy:** WABS utilizes lightweight, 100% offline models for Object and Face recognition to prioritize speed, privacy, and a small resource footprint. Because of this, detection is not 100% accurate and may have limitations depending on image quality, angles, or challenging lighting conditions.
+
+* **Document Text Extraction:** To keep the database extremely lean and ensure instant search results, the document text extractor does not index the entire raw text of large files. Instead, it filters out noise and extracts only the top most frequent meaningful words alongside important alphanumeric codes (like serial numbers or dates).
+
 ### Security Note: Hardware-Bound API Keys
 WABS uses **Hardware-Bound Encryption** to protect your OpenAI API key from plain-text exposure. When you save your API key, it is encrypted using a unique fingerprint based on your computer's hardware (MAC address, Hostname, and OS) before being written to your `config.yaml` file. 
 
