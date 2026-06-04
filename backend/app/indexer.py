@@ -4,6 +4,8 @@ import re
 import time
 import traceback
 import hashlib
+import urllib.request
+import urllib.error
 from pathlib import Path
 from threading import Thread
 
@@ -307,13 +309,15 @@ def llm_classify(metadata, ext, cfg):
         if not api_key:
             return None
     else:
-        api_url = provider_url
+        api_url = provider_url.rstrip("/")
+        if not api_url.endswith("/chat/completions"):
+            api_url += "/chat/completions"
         if not api_key:
             api_key = "local-dummy-key"
             
     model = cfg.get("ai_model") or "gpt-4o-mini"
     
-    prompt = f"Identify the specific file type or category for a file with the extension '{ext}'. Reply with a short, highly descriptive category (e.g., 'Source Code', '3D Model', 'Audio', 'Configuration', 'Disk Image'). Maximum 2 words. Only reply with the category name, no punctuation."
+    prompt = f"Identify the specific file type or category for a file with the extension '{ext}' and the following metadata: {json.dumps(metadata) if metadata else 'None'}. Reply with a short, highly descriptive category (e.g., 'Source Code', '3D Model', 'Audio', 'Configuration', 'Disk Image'). Maximum 2 words. Only reply with the category name, no punctuation."
     
     data = json.dumps({
         "model": model,
@@ -331,9 +335,12 @@ def llm_classify(metadata, ext, cfg):
         import logging
         logging.info("Requesting classification data from LLM...")
     try:
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with urllib.request.urlopen(req, timeout=45) as response:
             res = json.loads(response.read().decode())
-            category = res.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            category = res.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not category:
+                category = ""
+            category = category.strip()
             category = re.sub(r'[\'"\.]', '', category).title()
             if category and len(category) <= 25:
                 return category
@@ -348,7 +355,14 @@ def background_ai_categorize(cfg):
     session = SessionLocal()
     try:
         items = session.query(FileIndex).filter(FileIndex.category == "other").limit(500).all()
+        if not items:
+            print("AI Categorization: No 'other' files found. LLM task finished instantly.")
+            return
+            
+        print(f"AI Categorization: Sending {len(items)} unknown files to Ollama...")
         for item in items:
+            if STATE.get("stopped"):
+                break
             suggested = llm_classify(json.loads(item.metadata_json or "{}"), item.extension or "", cfg)
             if suggested and suggested.lower() != "other":
                 item.category = suggested
@@ -675,7 +689,7 @@ def run():
                 traceback.print_exc()
                 session.rollback()
 
-        if cfg.get("ai_enabled"):
+        if cfg.get("ai_enabled") and not STATE.get("stopped"):
             categorization_thread = Thread(target=background_ai_categorize, args=(cfg,), daemon=True)
             categorization_thread.start()
     except Exception as exc:

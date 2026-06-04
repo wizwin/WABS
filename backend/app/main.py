@@ -554,6 +554,8 @@ def _build_search_query(query, s, q_base=None):
                 operator, val = ">", val[1:]
             elif val.startswith("<"):
                 operator, val = "<", val[1:]
+            elif val.startswith("="):
+                operator, val = "=", val[1:]
                 
             bytes_val = None
             if m := re.match(r"^(\d+(?:\.\d+)?)\s*([kmgtp]?b)?$", val.lower()):
@@ -572,6 +574,7 @@ def _build_search_query(query, s, q_base=None):
                 elif operator == "<=": specific_filters.append(size_col <= bytes_val)
                 elif operator == ">": specific_filters.append(size_col > bytes_val)
                 elif operator == "<": specific_filters.append(size_col < bytes_val)
+                elif operator == "=": specific_filters.append(size_col == bytes_val)
             else:
                 specific_filters.append(func.lower(FileIndex.size).like(f"{val}%"))
         elif lower_token.startswith("length:"):
@@ -585,6 +588,8 @@ def _build_search_query(query, s, q_base=None):
                 operator, val = ">", val[1:]
             elif val.startswith("<"):
                 operator, val = "<", val[1:]
+            elif val.startswith("="):
+                operator, val = "=", val[1:]
                 
             num_val = None
             if m := re.match(r"^(\d+(?:\.\d+)?)\s*([smh])?$", val.lower()):
@@ -604,6 +609,7 @@ def _build_search_query(query, s, q_base=None):
                 elif operator == "<=": specific_filters.append(val_col <= num_val)
                 elif operator == ">": specific_filters.append(val_col > num_val)
                 elif operator == "<": specific_filters.append(val_col < num_val)
+                elif operator == "=": specific_filters.append(val_col == num_val)
             else:
                 specific_filters.append(text_filter(FileIndex.metadata_json, val))
         elif lower_token.startswith("camera:"):
@@ -1583,7 +1589,7 @@ def settings():
         "ai_enabled": False,
         "ai_provider": "",
         "ai_model": "",
-        "openai_api_key": "",
+        "ai_api_key": "",
         "face_sensitivity": "medium",
         "face_clustering_sensitivity": "medium",
         "object_sensitivity": "medium",
@@ -1604,6 +1610,149 @@ def settings():
         return config
         
     return merge_defaults(cfg, defaults)
+
+@app.post("/system/test-ai")
+def test_ai(payload: dict = Body(...)):
+    import urllib.request
+    import urllib.error
+    import json
+    
+    provider = payload.get("ai_provider") or "https://api.openai.com/v1"
+    model = payload.get("ai_model") or "gpt-3.5-turbo"
+    api_key = payload.get("ai_api_key") or "dummy-key"
+    
+    # Strip trailing slashes and accidentally appended endpoints
+    provider = provider.rstrip("/")
+    if provider.endswith("/chat/completions"):
+        provider = provider[:-17]
+        
+    endpoint = f"{provider}/chat/completions"
+    
+    req_data = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "Say hello!"}],
+        "max_tokens": 15
+    }).encode("utf-8")
+    
+    req = urllib.request.Request(endpoint, data=req_data, headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    })
+    
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            resp_data = json.loads(response.read().decode("utf-8"))
+            reply = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return {"success": True, "reply": reply}
+    except urllib.error.HTTPError as e:
+        err_msg = e.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=e.code, detail=f"HTTP {e.code}: {err_msg}")
+    except Exception as e:
+        err_str = str(e) or type(e).__name__
+        raise HTTPException(status_code=500, detail=f"Request failed: {err_str}")
+
+@app.post("/system/generate-search")
+def generate_search(payload: dict = Body(...)):
+    import urllib.request
+    import urllib.error
+    import json
+    
+    prompt = payload.get("prompt")
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+        
+    cfg = load_config()
+    provider = payload.get("ai_provider") or cfg.get("ai_provider") or "https://api.openai.com/v1"
+    model = payload.get("ai_model") or cfg.get("ai_model") or "gpt-3.5-turbo"
+    api_key = payload.get("ai_api_key") or cfg.get("ai_api_key") or "dummy-key"
+    
+    provider = provider.rstrip("/")
+    if provider.endswith("/chat/completions"):
+        provider = provider[:-17]
+        
+    endpoint = f"{provider}/chat/completions"
+    
+    system_prompt = """Translate natural language to WABS search syntax. Output ONLY the query string.
+Syntax:
+- type: audio, video, document, photo, .pdf
+- object: lowercase singular snake_case (e.g. object:hot_dog)
+- person: "Name1"
+- size: >100MB, <5GB
+- length: >5m, <1h
+- date: 2020, 2020-2022, 1900-2019 (before 2020), 2019-07-01
+- camera: sony
+- fps: >=60
+- Combine with spaces. Use + to require, - to exclude (e.g. -person:Name1).
+
+Follow Rules:
+1. Do NOT add any filters yourself. (like dates, sizes, lengths, cameras, or fps.), output ONLY explicitly requested filters.
+2. Do NOT invent new prefixes (like "species:"). Map camera brands to "camera:".
+3. For exact years, use date:2020 (NEVER 2020..2020).
+4. If unrelated or gibberish, output EXACTLY: INVALID_QUERY"""
+
+    req_data = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Request: who am I"},
+            {"role": "assistant", "content": "INVALID_QUERY"},
+            {"role": "user", "content": "Request: Name1 photos"},
+            {"role": "assistant", "content": "type:photo person:Name1"},
+            {"role": "user", "content": "Request: football pictures"},
+            {"role": "assistant", "content": "type:photo object:football"},
+            {"role": "user", "content": "Request: Find photos of Name1 and Name2, but without Name3 in 2020"},
+            {"role": "assistant", "content": "type:photo person:Name1 person:Name2 -person:Name3 date:2020"},
+            {"role": "user", "content": "Request: Large videos longer than 10 minutes before 2015"},
+            {"role": "assistant", "content": "type:video size:>500MB length:>10m date:1900-2014"},
+            {"role": "user", "content": "Request: Name1's photos from July 1st 2019"},
+            {"role": "assistant", "content": "type:photo person:Name1 date:2019-07-01"},
+            {"role": "user", "content": "Request: Do we have videos of dolphins and hot dogs shot on a sony camera with at least 60 fps?"},
+            {"role": "assistant", "content": "type:video object:dolphin object:hot_dog camera:sony fps:>=60"},
+            {"role": "user", "content": f"Request: {prompt}"}
+        ],
+        "temperature": 0.0,
+        "max_tokens": 50
+    }).encode("utf-8")
+    
+    req = urllib.request.Request(endpoint, data=req_data, headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    })
+    
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            resp_data = json.loads(response.read().decode("utf-8"))
+            reply = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not reply:
+                reply = ""
+            reply = reply.strip()
+            if reply.startswith('"') and reply.endswith('"'):
+                reply = reply[1:-1]
+            if reply.startswith('`') and reply.endswith('`'):
+                reply = reply.strip('`')
+                
+            if reply == "INVALID_QUERY":
+                return {"success": True, "query": ""}
+                
+            # Post-process to remove conversational filler if the model still failed
+            if "\n" in reply:
+                lines = [line.strip() for line in reply.split("\n") if line.strip()]
+                query_lines = [l for l in lines if ":" in l or l.startswith("+") or l.startswith("-")]
+                if query_lines:
+                    reply = query_lines[-1]
+                    
+            # Inline conversational filler extraction (e.g. "Sure, here it is: type:photo camera:Sony")
+            match = re.search(r'(?:^|\s)((?:[+-]?(?:type|object|person|tag|size|length|date|camera|resolution|fps|artist|album|genre|meta):)[^\n]*)', reply)
+            if match:
+                reply = match.group(1).strip()
+
+            return {"success": True, "query": reply}
+    except urllib.error.HTTPError as e:
+        err_msg = e.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=e.code, detail=f"HTTP {e.code}: {err_msg}")
+    except Exception as e:
+        err_str = str(e) or type(e).__name__
+        raise HTTPException(status_code=500, detail=f"Request failed: {err_str}")
 
 @app.post("/settings")
 def save(data:dict):

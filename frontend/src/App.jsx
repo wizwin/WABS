@@ -39,6 +39,8 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty'
 import FaceIcon from '@mui/icons-material/Face'
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
+import StarIcon from '@mui/icons-material/Star'
+import StarBorderIcon from '@mui/icons-material/StarBorder'
 
 // Use relative path in production to support network IPs, fallback to localhost for Vite dev server
 const API = window.location.port === '5173' ? 'http://127.0.0.1:8000' : ''
@@ -514,7 +516,14 @@ const [focusedSuggestionIndex, setFocusedSuggestionIndex] = useState(-1);
 const [people, setPeople] = useState([]);
 const [currentPerson, setCurrentPerson] = useState(null);
 const [personFiles, setPersonFiles] = useState([]);
-const [peopleSortBy, setPeopleSortBy] = useState('name');
+const [peopleSortBy, setPeopleSortBy] = useState(() => {
+  try {
+    const saved = localStorage.getItem('wabs_people_sort_by');
+    return saved ? saved : 'name';
+  } catch (e) {
+    return 'name';
+  }
+});
 const [objectTags, setObjectTags] = useState([]);
 const [checkedPeople, setCheckedPeople] = useState(new Set());
 const [isTaggingPerson, setIsTaggingPerson] = useState(false);
@@ -569,6 +578,9 @@ const aiActionAbortController = useRef(null);
 const [fullTimelineData, setFullTimelineData] = useState([]);
 const [personPreviewPhotos, setPersonPreviewPhotos] = useState([]);
 const [timelineUpdateTick, setTimelineUpdateTick] = useState(0);
+const [testingAI, setTestingAI] = useState(false);
+const [aiSearchPrompt, setAiSearchPrompt] = useState('');
+const [generatingSearch, setGeneratingSearch] = useState(false);
 
 useEffect(() => {
   if (selected && selected.is_person) {
@@ -596,6 +608,10 @@ useEffect(() => {
 useEffect(() => {
   localStorage.setItem('wabs_purge_threshold', purgeThreshold.toString());
 }, [purgeThreshold]);
+
+useEffect(() => {
+  localStorage.setItem('wabs_people_sort_by', peopleSortBy);
+}, [peopleSortBy]);
 
 useEffect(() => {
   if (Array.isArray(files)) files.forEach(f => globalFileCache.current.set(f.path, f));
@@ -1096,6 +1112,50 @@ async function choosePathForConfig(configId, field, mode){
    console.warn('Path chooser failed', err)
    alert('Unable to open native path chooser. Please enter the path manually.')
  }
+}
+
+async function testAIConnection() {
+  setTestingAI(true);
+  try {
+    const payload = {
+      ai_provider: settings.ai_provider,
+      ai_model: settings.ai_model,
+      ai_api_key: settings.ai_api_key
+    };
+    const r = await axios.post(`${API}/system/test-ai`, payload);
+    showToastMessage(`Success! Model replied: ${r.data.reply}`);
+  } catch (err) {
+    alert(`Connection failed: ${err?.response?.data?.detail || err.message}`);
+  } finally {
+    setTestingAI(false);
+  }
+}
+
+async function generateSearchWithAI() {
+  if (!aiSearchPrompt.trim()) return;
+  setGeneratingSearch(true);
+  try {
+    const payload = {
+      prompt: aiSearchPrompt,
+      ai_provider: settings.ai_provider,
+      ai_model: settings.ai_model,
+      ai_api_key: settings.ai_api_key
+    };
+    const r = await axios.post(`${API}/system/generate-search`, payload);
+    const generatedQuery = r.data.query;
+    
+    const newId = `smartsearch_${Date.now()}`;
+    setSettings(prev => ({
+      ...prev,
+      smart_searches: [...(prev.smart_searches || []), { id: newId, name: aiSearchPrompt.slice(0, 30) + (aiSearchPrompt.length > 30 ? '...' : ''), query: generatedQuery }]
+    }));
+    setAiSearchPrompt('');
+    showToastMessage('Smart Search generated successfully!');
+  } catch (err) {
+    alert('Failed to generate search: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setGeneratingSearch(false);
+  }
 }
 
 async function clearCache() {
@@ -2552,6 +2612,20 @@ const toggleDetails = () => {
   updateUIPreferences({ show_details: val });
 };
 
+const togglePinPerson = (e, id) => {
+  e.stopPropagation();
+  const currentPinned = settings.pinned_people || [];
+  let next;
+  if (currentPinned.includes(id)) {
+      next = currentPinned.filter(x => x !== id);
+      showToastMessage(`Profile removed from favorites.`);
+  } else {
+      next = [...currentPinned, id];
+      showToastMessage(`Profile pinned to favorites.`);
+  }
+  updateUIPreferences({ pinned_people: next });
+};
+
 const widthsRef = useRef({ sidebar: 240, timeline: 150, details: 260 });
 widthsRef.current = { sidebar: sidebarWidth, timeline: timelineWidth, details: detailsWidth };
 
@@ -2907,8 +2981,20 @@ const hasUnknownSelected = useMemo(() => {
 }, [checkedPeople, filteredUnknownPeople]);
 
 const sortedNamedPeopleForUI = useMemo(() => {
-  return [...filteredNamedPeople].sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '') : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || '')));
-}, [filteredNamedPeople, peopleSortBy]);
+  const pinned = new Set(settings.pinned_people || []);
+  return [...filteredNamedPeople].sort((a, b) => {
+    const aPinned = pinned.has(a.id);
+    const bPinned = pinned.has(b.id);
+    if (aPinned && !bPinned) return -1;
+    if (!aPinned && bPinned) return 1;
+    
+    if (peopleSortBy === 'name') {
+        return (a.name || '').localeCompare(b.name || '');
+    } else {
+        return (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || ''));
+    }
+  });
+}, [filteredNamedPeople, peopleSortBy, settings.pinned_people]);
 
 const sortedUnknownPeopleForUI = useMemo(() => {
   return [...filteredUnknownPeople].sort((a, b) => peopleSortBy === 'name' ? (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' }) : (b.face_count - a.face_count || (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' })));
@@ -3306,15 +3392,15 @@ return(
 <div className='timeline' style={{ width: timelineWidth, position: 'relative' }}>
   {timelineItems.length > 0 && (
     <ActionButton
-      className="btn btn-secondary preserve-colors"
+      className="btn btn-secondary"
       onClick={() => {
         document.querySelector('.content')?.scrollTo({ top: 0, behavior: 'smooth' });
         document.querySelector('.timeline')?.scrollTo({ top: 0, behavior: 'smooth' });
       }}
-      style={{ margin: '8px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: '#0f172a', borderColor: '#3b82f6', color: '#38bdf8', position: 'sticky', top: '8px', zIndex: 10, boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)', borderRadius: '8px' }}
+      style={{ margin: '8px auto', padding: '4px 12px', width: '90px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: 'rgba(30, 41, 59, 0.9)', border: '1px solid #334155', color: '#94a3b8', position: 'sticky', top: '8px', zIndex: 10, borderRadius: '16px', fontSize: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.2)' }}
       title="Jump to Top"
     >
-      <ArrowUpwardIcon fontSize="small" /> Top
+      <ArrowUpwardIcon style={{ fontSize: '16px' }} /> Top
     </ActionButton>
   )}
   {timelineItems.map(dateKey => (
@@ -3383,17 +3469,17 @@ return(
   ))}
   {timelineItems.length > 0 && (
     <ActionButton
-      className="btn btn-secondary preserve-colors"
+      className="btn btn-secondary"
       onClick={() => {
         const content = document.querySelector('.content');
         content?.scrollTo({ top: content.scrollHeight, behavior: 'smooth' });
         const timeline = document.querySelector('.timeline');
         timeline?.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' });
       }}
-      style={{ margin: '8px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: '#0f172a', borderColor: '#3b82f6', color: '#38bdf8', position: 'sticky', bottom: '8px', zIndex: 10, boxShadow: '0 -10px 15px -3px rgba(0,0,0,0.5)', borderRadius: '8px' }}
+      style={{ margin: '8px auto', padding: '4px 12px', width: '90px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: 'rgba(30, 41, 59, 0.9)', border: '1px solid #334155', color: '#94a3b8', position: 'sticky', bottom: '8px', zIndex: 10, borderRadius: '16px', fontSize: '12px', boxShadow: '0 -4px 6px -1px rgba(0,0,0,0.2)' }}
       title="Jump to Bottom"
     >
-      <ArrowDownwardIcon fontSize="small" /> Bottom
+      <ArrowDownwardIcon style={{ fontSize: '16px' }} /> Bottom
     </ActionButton>
   )}
 </div>
@@ -3915,6 +4001,13 @@ page==='people' &&
              >
                <VisibilityOffIcon style={{ fontSize: '15px' }} />
              </div>
+             <div 
+               onClick={(e) => togglePinPerson(e, p.id)}
+               style={{position: 'absolute', top: '8px', right: '76px', background: (settings.pinned_people || []).includes(p.id) ? 'rgba(245, 158, 11, 0.2)' : 'rgba(148, 163, 184, 0.2)', color: (settings.pinned_people || []).includes(p.id) ? '#f59e0b' : '#94a3b8', width: '26px', height: '26px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', zIndex: 10}}
+               title={(settings.pinned_people || []).includes(p.id) ? "Unpin Person" : "Pin Person"}
+             >
+               {(settings.pinned_people || []).includes(p.id) ? <StarIcon style={{ fontSize: '15px' }} /> : <StarBorderIcon style={{ fontSize: '15px' }} />}
+             </div>
              <div style={{width:'100%', height:'150px', background:'#1e293b', borderRadius:'12px', display:'flex', alignItems:'center', justifyContent:'center', overflow: 'hidden'}}>
                  <PersonThumb url={getPersonThumbUrl(p)} size={60} />
              </div>
@@ -4144,15 +4237,15 @@ page==='person_files' &&
 <div className='timeline' style={{ width: timelineWidth, position: 'relative' }}>
   {timelineItems.length > 0 && (
     <ActionButton
-      className="btn btn-secondary preserve-colors"
+      className="btn btn-secondary"
       onClick={() => {
         document.querySelector('.content')?.scrollTo({ top: 0, behavior: 'smooth' });
         document.querySelector('.timeline')?.scrollTo({ top: 0, behavior: 'smooth' });
       }}
-      style={{ margin: '8px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: '#0f172a', borderColor: '#3b82f6', color: '#38bdf8', position: 'sticky', top: '8px', zIndex: 10, boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)', borderRadius: '8px' }}
+      style={{ margin: '8px auto', padding: '4px 12px', width: '90px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: 'rgba(30, 41, 59, 0.9)', border: '1px solid #334155', color: '#94a3b8', position: 'sticky', top: '8px', zIndex: 10, borderRadius: '16px', fontSize: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.2)' }}
       title="Jump to Top"
     >
-      <ArrowUpwardIcon fontSize="small" /> Top
+      <ArrowUpwardIcon style={{ fontSize: '16px' }} /> Top
     </ActionButton>
   )}
   {timelineItems.map(dateKey => (
@@ -4191,17 +4284,17 @@ page==='person_files' &&
   ))}
   {timelineItems.length > 0 && (
     <ActionButton
-      className="btn btn-secondary preserve-colors"
+      className="btn btn-secondary"
       onClick={() => {
         const content = document.querySelector('.content');
         content?.scrollTo({ top: content.scrollHeight, behavior: 'smooth' });
         const timeline = document.querySelector('.timeline');
         timeline?.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' });
       }}
-      style={{ margin: '8px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: '#0f172a', borderColor: '#3b82f6', color: '#38bdf8', position: 'sticky', bottom: '8px', zIndex: 10, boxShadow: '0 -10px 15px -3px rgba(0,0,0,0.5)', borderRadius: '8px' }}
+      style={{ margin: '8px auto', padding: '4px 12px', width: '90px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: 'rgba(30, 41, 59, 0.9)', border: '1px solid #334155', color: '#94a3b8', position: 'sticky', bottom: '8px', zIndex: 10, borderRadius: '16px', fontSize: '12px', boxShadow: '0 -4px 6px -1px rgba(0,0,0,0.2)' }}
       title="Jump to Bottom"
     >
-      <ArrowDownwardIcon fontSize="small" /> Bottom
+      <ArrowDownwardIcon style={{ fontSize: '16px' }} /> Bottom
     </ActionButton>
   )}
 </div>
@@ -5108,6 +5201,26 @@ page==='settings' &&
           }}>+ Add Smart Search</ActionButton>
         </div>
 
+        {settings.ai_enabled && (
+            <div style={{ marginBottom: '24px', padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #3b82f64a' }}>
+               <h4 style={{ margin: '0 0 8px 0', color: '#38bdf8' }}>✨ AI Search Assistant</h4>
+               <p style={{ margin: '0 0 12px 0', fontSize: '13px', color: '#94a3b8' }}>Describe what you want to find in plain English, and the AI will build the search query for you.</p>
+               <div style={{ display: 'flex', gap: '8px' }}>
+                   <input 
+                      className="setting" 
+                      style={{ margin: 0, flex: 1 }} 
+                      placeholder="e.g., Find John's photos at the beach from 2022"
+                      value={aiSearchPrompt}
+                      onChange={e => setAiSearchPrompt(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') generateSearchWithAI(); }}
+                   />
+                   <ActionButton disabled={generatingSearch || !aiSearchPrompt.trim()} className="btn btn-secondary" style={{ color: '#38bdf8', borderColor: '#3b82f6', display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }} onClick={generateSearchWithAI}>
+                      {generatingSearch ? <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Generating...</> : 'Generate Query'}
+                   </ActionButton>
+               </div>
+            </div>
+        )}
+
         {(settings.smart_searches || []).map((search, index) => (
           <div key={search.id} style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', marginBottom: '16px', border: '1px solid #334155' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
@@ -5235,17 +5348,20 @@ page==='settings' &&
             ai_model:e.target.value
             })}
           />
-          <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>OpenAI API Key</p>
+          <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>AI API Key</p>
           <input
             type='password'
             className='setting'
             style={{ marginBottom: '0' }}
-            value={settings.openai_api_key || ''}
+            value={settings.ai_api_key || ''}
             onChange={(e)=>setSettings({
             ...settings,
-            openai_api_key:e.target.value
+            ai_api_key:e.target.value
             })}
           />
+          <ActionButton disabled={testingAI} className="btn btn-secondary" onClick={testAIConnection} style={{ marginTop: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {testingAI ? <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Testing Connection...</> : 'Test AI Connection'}
+          </ActionButton>
         </div>
 
         <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
