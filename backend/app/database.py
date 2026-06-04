@@ -94,6 +94,12 @@ with engine.begin() as conn:
         END;
     """))
     conn.execute(text("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS file_text_fts USING fts5(file_id UNINDEXED, content);
+    """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS processed_text (file_id INTEGER PRIMARY KEY);
+    """))
+    conn.execute(text("""
         CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
             INSERT INTO files_fts(files_fts, rowid, filename, tags) 
             VALUES ('delete', old.id, old.filename, old.tags);

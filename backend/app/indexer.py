@@ -152,6 +152,9 @@ def extract_metadata_for_file(path, category):
                         mapped = {}
                         for tag_id, value in exif.items():
                             tag = ExifTags.TAGS.get(tag_id, tag_id)
+                            # Skip massive binary blobs and MakerNotes which kill performance and DB size
+                            if tag in ('MakerNote', 'UserComment', 'PrintImageMatching') or (isinstance(value, bytes) and len(value) > 1000):
+                                continue
                             mapped[tag] = _normalize_metadata_value(value)
                         metadata["exif"] = mapped
                         date = mapped.get("DateTimeOriginal") or mapped.get("DateTime")
@@ -200,7 +203,20 @@ def extract_metadata_for_file(path, category):
         elif category == "video":
             if cv2 is not None:
                 try:
-                    cap = cv2.VideoCapture(str(path))
+                    hw_params = []
+                    if hasattr(cv2, 'CAP_PROP_HW_ACCELERATION') and hasattr(cv2, 'VIDEO_ACCELERATION_ANY'):
+                        hw_params = [cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY]
+
+                    # Try FFmpeg backend first for speed, fallback to auto-discovery for H.265/HEVC (MSMF/DirectShow)
+                    if hw_params:
+                        cap = cv2.VideoCapture(str(path), cv2.CAP_FFMPEG, hw_params)
+                        if not cap.isOpened():
+                            cap = cv2.VideoCapture(str(path), cv2.CAP_ANY, hw_params)
+                    else:
+                        cap = cv2.VideoCapture(str(path), cv2.CAP_FFMPEG)
+
+                    if not cap.isOpened():
+                        cap = cv2.VideoCapture(str(path))
                     if cap.isOpened():
                         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -225,6 +241,8 @@ def extract_metadata_for_file(path, category):
                             if not value:
                                 continue
                             val_str = str(value[0]) if isinstance(value, list) else str(value)
+                            if len(val_str) > 1000:
+                                continue
                             # QuickTime/MP4 usually use ©day, MKV uses DATE
                             if key.lower() in ['date', 'creation_time', '\xa9day', 'year']:
                                 metadata['date'] = val_str
@@ -251,6 +269,9 @@ def extract_metadata_for_file(path, category):
                             if not value:
                                 continue
                             val_str = str(value[0]) if isinstance(value, list) else str(value)
+                            # Skip embedded album art (APIC) which bloats JSON payload
+                            if len(val_str) > 1000:
+                                continue
                             key_lower = key.lower()
                             
                             if key_lower in ['title', 'tit2', '\xa9nam']:
@@ -713,5 +734,6 @@ def start():
 
     STATE["running"] = True
     STATE["status"] = "Starting..."
+    STATE["stopped"] = False
     worker = Thread(target=run, daemon=True)
     worker.start()

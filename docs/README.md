@@ -13,7 +13,8 @@ WABS is a modern, 100% offline archival management system designed to help you o
 * **Smart Categorization:** Automatically groups files into categories like Photos, Videos, Code, etc.
 * **Offline Face Recognition:** Scans photos using local AI to find and group people automatically.
 * **Object & Scene Tagging:** Classifies objects and scenes in photos completely offline, allowing you to easily search by content.
-* **Combined AI Scanning:** Scan for files, faces, and objects simultaneously to massively speed up index generation.
+* **Document Text Extraction:** Automatically extracts and intelligently filters text from PDFs, documents, and code files, making their inner contents instantly searchable.
+* **Combined Background Scanning:** Scan for files, faces, objects, and document text simultaneously to massively speed up index generation.
 * **Advanced JSON Search:** Native, high-speed metadata querying (FPS, Camera Model, ID3 Tags, etc.) powered by SQLite's JSON1 extension.
 * **Database Management:** Built-in tools to cleanly remove missing files, purge orphaned AI profiles, and vacuum the databases to reclaim disk space.
 * **Portable:** Move your backup drives around? WABS easily remaps your indexed files to new drive letters.
@@ -36,15 +37,15 @@ Once the terminal window opens and the backend starts, open your web browser and
 2. **Index Files:** Go to the **Dashboard** and click **Start** under Indexer Controls.
 3. **Explore:** Use the **Explorer** and **Search** tabs to navigate and manage your data.
 
-### Clearing AI Data Manually (Faces & Tags)
-If you want to completely reset the AI's detected faces, people, and object tags, you can manually clear the AI database:
+### Clearing AI Data & Text Manually
+If you want to completely reset the AI's detected faces, people, and object tags, you can manually clear the AI database (or the text extraction cache):
 1. **Stop** the WABS application (close the terminal/command prompt window).
 2. Open your file explorer and navigate to the folder you configured as your **Database Path** in WABS.
 3. Locate and delete the `ai_metadata.db` file. *(Note: Do not delete your main `archive.db` file as that contains your core file index).*
 4. **Restart** WABS. The application will automatically create a fresh, empty AI database on startup.
 5. You can now go to the Dashboard and start the AI scanners to re-process your archive from scratch.
 
-*(Note: You can also clear just the object tags directly from the UI by navigating to the **Tags** page and clicking **Clear All Object Tags**).*
+*(Note: You can also clear just the object tags or extracted document text directly from the UI by navigating to the **Tags** page).*
 
 ### Exporting & Importing AI Data (JSON)
 To safeguard your AI metadata against database wipes or migrations, you can export your data to portable JSON files:

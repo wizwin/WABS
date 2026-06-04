@@ -19,6 +19,11 @@ from sqlalchemy import func, or_, Integer, text
 from fastapi.staticfiles import StaticFiles
 
 try:
+    import openpyxl
+except ImportError:
+    openpyxl = None
+
+try:
     import cv2
 except ImportError:
     cv2 = None
@@ -32,6 +37,11 @@ try:
     import docx
 except ImportError:
     docx = None
+
+try:
+    import pptx
+except ImportError:
+    pptx = None
 
 try:
     from backend.app.database import SessionLocal, FileIndex
@@ -94,19 +104,31 @@ def graceful_os_shutdown():
     except Exception:
         pass
 
+    if hasattr(indexer, 'STATE'):
+        indexer.STATE["stopped"] = True
+        indexer.STATE["hasher_stopped"] = True
+        indexer.STATE["document_scanner_stopped"] = True
+        indexer.STATE["object_scanner_stopped"] = True
+        indexer.STATE["face_scanner_stopped"] = True
+        
+    global combined_scanner_stopped
+    combined_scanner_stopped = True
+
     if hasattr(indexer, 'indexer_stopped'): indexer.indexer_stopped = True
     if hasattr(indexer, 'face_scanner_stopped'): indexer.face_scanner_stopped = True
     if hasattr(indexer, 'object_scanner_stopped'): indexer.object_scanner_stopped = True
+    if hasattr(indexer, 'document_scanner_stopped'): indexer.document_scanner_stopped = True
     if hasattr(indexer, 'hasher_stopped'): indexer.hasher_stopped = True
     if hasattr(indexer, 'combined_scanner_stopped'): indexer.combined_scanner_stopped = True
 
     for _ in range(30):
         is_running = any([
-            getattr(indexer, 'running', False),
-            getattr(indexer, 'combined_scanner_running', False),
-            getattr(indexer, 'face_scanner_running', False),
-            getattr(indexer, 'object_scanner_running', False),
-            getattr(indexer, 'hasher_running', False),
+            indexer.STATE.get("running", False) if hasattr(indexer, 'STATE') else False,
+            indexer.STATE.get("hasher_running", False) if hasattr(indexer, 'STATE') else False,
+            globals().get('combined_scanner_running', False),
+            globals().get('face_scanner_running', False),
+            globals().get('object_scanner_running', False),
+            globals().get('document_scanner_running', False),
         ])
         if not is_running:
             break
@@ -189,6 +211,8 @@ sys.stderr = PrintLogger(sys.stderr)
 
 face_scanner_thread = None
 face_scanner_running = False
+document_scanner_running = False
+document_scanner_thread = None
 
 from collections import OrderedDict
 
@@ -238,7 +262,13 @@ def _evaluate_image_faces(file_path: Path, yunet_path: str):
         else:
             det_img = img
 
-        detector = cv2.FaceDetectorYN.create(yunet_path, "", (det_img.shape[1], det_img.shape[0]))
+        backend_id = getattr(cv2.dnn, 'DNN_BACKEND_CUDA', getattr(cv2.dnn, 'DNN_BACKEND_DEFAULT', 0))
+        target_id = getattr(cv2.dnn, 'DNN_TARGET_CUDA', getattr(cv2.dnn, 'DNN_TARGET_CPU', 0))
+        
+        try:
+            detector = cv2.FaceDetectorYN.create(yunet_path, "", (det_img.shape[1], det_img.shape[0]), 0.9, 0.3, 5000, backend_id, target_id)
+        except Exception:
+            detector = cv2.FaceDetectorYN.create(yunet_path, "", (det_img.shape[1], det_img.shape[0]))
         success, faces = detector.detect(det_img)
         
         results = []
@@ -710,6 +740,10 @@ def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", so
                     dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
                     q = q.filter(FileIndex.size.in_(dup_sizes))
                     q = q.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
+                elif category == "searchable_documents":
+                    q = q.filter(text("files.id IN (SELECT file_id FROM processed_text)"))
+                elif category == "tagged_objects":
+                    q = q.filter(FileIndex.tags.like('%object:%'))
                 else:
                     q = q.filter(FileIndex.category == category)
                     
@@ -767,6 +801,10 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50, sort_by
                     dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
                     q_base = q_base.filter(FileIndex.size.in_(dup_sizes))
                     q_base = q_base.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
+                elif category == "searchable_documents":
+                    q_base = q_base.filter(text("files.id IN (SELECT file_id FROM processed_text)"))
+                elif category == "tagged_objects":
+                    q_base = q_base.filter(FileIndex.tags.like('%object:%'))
                 else:
                     q_base = q_base.filter(FileIndex.category == category)
 
@@ -851,7 +889,12 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50, sort_by
             fts_query = " AND ".join(fts_terms)
             
             matching_ids = s.execute(
-                text("SELECT rowid FROM files_fts WHERE files_fts MATCH :q ORDER BY rank LIMIT 1000"),
+                text("""
+                SELECT rowid FROM files_fts WHERE files_fts MATCH :q
+                UNION
+                SELECT file_id FROM file_text_fts WHERE file_text_fts MATCH :q
+                LIMIT 1000
+                """),
                 {"q": fts_query}
             ).scalars().all()
 
@@ -1007,7 +1050,20 @@ def preview(item_id:int, theme: str = "dark"):
             
             if cv2 is not None:
                 try:
-                    cap = cv2.VideoCapture(str(file_path))
+                    hw_params = []
+                    if hasattr(cv2, 'CAP_PROP_HW_ACCELERATION') and hasattr(cv2, 'VIDEO_ACCELERATION_ANY'):
+                        hw_params = [cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY]
+
+                    # Try FFmpeg backend first for speed, fallback to auto-discovery for H.265/HEVC
+                    if hw_params:
+                        cap = cv2.VideoCapture(str(file_path), cv2.CAP_FFMPEG, hw_params)
+                        if not cap.isOpened():
+                            cap = cv2.VideoCapture(str(file_path), cv2.CAP_ANY, hw_params)
+                    else:
+                        cap = cv2.VideoCapture(str(file_path), cv2.CAP_FFMPEG)
+
+                    if not cap.isOpened():
+                        cap = cv2.VideoCapture(str(file_path))
                     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                     if frame_count > 0:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_count * 0.1)) # Skip to 10% to avoid black start frames
@@ -1032,7 +1088,7 @@ def preview(item_id:int, theme: str = "dark"):
                     print(f"ERROR: Video thumbnail error for {file_path}: {e}")
                     traceback.print_exc()
                     
-        elif file_category in ["document", "code"] or file_path.suffix.lower() in [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log"]:
+        elif file_category in ["document", "code"] or file_path.suffix.lower() in [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".html", ".htm", ".css", ".c", ".cpp", ".h", ".java", ".cs", ".go", ".rs", ".rb", ".php", ".sh", ".bat", ".sql"]:
             if file_path.suffix.lower() == ".pdf":
                 cfg = load_config()
                 # Enforce an isolated sub-directory so we never overwrite user files
@@ -1058,7 +1114,7 @@ def preview(item_id:int, theme: str = "dark"):
   <text x='50%' y='45%' fill='{text_fill_1}' font-family='Segoe UI,Arial' font-size='22' text-anchor='middle'>Preview unavailable</text>
   <text x='50%' y='60%' fill='{text_fill_2}' font-family='Segoe UI,Arial' font-size='16' text-anchor='middle'>ENCRYPTED PDF</text>
 </svg>
-"""
+""".strip()
                             return Response(content=placeholder, media_type='image/svg+xml')
 
                         page = doc.load_page(0)
@@ -1084,7 +1140,8 @@ def preview(item_id:int, theme: str = "dark"):
                     svg_lines = ""
                     y = 28
                     for line in lines:
-                        safe_line = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')[:50]
+                        clean_line = "".join(c for c in line[:50] if c.isprintable() or c == '\t').replace('\t', '    ')
+                        safe_line = clean_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                         svg_lines += f"<text x='16' y='{y}' fill='{text_fill}' font-family='monospace' font-size='13'>{safe_line}</text>\n"
                         y += 24
                         
@@ -1094,7 +1151,7 @@ def preview(item_id:int, theme: str = "dark"):
                 except Exception as e:
                     print(f"ERROR: DOCX thumbnail error for {file_path}: {e}")
             else:
-                text_extensions = [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".py", ".js", ".html", ".css", ".c", ".cpp", ".h", ".java", ".cs", ".go", ".rs", ".rb", ".php", ".sh", ".bat", ".sql"]
+                text_extensions = [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".py", ".js", ".html", ".htm", ".css", ".c", ".cpp", ".h", ".java", ".cs", ".go", ".rs", ".rb", ".php", ".sh", ".bat", ".sql"]
                 if file_path.suffix.lower() in text_extensions:
                     try:
                         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -1104,7 +1161,8 @@ def preview(item_id:int, theme: str = "dark"):
                         svg_lines = ""
                         y = 28
                         for line in lines:
-                            safe_line = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')[:50]
+                            clean_line = "".join(c for c in line[:50] if c.isprintable() or c == '\t').replace('\t', '    ')
+                            safe_line = clean_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                             svg_lines += f"<text x='16' y='{y}' fill='{text_fill}' font-family='monospace' font-size='13'>{safe_line}</text>\n"
                             y += 24
                             
@@ -1124,7 +1182,7 @@ def preview(item_id:int, theme: str = "dark"):
   <text x='50%' y='45%' fill='{text_fill_1}' font-family='Segoe UI,Arial' font-size='22' text-anchor='middle'>Preview unavailable</text>
   <text x='50%' y='60%' fill='{text_fill_2}' font-family='Segoe UI,Arial' font-size='16' text-anchor='middle'>{file_category.upper()}</text>
 </svg>
-"""
+""".strip()
     return Response(content=placeholder, media_type='image/svg+xml')
 
 @app.post("/open/{item_id}")
@@ -1324,8 +1382,15 @@ def stats():
         dup_count = s.query(func.sum(dup_subq.c.c)).scalar() or 0
         stats_dict["duplicates"] = int(dup_count)
         
+        try:
+            doc_count = s.execute(text("SELECT COUNT(file_id) FROM processed_text")).scalar()
+            stats_dict["searchable_documents"] = int(doc_count) if doc_count else 0
+        except Exception:
+            stats_dict["searchable_documents"] = 0
+
         stats_dict["known_faces"] = 0
         stats_dict["unknown_faces"] = 0
+        stats_dict["tagged_objects"] = 0
         ai_db_path = get_ai_db_path()
         if ai_db_path.exists():
             try:
@@ -1347,6 +1412,11 @@ def stats():
                         
                         cursor.execute(f"SELECT COUNT(DISTINCT people.id) FROM faces JOIN people ON faces.person_id = people.id WHERE people.name LIKE 'Unknown Person%' {hidden_clause}")
                         stats_dict["unknown_faces"] = cursor.fetchone()[0] or 0
+                        
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='processed_objects'")
+                    if cursor.fetchone():
+                        cursor.execute("SELECT COUNT(DISTINCT file_id) FROM processed_objects")
+                        stats_dict["tagged_objects"] = cursor.fetchone()[0] or 0
             except Exception as e:
                 print(f"Error fetching AI stats: {e}")
                 
@@ -1369,6 +1439,10 @@ def timeline(category: str = "all"):
             elif category == "duplicates":
                 dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
                 q = q.filter(FileIndex.size.in_(dup_sizes))
+            elif category == "searchable_documents":
+                q = q.filter(text("files.id IN (SELECT file_id FROM processed_text)"))
+            elif category == "tagged_objects":
+                q = q.filter(FileIndex.tags.like('%object:%'))
             else:
                 q = q.filter(FileIndex.category == category)
         
@@ -1381,6 +1455,7 @@ def timeline(category: str = "all"):
 class IndexRequest(BaseModel):
     tag: bool = False
     face: bool = False
+    document: bool = False
 
 @app.post("/indexer/set-options")
 def indexer_set_options(req: IndexRequest):
@@ -1388,6 +1463,7 @@ def indexer_set_options(req: IndexRequest):
         cfg = load_config()
         cfg["run_face_scan"] = req.face
         cfg["run_object_scan"] = req.tag
+        cfg["run_document_scan"] = req.document
         save_config(cfg)
         return {"saved": True}
     except Exception as e:
@@ -1399,6 +1475,10 @@ def indexer_status():
     status = dict(STATE)
     status["face_scanner_running"] = face_scanner_running
     status["object_scanner_running"] = object_scanner_running
+    status["document_scanner_running"] = document_scanner_running
+    status["document_scanner_stopped"] = STATE.get("document_scanner_stopped", False)
+    status["object_scanner_stopped"] = STATE.get("object_scanner_stopped", False)
+    status["face_scanner_stopped"] = STATE.get("face_scanner_stopped", False)
     status["combined_scanner_running"] = combined_scanner_running
     status["combined_scanner_stopped"] = combined_scanner_stopped
     return status
@@ -1409,16 +1489,17 @@ def indexer_start(req: IndexRequest = None):
     if req is None:
         req = IndexRequest()
 
-    if cv2 is None and (req.tag or req.face):
-        raise HTTPException(status_code=500, detail="OpenCV is required for face and object recognition.")
-    if STATE.get("running") or combined_scanner_running:
+    if cv2 is None and (req.tag or req.face or req.document):
+        raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
+    if STATE.get("running") or combined_scanner_running or face_scanner_running or object_scanner_running or document_scanner_running:
         return {"started": True, "ignored": True}
     STATE["update_only"] = False
+    STATE["stopped"] = False
 
-    if req.tag or req.face:
+    if req.tag or req.face or req.document:
         combined_scanner_running = True
         combined_scanner_stopped = False
-        combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face})
+        combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document})
         combined_scanner_thread.start()
     else:
         start_indexing()
@@ -1453,10 +1534,11 @@ def indexer_stop():
         STATE["paused"] = False
         STATE["status"] = "Stopping..."
 
-    global combined_scanner_stopped, face_scanner_running, object_scanner_running
+    global combined_scanner_stopped
     combined_scanner_stopped = True
-    face_scanner_running = False
-    object_scanner_running = False
+    STATE["face_scanner_stopped"] = True
+    STATE["object_scanner_stopped"] = True
+    STATE["document_scanner_stopped"] = True
     if load_config().get("enable_logging"):
         import logging
         logging.info("Archive indexing stopped.")
@@ -1468,16 +1550,17 @@ def indexer_update(req: IndexRequest = None):
     if req is None:
         req = IndexRequest()
 
-    if cv2 is None and (req.tag or req.face):
-        raise HTTPException(status_code=500, detail="OpenCV is required for face and object recognition.")
-    if STATE.get("running") or combined_scanner_running:
+    if cv2 is None and (req.tag or req.face or req.document):
+        raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
+    if STATE.get("running") or combined_scanner_running or face_scanner_running or object_scanner_running or document_scanner_running:
         return {"updating": False, "ignored": True}
     STATE["update_only"] = True
+    STATE["stopped"] = False
 
-    if req.tag or req.face:
+    if req.tag or req.face or req.document:
         combined_scanner_running = True
         combined_scanner_stopped = False
-        combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face})
+        combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document})
         combined_scanner_thread.start()
     else:
         start_indexing()
@@ -1492,15 +1575,20 @@ def indexer_reindex(req: IndexRequest = None):
     if req is None:
         req = IndexRequest()
 
-    if cv2 is None and (req.tag or req.face):
-        raise HTTPException(status_code=500, detail="OpenCV is required for face and object recognition.")
-    if STATE.get("running") or combined_scanner_running:
+    if cv2 is None and (req.tag or req.face or req.document):
+        raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
+    if STATE.get("running") or combined_scanner_running or face_scanner_running or object_scanner_running or document_scanner_running:
         return {"reindexing": False, "ignored": True}
     with SessionLocal() as s:
         from sqlalchemy import text
         s.query(FileIndex).delete()
         try:
             s.execute(text("DELETE FROM sqlite_sequence WHERE name='files'"))
+        except Exception:
+            pass
+        try:
+            s.execute(text("DELETE FROM processed_text"))
+            s.execute(text("DELETE FROM file_text_fts"))
         except Exception:
             pass
         s.commit()
@@ -1537,11 +1625,12 @@ def indexer_reindex(req: IndexRequest = None):
     STATE["current"] = 0
     STATE["total"] = 0
     STATE["update_only"] = False
+    STATE["stopped"] = False
 
-    if req.tag or req.face:
+    if req.tag or req.face or req.document:
         combined_scanner_running = True
         combined_scanner_stopped = False
-        combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face})
+        combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document})
         combined_scanner_thread.start()
     else:
         start_indexing()
@@ -1841,15 +1930,54 @@ def _cosine_similarity(vec1, vec2):
         return 0.0
     return float(np.dot(v1, v2) / (norm_1 * norm_2))
 
-def _process_unified_scanners(run_index: bool = False, run_face: bool = False, run_object: bool = False):
-    global face_scanner_running, object_scanner_running, combined_scanner_running
+STOP_WORDS = frozenset({
+    "the", "and", "to", "of", "a", "in", "is", "that", "for", "it", "with", "as", "was", "on", 
+    "at", "by", "an", "be", "this", "which", "or", "from", "but", "not", "are", "have", "we", 
+    "all", "they", "one", "has", "were", "will", "would", "can", "if", "their", "your", "what", 
+    "about", "who", "so", "when", "there", "out", "more", "do", "up", "any", "some", "into", 
+    "only", "than", "them", "its", "also", "then", "been", "these", "how", "other", "could", 
+    "our", "such", "may", "no", "over", "like", "most", "even", "because", "well", "where", 
+    "through", "back", "much", "down", "should", "those", "under", "while", "very", "just", 
+    "before", "each", "does", "why", "same", "both", "many", "after", "between", "too", "now", 
+    "my", "me", "am", "i", "he", "she", "his", "hers", "him", "her", "us", "you", "yours"
+})
+
+def extract_top_keywords(text: str, max_words: int = 300) -> str:
+    from collections import Counter
+
+    # Extract all words and numbers (3 or more characters to drop noise)
+    words = re.findall(r'\b[a-z0-9]{3,}\b', text.lower())
+
+    # Count ALL words first at C-speed
+    word_counts = Counter(words)
+
+    meaningful_words = {}
+    codes_and_numbers = []
+
+    # Iterate only over UNIQUE words (drastically reduces Python loop overhead)
+    for w, count in word_counts.items():
+        if not w.isalpha():
+            codes_and_numbers.append(w)
+        elif w not in STOP_WORDS:
+            meaningful_words[w] = count
+
+    # Get top words efficiently using Counter's optimized C-level heapq implementation
+    top_words = [word for word, _ in Counter(meaningful_words).most_common(max_words)]
+    return " ".join(top_words + codes_and_numbers)
+
+def _process_unified_scanners(run_index: bool = False, run_face: bool = False, run_object: bool = False, run_document: bool = False):
+    global face_scanner_running, object_scanner_running, document_scanner_running, combined_scanner_running
     global combined_scanner_stopped
     
     if run_face:
         face_scanner_running = True
+        STATE["face_scanner_stopped"] = False
     if run_object:
         object_scanner_running = True
         STATE["object_scanner_stopped"] = False
+    if run_document:
+        document_scanner_running = True
+        STATE["document_scanner_stopped"] = False
 
     try:
         import numpy as np
@@ -1870,6 +1998,12 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             classes_path = get_bundled_model_path("imagenet_classes.txt")
             if Path(model_path).exists() and Path(classes_path).exists():
                 net = cv2.dnn.readNetFromONNX(model_path)
+                if hasattr(cv2.dnn, 'DNN_BACKEND_CUDA') and hasattr(cv2.dnn, 'DNN_TARGET_CUDA'):
+                    try:
+                        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+                        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+                    except Exception:
+                        pass
                 with open(classes_path, 'rt') as f:
                     classes = [line.strip() for line in f.readlines()]
             object_sensitivity = cfg.get("object_sensitivity", "medium")
@@ -1883,13 +2017,22 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         if run_face:
             yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
             sface_path = get_bundled_model_path("face_recognition_sface_2021dec.onnx")
+            
+            backend_id = getattr(cv2.dnn, 'DNN_BACKEND_CUDA', getattr(cv2.dnn, 'DNN_BACKEND_DEFAULT', 0))
+            target_id = getattr(cv2.dnn, 'DNN_TARGET_CUDA', getattr(cv2.dnn, 'DNN_TARGET_CPU', 0))
 
             if Path(yunet_path).exists() and Path(sface_path).exists():
-                detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
+                try:
+                    detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320), 0.9, 0.3, 5000, backend_id, target_id)
+                except Exception:
+                    detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
                 face_sensitivity = cfg.get("face_sensitivity", "medium")
                 face_threshold = 0.55 if face_sensitivity == "high" else 0.85 if face_sensitivity == "low" else 0.70
                 detector.setScoreThreshold(face_threshold)
-                recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
+                try:
+                    recognizer = cv2.FaceRecognizerSF.create(sface_path, "", backend_id, target_id)
+                except Exception:
+                    recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
             else:
                 print("Face recognition models not found. Ensure .onnx files are in the backend folder.")
                 return
@@ -1900,6 +2043,11 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         # --- DB Initialization ---
         face_processed_ids = set()
         object_processed_ids = set()
+        text_processed_ids = set()
+
+        if run_document:
+            with SessionLocal() as s:
+                text_processed_ids = set(r[0] for r in s.execute(text("SELECT file_id FROM processed_text")).fetchall())
 
         with sqlite3.connect(ai_db_path, timeout=15) as conn:
             conn.execute("PRAGMA journal_mode=WAL;")
@@ -1972,8 +2120,15 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         files_to_process.append(os.path.join(dirpath, f))
         else:
             with SessionLocal() as s:
-                photos = s.query(FileIndex.path).filter(FileIndex.category == 'photo').all()
-                files_to_process = [p[0] for p in photos]
+                q = s.query(FileIndex.path)
+                categories = []
+                if run_face or run_object:
+                    categories.append('photo')
+                if run_document:
+                    categories.extend(['document', 'ebook', 'code', 'other'])
+                if categories:
+                    q = q.filter(FileIndex.category.in_(categories))
+                files_to_process = [p[0] for p in q.all()]
 
         total_files = len(files_to_process)
         if run_index:
@@ -1988,6 +2143,9 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         if run_object:
             STATE["object_scanner_total"] = total_files
             STATE["object_scanner_current"] = 0
+        if run_document:
+            STATE["document_scanner_total"] = total_files
+            STATE["document_scanner_current"] = 0
             
         processed_count = 0
         
@@ -2005,12 +2163,20 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         time.sleep(0.5)
                         if combined_scanner_stopped or (run_index and STATE.get("stopped")):
                             break
-                        if not run_index and run_face and not face_scanner_running:
+                        if not run_index and run_face and STATE.get("face_scanner_stopped"):
+                            break
+                        if not run_index and run_document and STATE.get("document_scanner_stopped"):
+                            break
+                        if not run_index and run_object and STATE.get("object_scanner_stopped"):
                             break
 
                     if combined_scanner_stopped or (run_index and STATE.get("stopped")):
                         break
-                    if not run_index and run_face and not face_scanner_running:
+                    if not run_index and run_face and STATE.get("face_scanner_stopped"):
+                        break
+                    if not run_index and run_document and STATE.get("document_scanner_stopped"):
+                        break
+                    if not run_index and run_object and STATE.get("object_scanner_stopped"):
                         break
                         
                     file = Path(file_str)
@@ -2026,6 +2192,9 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     if run_object and not STATE.get("object_scanner_stopped"):
                         STATE["object_scanner_current"] += 1
                         STATE["object_scanner_current_file"] = file.name
+                    if run_document and not STATE.get("document_scanner_stopped"):
+                        STATE["document_scanner_current"] += 1
+                        STATE["document_scanner_current_file"] = file.name
 
                     # --- 1. Indexing Phase ---
                     cached_info = file_cache.get(file_str)
@@ -2080,16 +2249,20 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             print(f"Index error on {file.name}: {e}")
                             continue
 
-                    # Skip AI phase if the file is not an image
-                    if not cached_info or cached_info["category"] != 'photo':
+                    if not cached_info:
                         continue
+                    category = cached_info["category"]
 
                     # --- 2. AI Phase ---
                     obj_stopped = STATE.get("object_scanner_stopped", False)
-                    needs_face = run_face and face_scanner_running and db_item_id not in face_processed_ids
-                    needs_object = run_object and not obj_stopped and db_item_id not in object_processed_ids
+                    doc_stopped = STATE.get("document_scanner_stopped", False)
+                    face_stopped = STATE.get("face_scanner_stopped", False)
                     
-                    if not needs_face and not needs_object:
+                    needs_text = run_document and not doc_stopped and db_item_id not in text_processed_ids and category in ['document', 'ebook', 'code', 'other']
+                    needs_face = run_face and not face_stopped and db_item_id not in face_processed_ids and category == 'photo'
+                    needs_object = run_object and not obj_stopped and db_item_id not in object_processed_ids and category == 'photo'
+                    
+                    if not needs_face and not needs_object and not needs_text:
                         continue
                         
                     # Fetch full SQLAlchemy object ONLY if we need to modify tags or it wasn't fetched yet
@@ -2106,16 +2279,84 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             session.commit()
                         continue
 
+                    # --- FTS Text Extraction (PDFs, TXT, MD, etc.) ---
+                    if needs_text:
+                        try:
+                            extracted_text = ""
+                            ext = file.suffix.lower()
+                            if ext == '.pdf' and fitz is not None:
+                                with fitz.open(str(file)) as doc:
+                                    for page_num in range(min(15, len(doc))):
+                                        extracted_text += doc[page_num].get_text() + " "
+                            elif ext == '.docx' and docx is not None:
+                                word_doc = docx.Document(str(file))
+                                # Extract up to 500 paragraphs to keep the database size reasonable
+                                for p in word_doc.paragraphs[:500]:
+                                    if p.text.strip():
+                                        extracted_text += p.text + " "
+                            elif ext == '.pptx' and pptx is not None:
+                                ppt_doc = pptx.Presentation(str(file))
+                                # Extract text from up to the first 50 slides to keep database size reasonable
+                                for slide in ppt_doc.slides[:50]:
+                                    for shape in slide.shapes:
+                                        if hasattr(shape, "text") and shape.text.strip():
+                                            extracted_text += shape.text.strip() + " "
+                            elif ext == '.xlsx' and openpyxl is not None:
+                                wb = openpyxl.load_workbook(str(file), data_only=True, read_only=True)
+                                # Extract text from up to the first 3 sheets to keep database size reasonable
+                                for sheetname in wb.sheetnames[:3]:
+                                    sheet = wb[sheetname]
+                                    for i, row in enumerate(sheet.iter_rows(values_only=True)):
+                                        if i > 200:
+                                            break
+                                        row_text = " ".join([str(cell).strip() for cell in row if cell is not None and str(cell).strip()])
+                                        if row_text:
+                                            extracted_text += row_text + " "
+                                wb.close()
+                            elif ext in ['.txt', '.md', '.csv', '.json', '.log', '.py', '.js', '.html']:
+                                with open(str(file), 'r', encoding='utf-8', errors='ignore') as f:
+                                    extracted_text = f.read(50000)
+                            
+                            extracted_text = extracted_text.strip()
+                            if extracted_text:
+                                optimized_text = extract_top_keywords(extracted_text, max_words=300)
+                                optimized_text = optimized_text.replace('\x00', ' ')
+                                session.execute(text("INSERT INTO file_text_fts (file_id, content) VALUES (:f, :c)"), {"f": db_item_id, "c": optimized_text})
+                        except Exception:
+                            pass 
+                        finally:
+                            session.execute(text("INSERT OR IGNORE INTO processed_text (file_id) VALUES (:f)"), {"f": db_item_id})
+                            text_processed_ids.add(db_item_id)
+
+                    if not needs_face and not needs_object:
+                        processed_count += 1
+                        if processed_count % 500 == 0: session.commit(); conn.commit()
+                        continue
+
                     # --- OPTIMIZATION: Read file ONCE from disk for both ML models ---
                     try:
                         img_array = np.fromfile(str(file), np.uint8)
                         img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                        if category == 'document' and file.suffix.lower() == '.pdf' and fitz is not None:
+                            doc = fitz.open(str(file))
+                            page = doc.load_page(0)
+                            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                            img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+                            if pix.n == 4:
+                                img = cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGR)
+                            else:
+                                img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                            doc.close()
+                        else:
+                            img_array = np.fromfile(str(file), np.uint8)
+                            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                     except Exception:
                         continue
 
                     if img is None:
                         if needs_face: cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item_id,))
                         if needs_object: cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item_id,))
+                        if needs_text: session.execute(text("INSERT OR IGNORE INTO processed_text (file_id) VALUES (:f)"), {"f": db_item_id})
                         processed_count += 1
                         if processed_count % 500 == 0:
                             conn.commit()
@@ -2263,27 +2504,32 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         traceback.print_exc()
     finally:
         if run_index:
+            is_stopped = STATE.get("stopped", False) or combined_scanner_stopped
             STATE["running"] = False
-            STATE["stopped"] = False
-            STATE["status"] = "Idle"
+            if is_stopped:
+                STATE["status"] = "Stopped"
+            else:
+                STATE["status"] = "Completed"
         if run_face:
             face_scanner_running = False
             STATE["face_scanner_current_file"] = ""
         if run_object:
             object_scanner_running = False
-            STATE["object_scanner_stopped"] = False
             STATE["object_scanner_current_file"] = ""
+        if run_document:
+            document_scanner_running = False
+            STATE["document_scanner_current_file"] = ""
         combined_scanner_running = False
-        combined_scanner_stopped = False
 
 @app.post("/scan-faces")
 def scan_faces():
     if cv2 is None:
         raise HTTPException(status_code=500, detail="OpenCV is required for face recognition.")
     global face_scanner_thread, face_scanner_running
-    if face_scanner_running:
-        raise HTTPException(status_code=400, detail="Face scanning is already in progress.")
+    if face_scanner_running or object_scanner_running or document_scanner_running or combined_scanner_running or STATE.get("running"):
+        raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
     face_scanner_running = True
+    STATE["face_scanner_stopped"] = False
     face_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": True, "run_object": False})
     face_scanner_thread.start()
     return {"message": "Face scanning and clustering started in the background."}
@@ -2293,8 +2539,40 @@ def stop_scan_faces():
     global face_scanner_running
     if not face_scanner_running:
         raise HTTPException(status_code=400, detail="Face scanner is not running.")
-    face_scanner_running = False
+    STATE["face_scanner_stopped"] = True
     return {"message": "Stopping face scanner."}
+
+@app.post("/scan-documents")
+def scan_documents():
+    global document_scanner_thread, document_scanner_running
+    if document_scanner_running or face_scanner_running or object_scanner_running or combined_scanner_running or STATE.get("running"):
+        raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
+    document_scanner_running = True
+    STATE["document_scanner_stopped"] = False
+    document_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": False, "run_document": True})
+    document_scanner_thread.start()
+    return {"message": "Document text extraction started in the background."}
+
+@app.post("/stop-scan-documents")
+def stop_scan_documents():
+    global document_scanner_running
+    if not document_scanner_running:
+        raise HTTPException(status_code=400, detail="Document text extractor is not running.")
+    STATE["document_scanner_stopped"] = True
+    return {"message": "Stopping document text extractor."}
+
+@app.post("/reset-document-scanner-progress")
+def reset_document_scanner_progress():
+    try:
+        with SessionLocal() as s:
+            s.execute(text("CREATE TABLE IF NOT EXISTS processed_text (file_id INTEGER PRIMARY KEY)"))
+            s.execute(text("CREATE VIRTUAL TABLE IF NOT EXISTS file_text_fts USING fts5(file_id UNINDEXED, content)"))
+            s.execute(text("DELETE FROM processed_text"))
+            s.execute(text("DELETE FROM file_text_fts"))
+            s.commit()
+        return {"message": "Document scanner progress has been reset."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not reset document scanner progress: {e}")
 
 @app.get("/people")
 def get_people(min_unknown_photos: int = 1):
@@ -2580,9 +2858,18 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
             print("Face recognition models not found. Ensure .onnx files are in the backend folder.")
             return
 
-        detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
+        backend_id = getattr(cv2.dnn, 'DNN_BACKEND_CUDA', getattr(cv2.dnn, 'DNN_BACKEND_DEFAULT', 0))
+        target_id = getattr(cv2.dnn, 'DNN_TARGET_CUDA', getattr(cv2.dnn, 'DNN_TARGET_CPU', 0))
+
+        try:
+            detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320), 0.9, 0.3, 5000, backend_id, target_id)
+        except Exception:
+            detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
         detector.setScoreThreshold(0.5)
-        recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
+        try:
+            recognizer = cv2.FaceRecognizerSF.create(sface_path, "", backend_id, target_id)
+        except Exception:
+            recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 
         height, width, _ = img.shape
         target_dim = 800
@@ -3362,164 +3649,15 @@ def reclassify_people(payload: dict = Body(...)):
 
 object_scanner_running = False
 object_scanner_thread = None
-object_scanner_current = 0
-object_scanner_total = 0
-object_scanner_stopped = False
-object_scanner_current_file = ""
-
-def _scan_and_tag_objects_worker():
-    global object_scanner_running, object_scanner_current, object_scanner_total, object_scanner_stopped, object_scanner_current_file
-    try:
-        import numpy as np
-        # model_path = get_bundled_model_path("mobilenetv2-small.onnx")
-        model_path = get_bundled_model_path("mobilenetv2-small.onnx")
-        classes_path = get_bundled_model_path("imagenet_classes.txt")
-        
-        if not Path(model_path).exists() or not Path(classes_path).exists():
-            print("Object classification models not found. Ensure mobilenetv2-small.onnx and imagenet_classes.txt are in the backend folder.")
-            return
-
-        net = cv2.dnn.readNetFromONNX(model_path)
-        with open(classes_path, 'rt') as f:
-            classes = [line.strip() for line in f.readlines()]
-            
-        cfg = load_config()
-        object_sensitivity = cfg.get("object_sensitivity", "medium")
-        if object_sensitivity == "high":
-            object_threshold = 0.10
-        elif object_sensitivity == "low":
-            object_threshold = 0.30
-        else:
-            object_threshold = 0.15
-            
-        ai_db_path = get_ai_db_path()
-        with sqlite3.connect(ai_db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''CREATE TABLE IF NOT EXISTS processed_objects (
-                                file_id INTEGER PRIMARY KEY
-                              )''')
-            
-            with SessionLocal() as s:
-                # Seed existing tagged files to avoid rescanning legacy data
-                cursor.execute("SELECT COUNT(*) FROM processed_objects")
-                if cursor.fetchone()[0] == 0:
-                    tagged_photos = s.query(FileIndex.id).filter(FileIndex.category == 'photo', FileIndex.tags.like('%object:%')).all()
-                    for (p_id,) in tagged_photos:
-                        cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (p_id,))
-                    conn.commit()
-
-                cursor.execute("SELECT file_id FROM processed_objects")
-                processed_ids = set(r[0] for r in cursor.fetchall())
-
-                # Fetch IDs instead of all objects to save memory on large datasets
-                photo_ids = [r[0] for r in s.query(FileIndex.id).filter(FileIndex.category == 'photo').all()]
-                
-                STATE["object_scanner_total"] = len(photo_ids)
-                STATE["object_scanner_current"] = 0
-                processed_count = 0
-
-                for photo_id in photo_ids:
-                    if not object_scanner_running:
-                        break
-                        
-                    photo = s.get(FileIndex, photo_id)
-                    if not photo:
-                        continue
-                        
-                    STATE["object_scanner_current"] += 1
-                    STATE["object_scanner_current_file"] = photo.filename or "Unknown file"
-                    
-                    if photo.id in processed_ids:
-                        continue
-                        
-                    filename_lower = photo.filename.lower() if photo.filename else ""
-                    if "screenshot" in filename_lower or "meme" in filename_lower:
-                        cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (photo.id,))
-                        processed_count += 1
-                        if processed_count % 500 == 0:
-                            conn.commit()
-                            s.commit()
-                        continue
-
-                    current_tags = photo.tags or ""
-                    
-                    file_path = _resolve_path(Path(photo.path))
-                    if not file_path.exists():
-                        continue
-                    
-                    try:
-                        img_array = np.fromfile(str(file_path), np.uint8)
-                        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                    except Exception:
-                        img = cv2.imread(str(file_path))
-                        
-                    if img is None:
-                        cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (photo.id,))
-                        processed_count += 1
-                        if processed_count % 500 == 0:
-                            conn.commit()
-                            s.commit()
-                        continue
-                        
-                    try:
-                        img = cv2.resize(img, (224, 224))
-                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                        img = img.astype(np.float32) / 255.0
-                        img -= np.array([0.485, 0.456, 0.406])
-                        img /= np.array([0.229, 0.224, 0.225])
-                        img = img.transpose(2, 0, 1)
-                        img = np.expand_dims(img, axis=0)
-                        img = np.ascontiguousarray(img) # OpenCV strictly requires contiguous memory for DNN inputs!
-                        
-                        net.setInput(img)
-                        preds = net.forward().flatten()
-                        
-                        # Apply Softmax to convert raw logits to proper probabilities (0.0 to 1.0)
-                        exp_preds = np.exp(preds - np.max(preds))
-                        probs = exp_preds / np.sum(exp_preds)
-
-                        # Grab the top 5 highest confidence predictions
-                        classIds = np.argsort(probs)[-5:][::-1]
-                        new_tags = []
-                        for classId in classIds:
-                            confidence = probs[classId]
-                            if confidence > object_threshold:
-                                label = classes[classId].split(',')[0].strip().lower().replace(" ", "_")
-                                new_tags.append(f"object:{label}")
-                                
-                        if new_tags:
-                            for tag in new_tags:
-                                if tag not in current_tags:
-                                    current_tags = f"{current_tags} {tag}".strip()
-                            photo.tags = current_tags
-                    except Exception as e:
-                        print(f"ERROR: Failed to classify {file_path.name}: {e}")
-                        traceback.print_exc()
-                        
-                    cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (photo.id,))
-                    processed_count += 1
-                    if processed_count % 500 == 0:
-                        s.commit()
-                        conn.commit()
-                
-                s.commit()
-            conn.commit()
-    except Exception as e:
-        print(f"CRITICAL: Object Scanner Error: {e}")
-        traceback.print_exc()
-    finally:
-        object_scanner_running = False
-        STATE["object_scanner_stopped"] = False
-        STATE["object_scanner_current_file"] = ""
 
 @app.post("/scan-objects")
 def scan_objects():
     global object_scanner_thread, object_scanner_running
-    if object_scanner_running:
-        raise HTTPException(status_code=400, detail="Object scanning is already in progress.")
+    if object_scanner_running or face_scanner_running or document_scanner_running or combined_scanner_running or STATE.get("running"):
+        raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
     object_scanner_running = True
     STATE["object_scanner_stopped"] = False
-    object_scanner_thread = threading.Thread(target=_scan_and_tag_objects_worker)
+    object_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": True, "run_document": False})
     object_scanner_thread.start()
     return {"message": "Object scanning started in the background."}
 
@@ -3528,7 +3666,6 @@ def stop_scan_objects():
     global object_scanner_running
     if not object_scanner_running:
         raise HTTPException(status_code=400, detail="Object scanner is not running.")
-    object_scanner_running = False
     STATE["object_scanner_stopped"] = True
     return {"message": "Stopping object scanner."}
 
@@ -3762,6 +3899,8 @@ def system_cleanup():
             for i in range(0, len(missing_ids), 900):
                 chunk = missing_ids[i:i + 900]
                 s.query(FileIndex).filter(FileIndex.id.in_(chunk)).delete(synchronize_session=False)
+                s.execute(text(f"DELETE FROM processed_text WHERE file_id IN ({','.join(map(str, chunk))})"))
+                s.execute(text(f"DELETE FROM file_text_fts WHERE file_id IN ({','.join(map(str, chunk))})"))
             s.commit()
 
         valid_file_ids = {str(r[0]) for r in s.query(FileIndex.id).all()}

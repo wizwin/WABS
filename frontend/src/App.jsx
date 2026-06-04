@@ -479,8 +479,8 @@ const [loadingMore,setLoadingMore]=useState(false)
 const loadingMoreRef = useRef(false)
 const [loadingPrevious, setLoadingPrevious]=useState(false)
 const loadingPreviousRef = useRef(false)
-const [stats,setStats]=useState({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0})
-const [indexer,setIndexer]=useState({running:false,paused:false,stopped:false,current:0,total:0,current_file:'',status:'Idle',indexed:0,face_scanner_running:false,object_scanner_running:false,hasher_running:false,hasher_current:0,hasher_total:0,face_scanner_current:0,face_scanner_total:0,object_scanner_current:0,object_scanner_total:0})
+const [stats,setStats]=useState({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0,searchable_documents:0,tagged_objects:0})
+const [indexer,setIndexer]=useState({running:false,paused:false,stopped:false,current:0,total:0,current_file:'',status:'Idle',indexed:0,face_scanner_running:false,object_scanner_running:false,document_scanner_running:false,hasher_running:false,hasher_current:0,hasher_total:0,face_scanner_current:0,face_scanner_total:0,object_scanner_current:0,object_scanner_total:0,document_scanner_current:0,document_scanner_total:0})
 const [sortBy,setSortBy]=useState('date')
 const [sortOrder,setSortOrder]=useState('desc')
 const [filterCategory, setFilterCategory] = useState('all')
@@ -537,9 +537,9 @@ const [dataOpProgress, setDataOpProgress] = useState(null);
 const [combinedOptions, setCombinedOptions] = useState(() => {
   try {
     const saved = localStorage.getItem('wabs_combined_options');
-    return saved ? JSON.parse(saved) : { tag: false, face: false };
+    return saved ? JSON.parse(saved) : { tag: false, face: false, document: false };
   } catch (e) {
-    return { tag: false, face: false };
+    return { tag: false, face: false, document: false };
   }
 });
 const [tagsPage, setTagsPage] = useState(1);
@@ -677,6 +677,9 @@ async function loadFiles(nextOffset = 0, append = false, cat = filterCategory, s
       console.warn('Load files failed', err);
       setHasMore(false);
     }
+  } finally {
+    setLoadingMore(false);
+    loadingMoreRef.current = false;
   }
 }
 
@@ -1049,10 +1052,11 @@ async function loadSettings(){
  if(r.data.details_width) setDetailsWidth(r.data.details_width)
 
  // Sync the saved AI scanning options directly from the backend configuration
- if (data.run_face_scan !== undefined || data.run_object_scan !== undefined) {
+ if (data.run_face_scan !== undefined || data.run_object_scan !== undefined || data.run_document_scan !== undefined) {
    setCombinedOptions(prev => ({
      face: data.run_face_scan ?? prev.face,
-     tag: data.run_object_scan ?? prev.tag
+     tag: data.run_object_scan ?? prev.tag,
+     document: data.run_document_scan ?? prev.document
    }));
  }
 }
@@ -1159,7 +1163,7 @@ async function generateSearchWithAI() {
 }
 
 async function clearCache() {
-  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) {
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
     alert("Please stop all background tasks before clearing the thumbnail cache to prevent file access conflicts.");
     return;
   }
@@ -1912,6 +1916,35 @@ async function stopObjectScan() {
   }
 }
 
+async function startDocumentScan() {
+  setActionInProgress(true);
+  try {
+    setIndexer(prev => ({ ...prev, document_scanner_running: true, document_scanner_stopped: false }));
+    await axios.post(`${API}/scan-documents`);
+    showToastMessage('Document text extraction started in background...');
+    await loadDashboard(); 
+  } catch(err) {
+    setIndexer(prev => ({ ...prev, document_scanner_running: false }));
+    alert('Error starting document scan: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
+  }
+}
+
+async function stopDocumentScan() {
+  setActionInProgress(true);
+  try {
+    setIndexer(prev => ({ ...prev, document_scanner_stopped: true }));
+    await axios.post(`${API}/stop-scan-documents`);
+    showToastMessage('Stopping document text extraction...');
+    await loadDashboard(); 
+  } catch(err) {
+    alert('Error stopping document scan: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    setActionInProgress(false);
+  }
+}
+
 async function indexerAction(action){
  const isAnyRunning = indexer.running || indexer.combined_scanner_running;
  if ((action === 'start' || action === 'update' || action === 'reindex') && isAnyRunning) {
@@ -1930,7 +1963,7 @@ async function indexerAction(action){
    setOffset(0)
    setStartOffset(0)
    setHasMore(false)
-   setStats({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0})
+   setStats({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0,searchable_documents:0,tagged_objects:0})
    setObjectTags([])
  } else if (action === 'start' || action === 'update') {
    await axios.post(`${API}/indexer/${action}`, combinedOptions)
@@ -2117,8 +2150,8 @@ async function moveSelected() {
 }
 
 async function backupDatabase() {
-  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) {
-    alert("Please stop all background tasks (Indexing, Face/Object Scanning, Hash Verification) before backing up the database to ensure data consistency.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks (Indexing, Face/Object Scanning, Text Extraction, Hash Verification) before backing up the database to ensure data consistency.");
     return;
   }
   
@@ -2139,8 +2172,8 @@ async function backupDatabase() {
 }
 
 async function cleanupDatabase() {
-  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) {
-    alert("Please stop all background tasks (Indexing, Face/Object Scanning, Hash Verification) before running the cleanup routine.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks (Indexing, Face/Object Scanning, Text Extraction, Hash Verification) before running the cleanup routine.");
     return;
   }
   if (!window.confirm('Are you sure you want to run the cleanup routine? This will scan the entire database for missing files, remove their dead links, clean up empty AI profiles, and vacuum the databases. This may take several minutes for large archives.')) return;
@@ -2173,8 +2206,8 @@ async function cleanupDatabase() {
 }
 
 async function purgeSmallUnknowns() {
-  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) {
-    alert("Please stop all background tasks (Indexing, Face/Object Scanning, Hash Verification) before running the purge routine.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks (Indexing, Face/Object Scanning, Text Extraction, Hash Verification) before running the purge routine.");
     return;
   }
   const thresholdToUse = purgeThreshold === '' ? 3 : purgeThreshold;
@@ -2365,7 +2398,7 @@ async function handleShutdown() {
   if (window.confirm('Are you sure you want to shut down the WABS server?')) {
     setIsShuttingDown(true);
     try {
-      const isAnyScannerRunning = indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running;
+      const isAnyScannerRunning = indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running;
       
       if (isAnyScannerRunning) {
         if (indexer.running || indexer.combined_scanner_running) {
@@ -2377,6 +2410,9 @@ async function handleShutdown() {
         if (indexer.object_scanner_running) {
           try { await axios.post(`${API}/stop-scan-objects`); } catch(e) {}
         }
+        if (indexer.document_scanner_running) {
+          try { await axios.post(`${API}/stop-scan-documents`); } catch(e) {}
+        }
         if (indexer.hasher_running) {
           try { await axios.post(`${API}/stop-verify-duplicates`); } catch(e) {}
         }
@@ -2387,7 +2423,7 @@ async function handleShutdown() {
           try {
             const r = await axios.get(`${API}/indexer/status?t=${Date.now()}`);
             const status = r.data;
-            if (!status.running && !status.combined_scanner_running && !status.face_scanner_running && !status.object_scanner_running && !status.hasher_running) {
+            if (!status.running && !status.combined_scanner_running && !status.face_scanner_running && !status.object_scanner_running && !status.document_scanner_running && !status.hasher_running) {
               break;
             }
           } catch(e) {
@@ -2762,6 +2798,7 @@ useEffect(() => {
           hasher_running: false,
           face_scanner_running: false,
           object_scanner_running: false,
+          document_scanner_running: false,
           combined_scanner_running: false
         }));
         showToastMessage("Connection lost. Stopped monitoring background tasks.");
@@ -2773,7 +2810,7 @@ useEffect(() => {
     if (isMounted) timeoutId = setTimeout(poll, delay);
   };
 
-  if ((indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.combined_scanner_running) && !indexer.paused) {
+  if ((indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.combined_scanner_running) && !indexer.paused) {
     timeoutId = setTimeout(poll, 1000);
   } else {
     // Perform one final fetch when scanners stop to ensure all UI counters are fully up to date
@@ -2801,7 +2838,7 @@ function renderThumb(item){
    return url
  }
 
- const label = item.filename ? String(item.filename).slice(0, 15) : 'Unknown';
+ const label = item.filename ? (String(item.filename).length > 28 ? String(item.filename).slice(0, 25) + '...' : String(item.filename)) : 'Unknown';
 
  if(item.category==='photo'){
    return getOfflinePlaceholder('PHOTO', currentTheme === 'light' ? '#f1f5f9' : '#1e293b', currentTheme === 'light' ? '#64748b' : '#94a3b8');
@@ -3204,7 +3241,7 @@ return(
       <AppIcon size={40} />
       <div>
         <h2 style={{ margin: 0, fontSize: '20px', color: '#f8fafc' }}>WABS</h2>
-        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta.6</div>
+        <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta.7</div>
       </div>
     </div>
 
@@ -3426,6 +3463,7 @@ return(
                     loadFilesAbortController.current = new AbortController();
                     
                     setLoadingMore(true);
+                    loadingMoreRef.current = true;
                     axios.get(`${API}/files?category=${filterCategory}&offset=${targetOffset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`, {
                       signal: loadFilesAbortController.current.signal
                     }).then(res => {
@@ -3434,9 +3472,13 @@ return(
                       setStartOffset(targetOffset);
                       setHasMore(res.data.length === limit);
                       setLoadingMore(false);
+                      loadingMoreRef.current = false;
                       setTimeout(() => document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'auto', block: 'start' }), 100);
                     }).catch(err => {
-                      if (!axios.isCancel(err)) setLoadingMore(false);
+                      if (!axios.isCancel(err)) {
+                        setLoadingMore(false);
+                        loadingMoreRef.current = false;
+                      }
                     });
                   } else if (page === 'search') {
                     const targetOffset = sortOrder === 'asc' ? tData.offsetAsc : tData.offsetDesc;
@@ -3446,6 +3488,7 @@ return(
                     if (searchAbortController.current) searchAbortController.current.abort();
                     searchAbortController.current = new AbortController();
                     setLoadingMore(true);
+                    loadingMoreRef.current = true;
                     const safeQuery = query.replace(/,/g, ' ');
                     axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${targetOffset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`, {
                       signal: searchAbortController.current.signal
@@ -3456,9 +3499,13 @@ return(
                       setStartOffset(targetOffset);
                       setHasMore(res.data.length === limit);
                       setLoadingMore(false);
+                      loadingMoreRef.current = false;
                       setTimeout(() => document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'auto', block: 'start' }), 100);
                     }).catch(err => {
-                      if (!axios.isCancel(err)) setLoadingMore(false);
+                      if (!axios.isCancel(err)) {
+                        setLoadingMore(false);
+                        loadingMoreRef.current = false;
+                      }
                     });
                   }
             }
@@ -3525,6 +3572,8 @@ return(
     <option value='binary'>Binary Files</option>
     <option value='other'>Others</option>
     <option value='duplicates'>Duplicates</option>
+    <option value='searchable_documents'>Searchable Docs</option>
+    <option value='tagged_objects'>Tagged Media</option>
   </select>
 
   <label style={{marginLeft:'10px'}}>Sort by:</label>
@@ -3868,7 +3917,7 @@ page==='people' &&
         <CloseIcon fontSize="small" /> {indexer.face_scanner_stopped ? 'Stopping...' : 'Stop Scanning'}
       </ActionButton>
     ) : (
-      <ActionButton disabled={actionInProgress} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startFaceScan}>
+      <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startFaceScan}>
         <PlayCircleIcon fontSize="small" /> Scan Archive for Faces
       </ActionButton>
     )}
@@ -4135,10 +4184,10 @@ page==='people' &&
                          />
                      </div>
                      <ActionButton 
-                       disabled={(actionInProgress && dataOpProgress?.id !== 'purge') || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} 
+                       disabled={(actionInProgress && dataOpProgress?.id !== 'purge') || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
                        className="btn btn-secondary" 
                        onClick={dataOpProgress?.id === 'purge' ? cancelAiAction : purgeSmallUnknowns}
-                       title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to purge" : ""}
+                       title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to purge" : ""}
                        style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '6px' }}
                      >
                        {dataOpProgress && dataOpProgress.id === 'purge' ? (
@@ -4680,10 +4729,14 @@ onClick={()=>openFile(selected.path)}
 {
 page==='tags' &&
 <div style={{padding:'20px', overflowY:'auto', height:'100%'}}>
+<h1 style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: 0, marginBottom: '8px' }}><CategoryIcon fontSize="large" style={{ color: '#3b82f6' }} /> AI Enrichment &amp; Tags</h1>
+<p style={{ margin: '0 0 24px 0', color: '#cbd5e1' }}>Manage automatically detected objects and extracted document text.</p>
+
+<div style={{background:'#111827', padding:'24px', borderRadius:'16px', border:'1px solid #24324a', marginBottom: '24px'}}>
 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '16px' }}>
   <div>
-    <h1 style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: 0, marginBottom: '8px' }}><CategoryIcon fontSize="large" style={{ color: '#3b82f6' }} /> Detected Objects &amp; Scenes</h1>
-    <p style={{ margin: 0, color: '#cbd5e1' }}>Explore automatically classified objects and scenes found in your indexed photos.</p>
+    <h2 style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: 0, marginBottom: '8px', color: '#f8fafc', fontSize: '20px' }}><CategoryIcon fontSize="medium" style={{ color: '#3b82f6' }} /> Detected Objects &amp; Scenes</h2>
+    <p style={{ margin: 0, color: '#94a3b8', fontSize: '14px' }}>Explore automatically classified objects and scenes found in your indexed photos.</p>
   </div>
   <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
     <ActionButton 
@@ -4700,7 +4753,7 @@ page==='tags' &&
         <CloseIcon fontSize="small" /> {indexer.object_scanner_stopped ? 'Stopping...' : 'Stop Scanning'}
       </ActionButton>
     ) : (
-      <ActionButton disabled={actionInProgress} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startObjectScan}>
+      <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.document_scanner_running || indexer.hasher_running} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startObjectScan}>
         <PlayCircleIcon fontSize="small" /> Classify Objects & Scenes
       </ActionButton>
     )}
@@ -4767,6 +4820,59 @@ page==='tags' &&
   </div>
 )}
 </div>
+
+<div style={{background:'#111827', padding:'24px', borderRadius:'16px', border:'1px solid #24324a', marginBottom: '24px'}}>
+<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '16px' }}>
+  <div>
+    <h2 style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: 0, marginBottom: '8px', color: '#f8fafc', fontSize: '20px' }}><DescriptionIcon fontSize="medium" style={{ color: '#ec4899' }} /> Document Text Extraction</h2>
+    <p style={{ margin: 0, color: '#94a3b8', fontSize: '14px' }}>Automatically extract text from PDFs, Documents, and Spreadsheets to make them searchable.</p>
+  </div>
+  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+    <ActionButton 
+      className="btn btn-secondary" 
+      style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', flexShrink: 0, whiteSpace: 'nowrap' }} 
+      onClick={async () => {
+         if (indexer.document_scanner_running) {
+             alert("Please stop the Text Extractor before modifying data to prevent database conflicts.");
+             return;
+         }
+         if (!window.confirm("Are you sure you want to clear all extracted text from the database? This cannot be undone.")) return;
+         try {
+             await axios.post(`${API}/reset-document-scanner-progress`);
+             showToastMessage("All extracted text has been cleared.");
+             loadDashboard();
+         } catch(err) {
+             alert('Error clearing text: ' + (err?.response?.data?.detail || err.message));
+         }
+      }}
+      disabled={actionInProgress || indexer.document_scanner_running}
+      title="Permanently remove all extracted text from the entire database."
+  >
+    Clear Extracted Text
+  </ActionButton>
+
+  {indexer.document_scanner_running ? (
+    <ActionButton disabled={actionInProgress || indexer.document_scanner_stopped} className="btn btn-secondary" style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }} onClick={stopDocumentScan}>
+      <CloseIcon fontSize="small" /> {indexer.document_scanner_stopped ? 'Stopping...' : 'Stop Extraction'}
+    </ActionButton>
+  ) : (
+    <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startDocumentScan} title="Extract content from PDFs and Documents so they appear in search results">
+      <PlayCircleIcon fontSize="small" /> Extract Document Text
+    </ActionButton>
+  )}
+</div>
+</div>
+
+{indexer.document_scanner_running && (
+  <div style={{ marginBottom: '20px', background: '#1e293b', padding: '12px 16px', borderRadius: '12px', border: '1px solid #334155' }}>
+    <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc' }}>Text Extractor Progress</span>
+    <ProgressBar current={indexer.document_scanner_current} total={indexer.document_scanner_total} color="#ec4899" />
+    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left' }}>{indexer.document_scanner_current_file || ''}</div>
+  </div>
+)}
+
+</div>
+</div>
 }
 
 {
@@ -4796,6 +4902,8 @@ page==='dashboard' &&
 <StatCard title="Known People" value={stats.known_faces || 0} icon={<FaceIcon />} color="#10b981" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); setNamedPeoplePage(1); setNamedPersonSearchQuery(''); loadPeople(); }} />
 <StatCard title="Unknown People" value={stats.unknown_faces || 0} icon={<FaceIcon />} color="#94a3b8" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); setNamedPersonSearchQuery(''); loadPeople(); setTimeout(() => document.getElementById('unknown-people-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 300); }} />
 <StatCard title="Object Tags" value={objectTags.length || 0} icon={<CategoryIcon />} color="#38bdf8" onClick={() => { setPage('tags'); setSelected(null); setTagsPage(1); setTagSearchQuery(''); }} />
+<StatCard title="Tagged Media" value={stats.tagged_objects || 0} icon={<ImageIcon />} color="#f59e0b" onClick={() => handleCategoryClick('tagged_objects')} />
+<StatCard title="Searchable Docs" value={stats.searchable_documents || 0} icon={<DescriptionIcon />} color="#ec4899" onClick={() => handleCategoryClick('searchable_documents')} />
 </div>
 
 <div style={{display:'grid',gridTemplateColumns:'1.3fr 1fr',gap:'18px',marginTop:'24px'}}>
@@ -4822,22 +4930,25 @@ page==='dashboard' &&
 <h3 style={{ margin: '16px 0 10px 0', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Core Database</h3>
 
 <div style={{display:'flex', gap:'16px', marginBottom:'16px', flexWrap:'wrap'}}>
-  <label style={{display:'flex',alignItems:'center',gap:'8px', color:'#f8fafc', fontSize:'13px'}}>
-    <input type='checkbox' checked={combinedOptions.tag} onChange={(e) => { const next = {...combinedOptions, tag: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Classify Objects & Scenes
+  <label style={{display:'flex',alignItems:'center',gap:'8px', color: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? 'not-allowed' : 'pointer'}}>
+    <input type='checkbox' disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.object_scanner_running || indexer.hasher_running} checked={combinedOptions.tag} onChange={(e) => { const next = {...combinedOptions, tag: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Classify Objects & Scenes
   </label>
-  <label style={{display:'flex',alignItems:'center',gap:'8px', color:'#f8fafc', fontSize:'13px'}}>
-    <input type='checkbox' checked={combinedOptions.face} onChange={(e) => { const next = {...combinedOptions, face: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Scan for Faces
+  <label style={{display:'flex',alignItems:'center',gap:'8px', color: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.hasher_running) ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.hasher_running) ? 'not-allowed' : 'pointer'}}>
+    <input type='checkbox' disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.hasher_running} checked={combinedOptions.face} onChange={(e) => { const next = {...combinedOptions, face: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Scan for Faces
+  </label>
+  <label style={{display:'flex',alignItems:'center',gap:'8px', color: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? 'not-allowed' : 'pointer'}}>
+    <input type='checkbox' disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.document_scanner_running || indexer.hasher_running} checked={combinedOptions.document} onChange={(e) => { const next = {...combinedOptions, document: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Extract Document Text
   </label>
 </div>
 
 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(90px, 1fr))',gap:'8px'}}>
-<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running} onClick={()=>indexerAction('start')}>
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.hasher_running} onClick={()=>indexerAction('start')}>
 Start
 </ActionButton>
-<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running} onClick={()=>indexerAction('update')}>
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.hasher_running} onClick={()=>indexerAction('update')}>
 Update
 </ActionButton>
-<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running} onClick={()=>indexerAction('reindex')} style={{ color: (indexer.running || indexer.combined_scanner_running) ? undefined : '#f59e0b' }}>
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.hasher_running} onClick={()=>indexerAction('reindex')} style={{ color: (indexer.running || indexer.combined_scanner_running || indexer.hasher_running) ? undefined : '#f59e0b' }}>
 Re-index
 </ActionButton>
 <ActionButton disabled={actionInProgress || (!indexer.running && !indexer.combined_scanner_running) || indexer.paused || (indexer.running && indexer.stopped) || (indexer.combined_scanner_running && indexer.combined_scanner_stopped)} onClick={()=>indexerAction('pause')}>
@@ -4863,7 +4974,7 @@ Stop
 <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.hasher_current_file || ''}</div>
 </>
 ) : (
-<ActionButton disabled={actionInProgress} onClick={verifyDuplicates} style={{ width: '100%' }}>
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running} onClick={verifyDuplicates} style={{ width: '100%' }}>
 Verify Hashes (Duplicates)
 </ActionButton>
 )}
@@ -4878,7 +4989,7 @@ Verify Hashes (Duplicates)
 <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.face_scanner_current_file || ''}</div>
 </>
 ) : (
-<ActionButton disabled={actionInProgress} onClick={startFaceScan} style={{ width: '100%' }}>
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} onClick={startFaceScan} style={{ width: '100%' }}>
 Scan for Faces (People)
 </ActionButton>
 )}
@@ -4893,8 +5004,23 @@ Scan for Faces (People)
 <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.object_scanner_current_file || ''}</div>
 </>
 ) : (
-<ActionButton disabled={actionInProgress} onClick={startObjectScan} style={{ width: '100%' }}>
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.document_scanner_running || indexer.hasher_running} onClick={startObjectScan} style={{ width: '100%' }}>
 Classify Objects & Scenes
+</ActionButton>
+)}
+</div>
+<div style={{display:'flex', flexDirection:'column', minWidth: 0}}>
+{indexer.document_scanner_running ? (
+<>
+<ActionButton disabled={actionInProgress || indexer.document_scanner_stopped} onClick={stopDocumentScan} style={{ width: '100%', color: '#ef4444' }}>
+{indexer.document_scanner_stopped ? 'Stopping Text Extraction...' : 'Stop Text Extraction'}
+</ActionButton>
+<ProgressBar current={indexer.document_scanner_current} total={indexer.document_scanner_total} color="#ec4899" />
+<div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.document_scanner_current_file || ''}</div>
+</>
+) : (
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} onClick={startDocumentScan} style={{ width: '100%' }} title="Extract content from PDFs and Documents so they appear in search results">
+Extract Document Text
 </ActionButton>
 )}
 </div>
@@ -5010,10 +5136,10 @@ page==='settings' &&
               <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Scan for missing files, clear orphaned data, and vacuum databases to reclaim space.</p>
             </div>
             <ActionButton 
-              disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} 
+              disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
               className="btn btn-secondary" 
               onClick={cleanupDatabase}
-              title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to run cleanup" : ""}
+              title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to run cleanup" : ""}
               style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
             >
               {dataOpProgress && dataOpProgress.id === 'cleanup' ? (
@@ -5027,10 +5153,10 @@ page==='settings' &&
               <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Create a safe, portable copy of your archive.db, ai_metadata.db, and config.yaml.</p>
             </div>
             <ActionButton 
-              disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} 
+              disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
               className="btn btn-secondary" 
               onClick={backupDatabase}
-              title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to backup the database" : ""}
+              title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to backup the database" : ""}
               style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
             >
               {dataOpProgress && dataOpProgress.id === 'backup' ? (
@@ -5116,10 +5242,10 @@ page==='settings' &&
               <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Delete all cached preview images. They will be regenerated automatically as needed.</p>
             </div>
             <ActionButton 
-              disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} 
+              disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
               className="btn btn-secondary" 
               onClick={clearCache}
-              title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? "Stop all background tasks to clear cache" : ""}
+              title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to clear cache" : ""}
             >
               Clear Cache
             </ActionButton>
@@ -5457,7 +5583,7 @@ page==='about' &&
     <div style={{background:'#8b5cf61a', padding:'10px', borderRadius:'10px', color:'#8b5cf6', display:'flex'}}><InfoIcon /></div>
     <div>
       <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Version Info</h3>
-      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta.6</strong></p>
+      <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta.7</strong></p>
     </div>
   </div>
 
