@@ -529,6 +529,7 @@ const [checkedPeople, setCheckedPeople] = useState(new Set());
 const [isTaggingPerson, setIsTaggingPerson] = useState(false);
 const [isTaggingObject, setIsTaggingObject] = useState(false);
 const [tagInput, setTagInput] = useState('');
+const [personTagInput, setPersonTagInput] = useState('');
 const [editingNames, setEditingNames] = useState({});
 const [dbFilename, setDbFilename] = useState('archive.db');
 const [thumbUpdateTimestamps, setThumbUpdateTimestamps] = useState({});
@@ -1642,6 +1643,15 @@ async function assignPhotosToPerson(personId, filePaths) {
           }
           showToastMessage('Tagging undone successfully.');
           loadPeople();
+          if (page === 'explorer') {
+            await loadFiles(0, false, filterCategory);
+          } else if (page === 'search') {
+            await goToSearch(filterCategory);
+          }
+          if (page === 'explorer' && selected && filePaths.includes(selected.path)) {
+            const updatedFile = globalFileCache.current.get(selected.path);
+            setSelected(updatedFile || null);
+          }
         } catch (e) {
           alert('Error undoing tag: ' + (e?.response?.data?.detail || e.message));
         } finally {
@@ -1653,8 +1663,15 @@ async function assignPhotosToPerson(personId, filePaths) {
     showToastMessage(`Successfully tagged ${fileIds.length} photo(s).`, undoAction);
     setIsTaggingPerson(false);
     setCheckedFiles(new Set());
-    if (page === 'explorer') loadFiles(0, false, filterCategory);
-    else if (page === 'search') doSearch(query, filterCategory);
+    if (page === 'explorer') {
+      await loadFiles(0, false, filterCategory);
+    } else if (page === 'search') {
+      await goToSearch(filterCategory);
+    }
+    if (page === 'explorer' && selected && filePaths.includes(selected.path)) {
+      const updatedFile = globalFileCache.current.get(selected.path);
+      setSelected(updatedFile || null);
+    }
   } catch(err) {
     alert('Error tagging photo(s): ' + (err?.response?.data?.detail || err.message));
   } finally {
@@ -1785,14 +1802,49 @@ async function addTagsToSelected(tagsStr) {
   const tags = tagsStr.split(',').map(t => t.trim().replace(/\s+/g, '_').toLowerCase()).filter(t => t);
   if (tags.length === 0) return;
   const fileIds = Array.from(checkedFiles).map(p => globalFileCache.current.get(p)?.id).filter(id => id);
+  const filePaths = Array.from(checkedFiles);
   try {
     await axios.post(`${API}/tags/add`, { file_ids: fileIds, tags });
-    showToastMessage(`Added tags to ${fileIds.length} files.`);
+
+    const undoAction = {
+      label: 'Undo',
+      onClick: async () => {
+        setActionInProgress(true);
+        try {
+          await axios.post(`${API}/tags/remove`, { file_ids: fileIds, tags });
+          showToastMessage('Tagging undone.');
+          if (page === 'explorer') {
+            await loadFiles(0, false, filterCategory);
+          } else if (page === 'search') {
+            await goToSearch(filterCategory);
+          }
+          if (page === 'explorer' && selected && filePaths.includes(selected.path)) {
+            const updatedFile = globalFileCache.current.get(selected.path);
+            setSelected(updatedFile || null);
+          }
+          loadDashboard();
+          loadTags();
+        } catch (e) {
+          alert('Error undoing tag: ' + (e?.response?.data?.detail || e.message));
+        } finally {
+          setActionInProgress(false);
+        }
+      }
+    };
+
+    showToastMessage(`Added tags to ${fileIds.length} files.`, undoAction);
     setIsTaggingObject(false);
     setTagInput('');
     setCheckedFiles(new Set());
-    if (page === 'explorer') loadFiles(0, false, filterCategory);
-    else if (page === 'search') doSearch(query, filterCategory);
+    if (page === 'explorer') {
+      await loadFiles(0, false, filterCategory);
+    } else if (page === 'search') {
+      await goToSearch(filterCategory);
+    }
+    if (page === 'explorer' && selected && filePaths.includes(selected.path)) {
+      const updatedFile = globalFileCache.current.get(selected.path);
+      setSelected(updatedFile || null);
+    }
     loadDashboard();
     loadTags();
   } catch(err) {
@@ -1809,14 +1861,49 @@ async function removeTagsFromSelected(tagsStr) {
   const tags = tagsStr.split(',').map(t => t.trim().replace(/\s+/g, '_').toLowerCase()).filter(t => t);
   if (tags.length === 0) return;
   const fileIds = Array.from(checkedFiles).map(p => globalFileCache.current.get(p)?.id).filter(id => id);
+  const filePaths = Array.from(checkedFiles);
   try {
     await axios.post(`${API}/tags/remove`, { file_ids: fileIds, tags });
-    showToastMessage(`Removed tags from ${fileIds.length} files.`);
+
+    const undoAction = {
+      label: 'Undo',
+      onClick: async () => {
+        setActionInProgress(true);
+        try {
+          await axios.post(`${API}/tags/add`, { file_ids: fileIds, tags });
+          showToastMessage('Tag removal undone.');
+          if (page === 'explorer') {
+            await loadFiles(0, false, filterCategory);
+          } else if (page === 'search') {
+            await goToSearch(filterCategory);
+          }
+          if (page === 'explorer' && selected && filePaths.includes(selected.path)) {
+            const updatedFile = globalFileCache.current.get(selected.path);
+            setSelected(updatedFile || null);
+          }
+          loadDashboard();
+          loadTags();
+        } catch (e) {
+          alert('Error undoing tag removal: ' + (e?.response?.data?.detail || e.message));
+        } finally {
+          setActionInProgress(false);
+        }
+      }
+    };
+
+    showToastMessage(`Removed tags from ${fileIds.length} files.`, undoAction);
     setIsTaggingObject(false);
     setTagInput('');
     setCheckedFiles(new Set());
-    if (page === 'explorer') loadFiles(0, false, filterCategory);
-    else if (page === 'search') doSearch(query, filterCategory);
+    if (page === 'explorer') {
+      await loadFiles(0, false, filterCategory);
+    } else if (page === 'search') {
+      await goToSearch(filterCategory);
+    }
+    if (page === 'explorer' && selected && filePaths.includes(selected.path)) {
+      const updatedFile = globalFileCache.current.get(selected.path);
+      setSelected(updatedFile || null);
+    }
     loadDashboard();
     loadTags();
   } catch(err) {
@@ -3662,14 +3749,22 @@ return(
     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
       <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingPerson ? '#334155' : undefined }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); setIsTaggingObject(false); loadPeople(); }}>Tag Person</ActionButton>
       {isTaggingPerson && Array.isArray(people) && (
-        <select 
-          onChange={(e) => assignPhotosToPerson(e.target.value, Array.from(checkedFiles))} 
-          style={{ padding: '6px 12px', background: '#1e293b', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none' }}
-          value=""
-        >
-          <option value="" disabled>Select person...</option>
-          {sortedNamedPeopleDropdown.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
+        <div style={{ display: 'flex', gap: '4px' }}>
+          <select 
+            onChange={(e) => setPersonTagInput(e.target.value)} 
+            style={{ padding: '6px 12px', background: '#1e293b', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none' }}
+            value={personTagInput}
+          >
+            <option value="" disabled>Select person...</option>
+            {sortedNamedPeopleDropdown.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <ActionButton className="btn btn-secondary" style={{ padding: '4px 8px', color: '#10b981' }} onClick={() => personTagInput && assignPhotosToPerson(personTagInput, Array.from(checkedFiles))}>Add</ActionButton>
+          <ActionButton className="btn btn-secondary" style={{ padding: '4px 8px', color: '#ef4444' }} onClick={() => {
+            if (!personTagInput) return;
+            const fileIds = Array.from(checkedFiles).map(path => globalFileCache.current.get(path)?.id).filter(id => id);
+            removePersonPhotosBulk(personTagInput, fileIds);
+          }}>Remove</ActionButton>
+        </div>
       )}
     </div>
 
@@ -3759,14 +3854,14 @@ Array.from(groupedFiles.entries()).map(([dateKey, filesGroup]) => (
 />
 ))
 }
-{hasMore && (
+{hasMore && !showSelectedOnly && (
   <div style={{ textAlign: 'center', padding: '20px 0 40px 0', color: '#94a3b8', display: 'flex', justifyContent: 'center', alignItems: 'center', height: '24px', boxSizing: 'content-box' }}>
     <div style={{ width: '250px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
       {loadingMore ? <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Loading more files...</> : 'Scroll down to load more files...'}
     </div>
   </div>
 )}
-{!hasMore && sortedFiles.length > 0 && (
+{(!hasMore || showSelectedOnly) && sortedFiles.length > 0 && (
   <div style={{ textAlign: 'center', padding: '20px 0 40px 0', color: '#475569' }}>
     — End of results —
   </div>
