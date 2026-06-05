@@ -5637,12 +5637,17 @@ page==='settings' &&
           <input
             type='number'
             min='10'
+            max='10000'
             className='setting'
             style={{ marginBottom: '8px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
             value={settings.text_extraction_limit !== undefined ? settings.text_extraction_limit : 300}
-            onChange={(e)=>setSettings({...settings, text_extraction_limit: e.target.value === '' ? '' : parseInt(e.target.value)})}
+            onChange={(e)=>{
+              let val = e.target.value === '' ? '' : parseInt(e.target.value);
+              if (val > 10000) val = 10000;
+              setSettings({...settings, text_extraction_limit: val});
+            }}
           />
-          <p style={{ margin: '0 0 0 0', fontSize: '12px', color: '#f59e0b' }}>Tip: Increasing this limit significantly can bloat the database size.</p>
+          <p style={{ margin: '0 0 0 0', fontSize: '12px', color: '#f59e0b' }}>Tip: Increasing this limit can bloat the database size. (Max: 10,000 words)</p>
         </div>
 
         <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>

@@ -43,6 +43,17 @@ try:
 except ImportError:
     pptx = None
 
+def get_cv2_dnn_backends():
+    has_cuda = False
+    try:
+        if cv2 is not None and hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0:
+            has_cuda = True
+    except Exception:
+        pass
+    if has_cuda:
+        return getattr(cv2.dnn, 'DNN_BACKEND_CUDA', 0), getattr(cv2.dnn, 'DNN_TARGET_CUDA', 0)
+    return getattr(cv2.dnn, 'DNN_BACKEND_DEFAULT', 0), getattr(cv2.dnn, 'DNN_TARGET_CPU', 0)
+
 try:
     from backend.app.database import SessionLocal, FileIndex
     from backend.app.config import load_config, save_config
@@ -262,8 +273,7 @@ def _evaluate_image_faces(file_path: Path, yunet_path: str):
         else:
             det_img = img
 
-        backend_id = getattr(cv2.dnn, 'DNN_BACKEND_CUDA', getattr(cv2.dnn, 'DNN_BACKEND_DEFAULT', 0))
-        target_id = getattr(cv2.dnn, 'DNN_TARGET_CUDA', getattr(cv2.dnn, 'DNN_TARGET_CPU', 0))
+        backend_id, target_id = get_cv2_dnn_backends()
         
         try:
             detector = cv2.FaceDetectorYN.create(yunet_path, "", (det_img.shape[1], det_img.shape[0]), 0.9, 0.3, 5000, backend_id, target_id)
@@ -2002,14 +2012,14 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             classes_path = get_bundled_model_path("imagenet_classes.txt")
             if Path(model_path).exists() and Path(classes_path).exists():
                 net = cv2.dnn.readNetFromONNX(model_path)
-                if hasattr(cv2.dnn, 'DNN_BACKEND_CUDA') and hasattr(cv2.dnn, 'DNN_TARGET_CUDA'):
-                    try:
-                        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-                        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-                    except Exception:
-                        pass
-                with open(classes_path, 'rt') as f:
-                    classes = [line.strip() for line in f.readlines()]
+                backend_id, target_id = get_cv2_dnn_backends()
+                try:
+                    net.setPreferableBackend(backend_id)
+                    net.setPreferableTarget(target_id)
+                except Exception:
+                    pass
+            with open(classes_path, 'rt') as f:
+                classes = [line.strip() for line in f.readlines()]
             object_sensitivity = cfg.get("object_sensitivity", "medium")
             object_threshold = 0.10 if object_sensitivity == "high" else 0.30 if object_sensitivity == "low" else 0.15
 
@@ -2022,8 +2032,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
             sface_path = get_bundled_model_path("face_recognition_sface_2021dec.onnx")
             
-            backend_id = getattr(cv2.dnn, 'DNN_BACKEND_CUDA', getattr(cv2.dnn, 'DNN_BACKEND_DEFAULT', 0))
-            target_id = getattr(cv2.dnn, 'DNN_TARGET_CUDA', getattr(cv2.dnn, 'DNN_TARGET_CPU', 0))
+            backend_id, target_id = get_cv2_dnn_backends()
 
             if Path(yunet_path).exists() and Path(sface_path).exists():
                 try:
@@ -2190,7 +2199,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     if run_index:
                         STATE["current"] += 1
                         STATE["current_file"] = str(file)
-                    if run_face and face_scanner_running:
+                    if run_face and not STATE.get("face_scanner_stopped"):
                         STATE["face_scanner_current"] += 1
                         STATE["face_scanner_current_file"] = file.name
                     if run_object and not STATE.get("object_scanner_stopped"):
@@ -2338,14 +2347,13 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         continue
 
                     # --- OPTIMIZATION: Read file ONCE from disk for both ML models ---
+                    img = None
                     try:
-                        img_array = np.fromfile(str(file), np.uint8)
-                        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                         if category == 'document' and file.suffix.lower() == '.pdf' and fitz is not None:
                             doc = fitz.open(str(file))
                             page = doc.load_page(0)
                             pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                            img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+                            img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n) # type: ignore
                             if pix.n == 4:
                                 img = cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGR)
                             else:
@@ -2354,7 +2362,19 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         else:
                             img_array = np.fromfile(str(file), np.uint8)
                             img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                    except Exception:
+
+                            if img is None:
+                                try:
+                                    from PIL import Image, ImageOps
+                                    with Image.open(file) as pil_img:
+                                        pil_img = ImageOps.exif_transpose(pil_img)
+                                        if pil_img.mode != 'RGB':
+                                            pil_img = pil_img.convert('RGB')
+                                        img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+                                except Exception:
+                                    pass # Final failure will be caught by `if img is None` below
+                    except Exception as e:
+                        print(f"Error reading image {file.name}: {e}")
                         continue
 
                     if img is None:
@@ -2534,6 +2554,7 @@ def scan_faces():
         raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
     face_scanner_running = True
     STATE["face_scanner_stopped"] = False
+    STATE["paused"] = False
     face_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": True, "run_object": False})
     face_scanner_thread.start()
     return {"message": "Face scanning and clustering started in the background."}
@@ -2544,6 +2565,7 @@ def stop_scan_faces():
     if not face_scanner_running:
         raise HTTPException(status_code=400, detail="Face scanner is not running.")
     STATE["face_scanner_stopped"] = True
+    STATE["paused"] = False
     return {"message": "Stopping face scanner."}
 
 @app.post("/scan-documents")
@@ -2553,6 +2575,7 @@ def scan_documents():
         raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
     document_scanner_running = True
     STATE["document_scanner_stopped"] = False
+    STATE["paused"] = False
     document_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": False, "run_document": True})
     document_scanner_thread.start()
     return {"message": "Document text extraction started in the background."}
@@ -2563,6 +2586,7 @@ def stop_scan_documents():
     if not document_scanner_running:
         raise HTTPException(status_code=400, detail="Document text extractor is not running.")
     STATE["document_scanner_stopped"] = True
+    STATE["paused"] = False
     return {"message": "Stopping document text extractor."}
 
 @app.post("/reset-document-scanner-progress")
@@ -2862,8 +2886,7 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
             print("Face recognition models not found. Ensure .onnx files are in the backend folder.")
             return
 
-        backend_id = getattr(cv2.dnn, 'DNN_BACKEND_CUDA', getattr(cv2.dnn, 'DNN_BACKEND_DEFAULT', 0))
-        target_id = getattr(cv2.dnn, 'DNN_TARGET_CUDA', getattr(cv2.dnn, 'DNN_TARGET_CPU', 0))
+        backend_id, target_id = get_cv2_dnn_backends()
 
         try:
             detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320), 0.9, 0.3, 5000, backend_id, target_id)
@@ -3661,6 +3684,7 @@ def scan_objects():
         raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
     object_scanner_running = True
     STATE["object_scanner_stopped"] = False
+    STATE["paused"] = False
     object_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": True, "run_document": False})
     object_scanner_thread.start()
     return {"message": "Object scanning started in the background."}
@@ -3671,6 +3695,7 @@ def stop_scan_objects():
     if not object_scanner_running:
         raise HTTPException(status_code=400, detail="Object scanner is not running.")
     STATE["object_scanner_stopped"] = True
+    STATE["paused"] = False
     return {"message": "Stopping object scanner."}
 
 @app.post("/reset-object-scanner-progress")
@@ -3686,6 +3711,20 @@ def reset_object_scanner_progress():
         return {"message": "Object scanner progress has been reset."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not reset object scanner progress: {e}")
+
+@app.post("/reset-face-scanner-progress")
+def reset_face_scanner_progress():
+    try:
+        ai_db_path = get_ai_db_path()
+        if ai_db_path.exists():
+            with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("CREATE TABLE IF NOT EXISTS processed_files (file_id INTEGER PRIMARY KEY)")
+                conn.execute("DELETE FROM processed_files")
+                conn.commit()
+        return {"message": "Face scanner progress has been reset."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not reset face scanner progress: {e}")
 
 class TagUpdateRequest(BaseModel):
     file_ids: list[int]
