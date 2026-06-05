@@ -1,5 +1,33 @@
 # WABS Changelog
 
+## v1.0.0-beta.7
+**Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.7
+
+### 🚀 Major New Features
+*   **Document Text Extraction & Search:** Introduced a powerful new text extraction pipeline for documents (PDF, DOCX, PPTX, XLSX, and text/code files). Extracted keywords are indexed into a new FTS5 virtual table (`file_text_fts`), allowing you to instantly search for files based on their contents. Added dedicated start/stop/reset controls in the UI for the document scanner.
+*   **AI Search Assistant:** Added experimental support for LLM-powered natural language searches. WABS can now translate natural language prompts into valid WABS search queries (e.g., "Find photos of cars from 2022"). Configurable in Settings with connection testing.
+*   **Favorite (Pinned) People:** You can now pin or favorite specific people on the People page. Pinned individuals will always remain sorted at the top of the grid for quick access.
+*   **Hardware Acceleration:** Added hardware acceleration support for OpenCV video frame extraction and CUDA support for DNN (Deep Neural Network) modules, significantly improving media processing speeds.
+
+### ✨ UI/UX Enhancements
+*   **Multi-Person Manual Tagging:** Replaced the single-select auto-assign dropdown with a robust multi-select component (Select + Add/Remove buttons) for manual person tagging.
+*   **Intelligent Undo & Refresh:** Vastly improved the undo action for tagging. Reverting a tag now flawlessly refreshes the UI, dashboard statistics, and maintains your selected file states without manual page reloads.
+*   **Bi-Directional Pagination & Lazy Rendering:** The frontend now supports bi-directional pagination and utilizes `IntersectionObserver` for lazy rendering of Date Groups, providing buttery-smooth scrolling on massive archives. Chunk limits are now configurable in Settings.
+*   **Streaming API Responses:** Converted file, search, and people-photo endpoints to use streaming JSON responses, dramatically reducing frontend wait times when loading large sets of results.
+*   **Advanced Date Normalization:** Enhanced EXIF date parsing and formatting (`json_extract` caching). The timeline and date-range queries now correctly handle diverse formatting, including colon replacement.
+*   **Sort Presets & Propagation:** File sorting preferences are now persisted to `localStorage` and correctly propagated to backend file and search requests.
+*   **Merge People Improvements:** The flow for merging people now proactively surfaces potential name conflicts to prevent accidental overwrites.
+*   **Image Loading & Retry:** Implemented automatic image retry with exponential backoff and error handling for robust thumbnail loading.
+
+### 🐞 Bug Fixes & Performance
+*   **Path Mapping & Safe Deletion:** Added configurable `path_mappings` during indexing to normalize paths across different OS environments. Removed the risk of accidental deletions by gating missing-file removal behind `allow_delete_missing` or explicit `force_reindex` flags.
+*   **Binary Newline Counting:** Switched text/code line counts to highly optimized binary newline counts, greatly improving performance on large code repositories.
+*   **LLM Provider Enhancements:** Hardened the AI tagging integration (`llm_classify`) by normalizing provider URLs, intelligently appending `/chat/completions`, including file metadata in prompts, and sanitizing LLM responses.
+*   **Database Startup Optimizations:** The backend now creates necessary DB expression indexes automatically at startup and safely suppresses harmless Windows asyncio `ConnectionResetError`s.
+*   **Exact Match Operator:** Added support for the `=` operator in size and length filters (e.g., `size:=1MB`).
+*   **Keyword Limit Configuration:** Introduced a new `text_extraction_limit` (default 300 words) setting in the backend, fully exposed to the frontend Settings UI, giving you control over document scanning depth.
+*   **Memory & Resource Safety:** Improved OpenCV backend selection, added safety limits to prevent crashing on exceptionally large EXIF blobs, and improved text-to-SVG generation to prevent memory spikes.
+
 ## v1.0.0-beta.6
 **Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.6
 
