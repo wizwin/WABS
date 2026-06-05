@@ -981,9 +981,26 @@ def preview(item_id:int, theme: str = "dark"):
         file_path = _resolve_path(Path(item.path))
         file_category = item.category
 
+    cfg = load_config()
+
+    # --- OFFLINE CACHE CHECK ---
+    # Serve cached thumbnails first, even if the external drive is disconnected.
+    if file_category == "photo":
+        ui_prefs = cfg.get("ui_preferences") or {}
+        cache_enabled = cfg.get("enable_photo_thumbnail_cache")
+        if cache_enabled is None:
+            cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
+        if str(cache_enabled).lower() in ("true", "1", "yes"):
+            cached_thumb = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "photos" / f"{item_id}.jpg"
+            if cached_thumb.exists():
+                return FileResponse(str(cached_thumb), media_type="image/jpeg")
+    elif file_category == "video" or (file_category in ["document", "code"] and file_path.suffix.lower() == ".pdf"):
+        cached_thumb = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / f"{item_id}.jpg"
+        if cached_thumb.exists():
+            return FileResponse(str(cached_thumb), media_type="image/jpeg")
+
     if file_path.exists() and file_path.is_file():
         if file_category == "photo":
-            cfg = load_config()
             ui_prefs = cfg.get("ui_preferences") or {}
             cache_enabled = cfg.get("enable_photo_thumbnail_cache")
             if cache_enabled is None:
@@ -1049,7 +1066,6 @@ def preview(item_id:int, theme: str = "dark"):
             media_type, _ = mimetypes.guess_type(str(file_path))
             return FileResponse(str(file_path), media_type=media_type or "application/octet-stream")
         elif file_category == "video":
-            cfg = load_config()
             # Enforce an isolated sub-directory so we never overwrite user files
             thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
             thumb_dir.mkdir(parents=True, exist_ok=True)
@@ -1100,7 +1116,6 @@ def preview(item_id:int, theme: str = "dark"):
                     
         elif file_category in ["document", "code"] or file_path.suffix.lower() in [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".html", ".htm", ".css", ".c", ".cpp", ".h", ".java", ".cs", ".go", ".rs", ".rb", ".php", ".sh", ".bat", ".sql"]:
             if file_path.suffix.lower() == ".pdf":
-                cfg = load_config()
                 # Enforce an isolated sub-directory so we never overwrite user files
                 thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
                 thumb_dir.mkdir(parents=True, exist_ok=True)
