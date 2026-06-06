@@ -1271,8 +1271,8 @@ const updatePersonNameLocal = (id, newName) => setPeople(prev => prev.map(p => p
 const savePersonName = async (id, newName) => { try { await axios.post(`${API}/people/${id}/rename`, { name: newName }); loadPeople(); } catch (err) { console.warn(err); } };
 const deletePerson = async (e, id, name) => { 
   e.stopPropagation(); 
-  if (indexer.face_scanner_running) {
-    alert("Please stop the Face Scanner before modifying profiles to prevent database conflicts.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying profiles to prevent database conflicts.");
     return;
   }
   if (name && !name.startsWith('Unknown Person')) {
@@ -1300,8 +1300,8 @@ function cancelAiAction() {
 }
 
 async function clusterSelectedUnknowns() {
-  if (indexer.face_scanner_running) {
-    alert("Please stop the Face Scanner before modifying profiles.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying profiles.");
     return;
   }
   const unknownIds = Array.from(checkedPeople).filter(id => {
@@ -1353,8 +1353,8 @@ async function clusterSelectedUnknowns() {
 }
 
 async function clusterAllUnknowns() {
-  if (indexer.face_scanner_running) {
-    alert("Please stop the Face Scanner before modifying profiles.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying profiles.");
     return;
   }
   const allUnknownIds = filteredUnknownPeople.map(p => p.id);
@@ -1403,8 +1403,8 @@ async function clusterAllUnknowns() {
 }
 
 async function reclassifySelectedUnknowns() {
-  if (indexer.face_scanner_running) {
-    alert("Please stop the Face Scanner before modifying profiles.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying profiles.");
     return;
   }
   const unknownIds = Array.from(checkedPeople).filter(id => {
@@ -1456,8 +1456,8 @@ async function reclassifySelectedUnknowns() {
 }
 
 async function reclassifyAllUnknowns() {
-  if (indexer.face_scanner_running) {
-    alert("Please stop the Face Scanner before modifying profiles.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying profiles.");
     return;
   }
   const allUnknownIds = filteredUnknownPeople.map(p => p.id);
@@ -1519,8 +1519,8 @@ async function executeMerge(primaryId) {
 }
 
 function mergeSelectedPeople() {
-  if (indexer.face_scanner_running) {
-    alert("Please stop the Face Scanner before merging profiles to prevent database conflicts.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before merging profiles to prevent database conflicts.");
     return;
   }
 
@@ -1557,8 +1557,8 @@ async function setPersonThumbnail(personId, fileId) {
 }
 
 async function autoSuggestThumbnail(personId) {
-  if (indexer.face_scanner_running) {
-    alert("Please stop the Face Scanner before modifying profiles.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying profiles.");
     return;
   }
   try {
@@ -1578,8 +1578,8 @@ async function autoSuggestThumbnail(personId) {
 }
 
 async function removePersonPhotosBulk(personId, fileIds) {
-  if (indexer.face_scanner_running) {
-    alert("Please stop the Face Scanner before modifying profiles to prevent database conflicts.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying profiles to prevent database conflicts.");
     return;
   }
   if (!window.confirm(`Are you sure you want to un-tag ${fileIds.length} photo(s) from this person?`)) return;
@@ -1620,8 +1620,8 @@ async function removePersonPhotosBulk(personId, fileIds) {
 }
 
 async function assignPhotosToPerson(personId, filePaths) {
-  if (indexer.face_scanner_running) {
-    alert("Please stop the Face Scanner before modifying profiles to prevent database conflicts.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying profiles to prevent database conflicts.");
     return;
   }
   if (!personId) return;
@@ -1680,8 +1680,8 @@ async function assignPhotosToPerson(personId, filePaths) {
 }
 
 async function movePhotosToPerson(targetPersonId, filePaths) {
-  if (indexer.face_scanner_running) {
-    alert("Please stop the Face Scanner before modifying profiles to prevent database conflicts.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying profiles to prevent database conflicts.");
     return;
   }
   if (!targetPersonId) return;
@@ -1794,8 +1794,8 @@ function locateSelectedFileInExplorer() {
 }
 
 async function addTagsToSelected(tagsStr) {
-  if (indexer.object_scanner_running) {
-    alert("Please stop the Object Scanner before modifying tags to prevent database conflicts.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying tags to prevent database conflicts.");
     return;
   }
   if (!tagsStr) return;
@@ -1853,8 +1853,8 @@ async function addTagsToSelected(tagsStr) {
 }
 
 async function removeTagsFromSelected(tagsStr) {
-  if (indexer.object_scanner_running) {
-    alert("Please stop the Object Scanner before modifying tags to prevent database conflicts.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying tags to prevent database conflicts.");
     return;
   }
   if (!tagsStr) return;
@@ -1912,8 +1912,8 @@ async function removeTagsFromSelected(tagsStr) {
 }
 
 async function deleteTagGlobally(tag) {
-  if (indexer.object_scanner_running) {
-    alert("Please stop the Object Scanner before modifying tags to prevent database conflicts.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying tags to prevent database conflicts.");
     return;
   }
   const tagName = tag.replace('object:', '').replace(/_/g, ' ');
@@ -1929,8 +1929,8 @@ async function deleteTagGlobally(tag) {
 }
 
 async function clearAllObjectTags() {
-  if (indexer.object_scanner_running) {
-    alert("Please stop the Object Scanner before modifying tags to prevent database conflicts.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before modifying tags to prevent database conflicts.");
     return;
   }
   if (!window.confirm(`Are you sure you want to remove ALL automatically detected object tags from EVERY file in the database? This action cannot be undone.`)) return;
@@ -2326,8 +2326,8 @@ async function purgeSmallUnknowns() {
 }
 
 async function exportKnownPeople() {
-  if (indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running) {
-    alert("Please stop scanning tasks before exporting known people to ensure data consistency.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before exporting known people to ensure data consistency.");
     return;
   }
   setActionInProgress(true);
@@ -2352,8 +2352,8 @@ async function exportKnownPeople() {
 }
 
 function importKnownPeople() {
-  if (indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running) {
-    alert("Please stop scanning tasks before importing known people to prevent database conflicts.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before importing known people to prevent database conflicts.");
     return;
   }
   if (people && people.length > 0) {
@@ -2405,8 +2405,8 @@ function importKnownPeople() {
 }
 
 async function exportTags() {
-  if (indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running) {
-    alert("Please stop the Indexer and Object Scanner before exporting tags to ensure data consistency.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before exporting tags to ensure data consistency.");
     return;
   }
   setActionInProgress(true);
@@ -2431,8 +2431,8 @@ async function exportTags() {
 }
 
 function importTags() {
-  if (indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running) {
-    alert("Please stop the Indexer and Object Scanner before importing tags to prevent database conflicts.");
+  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    alert("Please stop all background tasks before importing tags to prevent database conflicts.");
     return;
   }
   if (objectTags && objectTags.length > 0) {
@@ -2901,6 +2901,8 @@ useEffect(() => {
     timeoutId = setTimeout(poll, 1000);
   } else {
     // Perform one final fetch when scanners stop to ensure all UI counters are fully up to date
+    loadDashboard();
+    if (page === 'people') loadPeople();
     loadTags();
     setTimelineUpdateTick(prev => prev + 1);
   }
@@ -3769,7 +3771,7 @@ return(
     </div>
 
     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
-      <ActionButton disabled={indexer.object_scanner_running} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingObject ? '#334155' : undefined }} onClick={() => { setIsTaggingObject(!isTaggingObject); setIsTaggingPerson(false); }} title={indexer.object_scanner_running ? "Stop the Object Scanner to manage tags" : ""}>Manage Tags</ActionButton>
+      <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingObject ? '#334155' : undefined }} onClick={() => { setIsTaggingObject(!isTaggingObject); setIsTaggingPerson(false); }} title={(actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to manage tags" : ""}>Manage Tags</ActionButton>
       {isTaggingObject && (
         <div style={{ display: 'flex', gap: '4px' }}>
           <input 
@@ -4050,12 +4052,12 @@ page==='people' &&
                    />
                    <span style={{ color: '#10b981', fontSize: '13px', minWidth: '35px', fontWeight: 'bold' }}>{Math.round(similarityThreshold * 100)}%</span>
                  </div>
-                 <ActionButton disabled={indexer.face_scanner_running || (actionInProgress && dataOpProgress?.id !== 'clusterSelected')} className="btn btn-secondary" style={{ padding: '6px 12px', color: dataOpProgress?.id === 'clusterSelected' ? '#ef4444' : '#10b981', borderColor: dataOpProgress?.id === 'clusterSelected' ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'clusterSelected' ? cancelAiAction : clusterSelectedUnknowns} title="Compare selected unknown people against other unknowns and merge matches automatically.">
+                 <ActionButton disabled={indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (actionInProgress && dataOpProgress?.id !== 'clusterSelected')} className="btn btn-secondary" style={{ padding: '6px 12px', color: dataOpProgress?.id === 'clusterSelected' ? '#ef4444' : '#10b981', borderColor: dataOpProgress?.id === 'clusterSelected' ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'clusterSelected' ? cancelAiAction : clusterSelectedUnknowns} title="Compare selected unknown people against other unknowns and merge matches automatically.">
                    {dataOpProgress && dataOpProgress.id === 'clusterSelected' ? 
                      <><CloseIcon fontSize="small" /> Cancel</> : 
                      <><FaceIcon fontSize="small" /> Cluster Selected</>}
                  </ActionButton>
-                 <ActionButton disabled={indexer.face_scanner_running || (actionInProgress && dataOpProgress?.id !== 'reclassifySelected')} className="btn btn-secondary" style={{ padding: '6px 12px', color: dataOpProgress?.id === 'reclassifySelected' ? '#ef4444' : '#f59e0b', borderColor: dataOpProgress?.id === 'reclassifySelected' ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'reclassifySelected' ? cancelAiAction : reclassifySelectedUnknowns} title="Break apart selected profiles and re-evaluate each face against all knowns and unknowns.">
+                 <ActionButton disabled={indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (actionInProgress && dataOpProgress?.id !== 'reclassifySelected')} className="btn btn-secondary" style={{ padding: '6px 12px', color: dataOpProgress?.id === 'reclassifySelected' ? '#ef4444' : '#f59e0b', borderColor: dataOpProgress?.id === 'reclassifySelected' ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'reclassifySelected' ? cancelAiAction : reclassifySelectedUnknowns} title="Break apart selected profiles and re-evaluate each face against all knowns and unknowns.">
                    {dataOpProgress && dataOpProgress.id === 'reclassifySelected' ? 
                      <><CloseIcon fontSize="small" /> Cancel</> : 
                      <><FaceIcon fontSize="small" /> Reclassify Selected</>}
@@ -4071,7 +4073,7 @@ page==='people' &&
     )}
 
     {checkedPeople.size > 1 && (
-      <ActionButton disabled={indexer.face_scanner_running} className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={mergeSelectedPeople} title={indexer.face_scanner_running ? "Stop the scanner to merge profiles" : ""}>Merge Selected</ActionButton>
+      <ActionButton disabled={indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={mergeSelectedPeople} title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to merge profiles" : ""}>Merge Selected</ActionButton>
     )}
     <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedPeople(new Set())}>Clear Selection</ActionButton>
   </div>
@@ -4247,12 +4249,12 @@ page==='people' &&
                        />
                        <span style={{ color: '#10b981', fontSize: '14px', minWidth: '40px', fontWeight: 'bold' }}>{Math.round(similarityThreshold * 100)}%</span>
                     </div>
-                <ActionButton disabled={indexer.face_scanner_running || (actionInProgress && dataOpProgress?.id !== 'clusterAll')} className="btn btn-secondary" style={{ padding: '8px 16px', color: dataOpProgress?.id === 'clusterAll' ? '#ef4444' : '#10b981', borderColor: dataOpProgress?.id === 'clusterAll' ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'clusterAll' ? cancelAiAction : clusterAllUnknowns} title="Compare ALL unknown people against each other and merge matches automatically.">
+                <ActionButton disabled={indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (actionInProgress && dataOpProgress?.id !== 'clusterAll')} className="btn btn-secondary" style={{ padding: '8px 16px', color: dataOpProgress?.id === 'clusterAll' ? '#ef4444' : '#10b981', borderColor: dataOpProgress?.id === 'clusterAll' ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'clusterAll' ? cancelAiAction : clusterAllUnknowns} title="Compare ALL unknown people against each other and merge matches automatically.">
                       {dataOpProgress && dataOpProgress.id === 'clusterAll' ? 
                     <><CloseIcon fontSize="small" /> Cancel Clustering</> : 
                         <><FaceIcon fontSize="small" /> Cluster All Unknowns</>}
                     </ActionButton>
-                <ActionButton disabled={indexer.face_scanner_running || (actionInProgress && dataOpProgress?.id !== 'reclassifyAll')} className="btn btn-secondary" style={{ padding: '8px 16px', color: dataOpProgress?.id === 'reclassifyAll' ? '#ef4444' : '#f59e0b', borderColor: dataOpProgress?.id === 'reclassifyAll' ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'reclassifyAll' ? cancelAiAction : reclassifyAllUnknowns} title="Break apart all unknown profiles and re-evaluate each face against all knowns and unknowns.">
+                <ActionButton disabled={indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (actionInProgress && dataOpProgress?.id !== 'reclassifyAll')} className="btn btn-secondary" style={{ padding: '8px 16px', color: dataOpProgress?.id === 'reclassifyAll' ? '#ef4444' : '#f59e0b', borderColor: dataOpProgress?.id === 'reclassifyAll' ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'reclassifyAll' ? cancelAiAction : reclassifyAllUnknowns} title="Break apart all unknown profiles and re-evaluate each face against all knowns and unknowns.">
                       {dataOpProgress && dataOpProgress.id === 'reclassifyAll' ? 
                     <><CloseIcon fontSize="small" /> Cancel Reclassifying</> : 
                         <><FaceIcon fontSize="small" /> Reclassify All Unknowns</>}
@@ -4577,9 +4579,9 @@ page==='person_files' &&
           ))}
         </div>
         <div style={{ display: 'flex', gap: '10px' }}>
-           <ActionButton disabled={checkedSimilar.size === 0 || indexer.face_scanner_running} className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={async () => {
-              if (indexer.face_scanner_running) {
-                 alert("Please stop the Face Scanner before merging profiles to prevent database conflicts.");
+           <ActionButton disabled={checkedSimilar.size === 0 || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={async () => {
+              if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+                 alert("Please stop all background tasks before merging profiles to prevent database conflicts.");
                  return;
               }
               if (!window.confirm(`Merge ${checkedSimilar.size} unknown profile(s) into ${currentPerson.name}?`)) return;
@@ -4838,8 +4840,8 @@ page==='tags' &&
         className="btn btn-secondary" 
         style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', flexShrink: 0, whiteSpace: 'nowrap' }} 
         onClick={clearAllObjectTags}
-        disabled={actionInProgress || indexer.object_scanner_running}
-        title="Permanently remove all 'object:' tags from the entire database."
+        disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running}
+        title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to clear tags" : "Permanently remove all 'object:' tags from the entire database."}
     >
       Clear All Tags
     </ActionButton>
@@ -4893,7 +4895,7 @@ page==='tags' &&
         <ActionButton className="btn btn-secondary" style={{ padding: '8px 16px', background: '#1e293b', color: '#38bdf8', borderColor: '#3b82f6', fontSize: '14px', paddingRight: '32px' }} onClick={() => { setFilterCategory('all'); doSearch(tag, 'all'); }}>
           {tagName}
         </ActionButton>
-        <ActionButton disabled={indexer.object_scanner_running} style={{ position: 'absolute', top: '50%', right: '6px', transform: 'translateY(-50%)', background: 'transparent', color: '#ef4444', borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', padding: 0, minWidth: 0 }} onClick={() => deleteTagGlobally(tag)} title={`Delete tag "${tagName}" globally`}>
+        <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} style={{ position: 'absolute', top: '50%', right: '6px', transform: 'translateY(-50%)', background: 'transparent', color: '#ef4444', borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', padding: 0, minWidth: 0 }} onClick={() => deleteTagGlobally(tag)} title={(actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to delete tag" : `Delete tag "${tagName}" globally`}>
           <CloseIcon fontSize="small" />
         </ActionButton>
       </div>
@@ -4927,8 +4929,8 @@ page==='tags' &&
       className="btn btn-secondary" 
       style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', flexShrink: 0, whiteSpace: 'nowrap' }} 
       onClick={async () => {
-         if (indexer.document_scanner_running) {
-             alert("Please stop the Text Extractor before modifying data to prevent database conflicts.");
+         if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+             alert("Please stop all background tasks before modifying data to prevent database conflicts.");
              return;
          }
          if (!window.confirm("Are you sure you want to clear all extracted text from the database? This cannot be undone.")) return;
@@ -4940,8 +4942,8 @@ page==='tags' &&
              alert('Error clearing text: ' + (err?.response?.data?.detail || err.message));
          }
       }}
-      disabled={actionInProgress || indexer.document_scanner_running}
-      title="Permanently remove all extracted text from the entire database."
+      disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running}
+      title={(actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to clear extracted text" : "Permanently remove all extracted text from the entire database."}
   >
     Clear Extracted Text
   </ActionButton>
@@ -5025,31 +5027,31 @@ page==='dashboard' &&
 <h3 style={{ margin: '16px 0 10px 0', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Core Database</h3>
 
 <div style={{display:'flex', gap:'16px', marginBottom:'16px', flexWrap:'wrap'}}>
-  <label style={{display:'flex',alignItems:'center',gap:'8px', color: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.object_scanner_running || indexer.hasher_running) ? 'not-allowed' : 'pointer'}}>
-    <input type='checkbox' disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.object_scanner_running || indexer.hasher_running} checked={combinedOptions.tag} onChange={(e) => { const next = {...combinedOptions, tag: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Classify Objects & Scenes
+  <label style={{display:'flex',alignItems:'center',gap:'8px', color: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? 'not-allowed' : 'pointer'}}>
+    <input type='checkbox' disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} checked={combinedOptions.tag} onChange={(e) => { const next = {...combinedOptions, tag: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Classify Objects & Scenes
   </label>
-  <label style={{display:'flex',alignItems:'center',gap:'8px', color: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.hasher_running) ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.hasher_running) ? 'not-allowed' : 'pointer'}}>
-    <input type='checkbox' disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.hasher_running} checked={combinedOptions.face} onChange={(e) => { const next = {...combinedOptions, face: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Scan for Faces
+  <label style={{display:'flex',alignItems:'center',gap:'8px', color: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? 'not-allowed' : 'pointer'}}>
+    <input type='checkbox' disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} checked={combinedOptions.face} onChange={(e) => { const next = {...combinedOptions, face: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Scan for Faces
   </label>
-  <label style={{display:'flex',alignItems:'center',gap:'8px', color: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? 'not-allowed' : 'pointer'}}>
-    <input type='checkbox' disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.document_scanner_running || indexer.hasher_running} checked={combinedOptions.document} onChange={(e) => { const next = {...combinedOptions, document: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Extract Document Text
+  <label style={{display:'flex',alignItems:'center',gap:'8px', color: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? 'not-allowed' : 'pointer'}}>
+    <input type='checkbox' disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} checked={combinedOptions.document} onChange={(e) => { const next = {...combinedOptions, document: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Extract Document Text
   </label>
 </div>
 
 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(90px, 1fr))',gap:'8px'}}>
-<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.hasher_running} onClick={()=>indexerAction('start')}>
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} onClick={()=>indexerAction('start')}>
 Start
 </ActionButton>
-<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.hasher_running} onClick={()=>indexerAction('update')}>
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} onClick={()=>indexerAction('update')}>
 Update
 </ActionButton>
-<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.hasher_running} onClick={()=>indexerAction('reindex')} style={{ color: (indexer.running || indexer.combined_scanner_running || indexer.hasher_running) ? undefined : '#f59e0b' }}>
+<ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} onClick={()=>indexerAction('reindex')} style={{ color: (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? undefined : '#f59e0b' }}>
 Re-index
 </ActionButton>
 <ActionButton disabled={actionInProgress || (!indexer.running && !indexer.combined_scanner_running) || indexer.paused || (indexer.running && indexer.stopped) || (indexer.combined_scanner_running && indexer.combined_scanner_stopped)} onClick={()=>indexerAction('pause')}>
 Pause
 </ActionButton>
-<ActionButton disabled={actionInProgress || ((indexer.running || indexer.combined_scanner_running) && !indexer.paused) || (indexer.running && indexer.stopped) || (indexer.combined_scanner_running && indexer.combined_scanner_stopped)} onClick={()=>indexerAction('resume')}>
+<ActionButton disabled={actionInProgress || (!indexer.running && !indexer.combined_scanner_running) || !indexer.paused || (indexer.running && indexer.stopped) || (indexer.combined_scanner_running && indexer.combined_scanner_stopped)} onClick={()=>indexerAction('resume')}>
 Resume
 </ActionButton>
 <ActionButton disabled={actionInProgress || (!indexer.running && !indexer.combined_scanner_running) || (indexer.running && indexer.stopped) || (indexer.combined_scanner_running && indexer.combined_scanner_stopped)} onClick={()=>indexerAction('stop')} style={{ color: ((!indexer.running && !indexer.combined_scanner_running) || (indexer.running && indexer.stopped) || (indexer.combined_scanner_running && indexer.combined_scanner_stopped)) ? undefined : '#ef4444' }}>
@@ -5266,10 +5268,10 @@ page==='settings' &&
             </div>
             <div style={{ display: 'flex', gap: '10px' }}>
               <ActionButton 
-                disabled={actionInProgress || indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running} 
+                disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
                 className="btn btn-secondary" 
                 onClick={exportKnownPeople}
-                title={(indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running) ? "Stop scanning tasks to export data" : ""}
+                title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to export data" : ""}
                 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
               >
                 {dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'export' ? (
@@ -5277,7 +5279,7 @@ page==='settings' &&
                 ) : 'Export JSON'}
               </ActionButton>
               <ActionButton 
-                disabled={(actionInProgress && !(dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'import')) || indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running} 
+                disabled={(actionInProgress && !(dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'import')) || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
                 className="btn btn-secondary" 
                 onClick={() => {
                   if (dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'import') {
@@ -5286,7 +5288,7 @@ page==='settings' &&
                     importKnownPeople();
                   }
                 }}
-                title={(indexer.running || indexer.face_scanner_running || indexer.combined_scanner_running) ? "Stop scanning tasks to import data" : ""}
+                title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to import data" : ""}
                 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
               >
                 {dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'import' ? (
@@ -5302,10 +5304,10 @@ page==='settings' &&
             </div>
             <div style={{ display: 'flex', gap: '10px' }}>
               <ActionButton 
-                disabled={actionInProgress || indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running} 
+                disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
                 className="btn btn-secondary" 
                 onClick={exportTags}
-                title={(indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running) ? "Stop scanning tasks to export data" : ""}
+                title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to export data" : ""}
                 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
               >
                 {dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'export' ? (
@@ -5313,7 +5315,7 @@ page==='settings' &&
                 ) : 'Export JSON'}
               </ActionButton>
               <ActionButton 
-                disabled={(actionInProgress && !(dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import')) || indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running} 
+                disabled={(actionInProgress && !(dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import')) || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
                 className="btn btn-secondary" 
                 onClick={() => {
                   if (dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import') {
@@ -5322,7 +5324,7 @@ page==='settings' &&
                     importTags();
                   }
                 }}
-                title={(indexer.running || indexer.object_scanner_running || indexer.combined_scanner_running) ? "Stop scanning tasks to import data" : ""}
+                title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to import data" : ""}
                 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
               >
                 {dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import' ? (

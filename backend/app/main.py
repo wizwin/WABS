@@ -220,10 +220,19 @@ sys.stderr = PrintLogger(sys.stderr)
 # Removed heavy face recognition dependencies.
 # We will now use cv2 (OpenCV) exclusively for face detection and recognition.
 
-face_scanner_thread = None
+combined_scanner_running = False
+combined_scanner_stopped = False
+combined_scanner_thread = None
+
+object_scanner_running = False
+object_scanner_thread = None
+
 face_scanner_running = False
+face_scanner_thread = None
+
 document_scanner_running = False
 document_scanner_thread = None
+scanner_lock = threading.Lock()
 
 from collections import OrderedDict
 
@@ -1516,18 +1525,19 @@ def indexer_start(req: IndexRequest = None):
 
     if cv2 is None and (req.tag or req.face or req.document):
         raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
-    if STATE.get("running") or combined_scanner_running or face_scanner_running or object_scanner_running or document_scanner_running:
-        return {"started": True, "ignored": True}
-    STATE["update_only"] = False
-    STATE["stopped"] = False
+    with scanner_lock:
+        if STATE.get("running") or combined_scanner_running or face_scanner_running or object_scanner_running or document_scanner_running:
+            return {"started": True, "ignored": True}
+        STATE["update_only"] = False
+        STATE["stopped"] = False
 
-    if req.tag or req.face or req.document:
-        combined_scanner_running = True
-        combined_scanner_stopped = False
-        combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document})
-        combined_scanner_thread.start()
-    else:
-        start_indexing()
+        if req.tag or req.face or req.document:
+            combined_scanner_running = True
+            combined_scanner_stopped = False
+            combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document})
+            combined_scanner_thread.start()
+        else:
+            start_indexing()
     if load_config().get("enable_logging"):
         import logging
         logging.info("Archive indexing started.")
@@ -1535,35 +1545,41 @@ def indexer_start(req: IndexRequest = None):
 
 @app.post("/indexer/pause")
 def indexer_pause():
-    if (STATE.get("running") or combined_scanner_running) and not STATE.get("paused"):
-        STATE["paused"] = True
-        STATE["status"] = "Paused"
+    with scanner_lock:
+        if (STATE.get("running") or combined_scanner_running) and not STATE.get("paused"):
+            STATE["paused"] = True
+            STATE["status"] = "Paused"
     return STATE
 
 @app.post("/indexer/resume")
 def indexer_resume():
-    if not STATE.get("running") and not combined_scanner_running:
-        # App was closed or stopped. Resume intelligently continues from the DB state.
-        STATE["update_only"] = True
-        start_indexing()
-        return {"resumed_from_db": True}
-    if (STATE.get("running") or combined_scanner_running) and STATE.get("paused"):
-        STATE["paused"] = False
-        STATE["status"] = "Indexing & Scanning..." if combined_scanner_running else "Indexing"
+    with scanner_lock:
+        if not STATE.get("running") and not combined_scanner_running:
+            if face_scanner_running or object_scanner_running or document_scanner_running:
+                # Cannot resume main indexer while a standalone scanner is running
+                return {"resumed_from_db": False, "ignored": True}
+            # App was closed or stopped. Resume intelligently continues from the DB state.
+            STATE["update_only"] = True
+            start_indexing()
+            return {"resumed_from_db": True}
+        if (STATE.get("running") or combined_scanner_running) and STATE.get("paused"):
+            STATE["paused"] = False
+            STATE["status"] = "Indexing & Scanning..." if combined_scanner_running else "Indexing"
     return STATE
 
 @app.post("/indexer/stop")
 def indexer_stop():
-    if STATE.get("running") or combined_scanner_running:
-        STATE["stopped"] = True
-        STATE["paused"] = False
-        STATE["status"] = "Stopping..."
-
     global combined_scanner_stopped
-    combined_scanner_stopped = True
-    STATE["face_scanner_stopped"] = True
-    STATE["object_scanner_stopped"] = True
-    STATE["document_scanner_stopped"] = True
+    with scanner_lock:
+        if STATE.get("running") or combined_scanner_running:
+            STATE["stopped"] = True
+            STATE["paused"] = False
+            STATE["status"] = "Stopping..."
+
+        combined_scanner_stopped = True
+        STATE["face_scanner_stopped"] = True
+        STATE["object_scanner_stopped"] = True
+        STATE["document_scanner_stopped"] = True
     if load_config().get("enable_logging"):
         import logging
         logging.info("Archive indexing stopped.")
@@ -1577,18 +1593,19 @@ def indexer_update(req: IndexRequest = None):
 
     if cv2 is None and (req.tag or req.face or req.document):
         raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
-    if STATE.get("running") or combined_scanner_running or face_scanner_running or object_scanner_running or document_scanner_running:
-        return {"updating": False, "ignored": True}
-    STATE["update_only"] = True
-    STATE["stopped"] = False
+    with scanner_lock:
+        if STATE.get("running") or combined_scanner_running or face_scanner_running or object_scanner_running or document_scanner_running:
+            return {"updating": False, "ignored": True}
+        STATE["update_only"] = True
+        STATE["stopped"] = False
 
-    if req.tag or req.face or req.document:
-        combined_scanner_running = True
-        combined_scanner_stopped = False
-        combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document})
-        combined_scanner_thread.start()
-    else:
-        start_indexing()
+        if req.tag or req.face or req.document:
+            combined_scanner_running = True
+            combined_scanner_stopped = False
+            combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document})
+            combined_scanner_thread.start()
+        else:
+            start_indexing()
     if load_config().get("enable_logging"):
         import logging
         logging.info("Archive indexing update started.")
@@ -1602,63 +1619,64 @@ def indexer_reindex(req: IndexRequest = None):
 
     if cv2 is None and (req.tag or req.face or req.document):
         raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
-    if STATE.get("running") or combined_scanner_running or face_scanner_running or object_scanner_running or document_scanner_running:
-        return {"reindexing": False, "ignored": True}
-    with SessionLocal() as s:
-        from sqlalchemy import text
-        s.query(FileIndex).delete()
-        try:
-            s.execute(text("DELETE FROM sqlite_sequence WHERE name='files'"))
-        except Exception:
-            pass
-        try:
-            s.execute(text("DELETE FROM processed_text"))
-            s.execute(text("DELETE FROM file_text_fts"))
-        except Exception:
-            pass
-        s.commit()
+    with scanner_lock:
+        if STATE.get("running") or combined_scanner_running or face_scanner_running or object_scanner_running or document_scanner_running:
+            return {"reindexing": False, "ignored": True}
+        with SessionLocal() as s:
+            from sqlalchemy import text
+            s.query(FileIndex).delete()
+            try:
+                s.execute(text("DELETE FROM sqlite_sequence WHERE name='files'"))
+            except Exception:
+                pass
+            try:
+                s.execute(text("DELETE FROM processed_text"))
+                s.execute(text("DELETE FROM file_text_fts"))
+            except Exception:
+                pass
+            s.commit()
 
-    cfg = load_config()
-    # Safely rmtree ONLY our isolated cache directory, ignoring the parent folder entirely
-    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
-    if thumb_dir.exists() and thumb_dir.is_dir():
-        try:
-            shutil.rmtree(thumb_dir)
-        except Exception as e:
-            print(f"Failed to clear thumbnails directory: {e}")
+        cfg = load_config()
+        # Safely rmtree ONLY our isolated cache directory, ignoring the parent folder entirely
+        thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
+        if thumb_dir.exists() and thumb_dir.is_dir():
+            try:
+                shutil.rmtree(thumb_dir)
+            except Exception as e:
+                print(f"Failed to clear thumbnails directory: {e}")
 
-    ai_db_path = get_ai_db_path()
-    if ai_db_path.exists():
-        try:
-            with sqlite3.connect(ai_db_path, timeout=15) as conn:
-                conn.execute("PRAGMA journal_mode=WAL;")
-                for table in ['faces', 'people', 'processed_files', 'processed_objects']:
-                    try:
-                        conn.execute(f"DELETE FROM {table}")
-                    except sqlite3.OperationalError as e:
-                        if "no such table" not in str(e).lower():
-                            raise
-                try:
-                    conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('faces', 'people', 'processed_files', 'processed_objects')")
-                except Exception:
-                    pass
-                conn.commit()
-        except Exception as e:
-            print(f"Failed to clear AI database: {e}")
+        ai_db_path = get_ai_db_path()
+        if ai_db_path.exists():
+            try:
+                with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;")
+                    for table in ['faces', 'people', 'processed_files', 'processed_objects']:
+                        try:
+                            conn.execute(f"DELETE FROM {table}")
+                        except sqlite3.OperationalError as e:
+                            if "no such table" not in str(e).lower():
+                                raise
+                        try:
+                            conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('faces', 'people', 'processed_files', 'processed_objects')")
+                        except Exception:
+                            pass
+                        conn.commit()
+            except Exception as e:
+                print(f"Failed to clear AI database: {e}")
 
-    STATE["indexed"] = 0
-    STATE["current"] = 0
-    STATE["total"] = 0
-    STATE["update_only"] = False
-    STATE["stopped"] = False
+        STATE["indexed"] = 0
+        STATE["current"] = 0
+        STATE["total"] = 0
+        STATE["update_only"] = False
+        STATE["stopped"] = False
 
-    if req.tag or req.face or req.document:
-        combined_scanner_running = True
-        combined_scanner_stopped = False
-        combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document})
-        combined_scanner_thread.start()
-    else:
-        start_indexing()
+        if req.tag or req.face or req.document:
+            combined_scanner_running = True
+            combined_scanner_stopped = False
+            combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document})
+            combined_scanner_thread.start()
+        else:
+            start_indexing()
     if load_config().get("enable_logging"):
         import logging
         logging.info("Archive re-indexing started.")
@@ -2143,7 +2161,11 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             roots = [Path(c.get("backup_path", "")) for c in backup_configs if c.get("backup_path")]
             valid_roots = [r for r in roots if r.exists() and r.is_dir()]
             for root_path in valid_roots:
+                if combined_scanner_stopped or STATE.get("stopped"):
+                    break
                 for dirpath, _, filenames in os.walk(str(root_path)):
+                    if combined_scanner_stopped or STATE.get("stopped"):
+                        break
                     for f in filenames:
                         files_to_process.append(os.path.join(dirpath, f))
         else:
@@ -2156,7 +2178,16 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     categories.extend(['document', 'ebook', 'code', 'other'])
                 if categories:
                     q = q.filter(FileIndex.category.in_(categories))
-                files_to_process = [p[0] for p in q.all()]
+                for p in q.yield_per(5000):
+                    if combined_scanner_stopped or STATE.get("stopped"):
+                        break
+                    if not run_index and run_document and STATE.get("document_scanner_stopped"):
+                        break
+                    if not run_index and run_face and STATE.get("face_scanner_stopped"):
+                        break
+                    if not run_index and run_object and STATE.get("object_scanner_stopped"):
+                        break
+                    files_to_process.append(p[0])
 
         total_files = len(files_to_process)
         if run_index:
@@ -2184,27 +2215,79 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                 # Store lightweight info mapping to avoid millions of session.get() queries
                 file_cache = {}
                 for r in session.query(FileIndex.id, FileIndex.path, FileIndex.size, FileIndex.modified, FileIndex.category, FileIndex.filename).yield_per(5000):
+                    if combined_scanner_stopped or (run_index and STATE.get("stopped")):
+                        break
+                    if not run_index and run_document and STATE.get("document_scanner_stopped"):
+                        break
+                    if not run_index and run_face and STATE.get("face_scanner_stopped"):
+                        break
+                    if not run_index and run_object and STATE.get("object_scanner_stopped"):
+                        break
                     file_cache[r.path] = {"id": r.id, "size": r.size, "modified": r.modified, "category": r.category, "filename": r.filename}
                 
                 for idx, file_str in enumerate(files_to_process):
+                    if run_document and STATE.get("document_scanner_stopped") and document_scanner_running:
+                        document_scanner_running = False
+                        STATE["document_scanner_stopped"] = False
+                        STATE["document_scanner_current_file"] = ""
+                        STATE["document_scanner_current"] = 0
+                        STATE["document_scanner_total"] = 0
+                        run_document = False
+
+                    if run_face and STATE.get("face_scanner_stopped") and face_scanner_running:
+                        face_scanner_running = False
+                        STATE["face_scanner_stopped"] = False
+                        STATE["face_scanner_current_file"] = ""
+                        STATE["face_scanner_current"] = 0
+                        STATE["face_scanner_total"] = 0
+                        run_face = False
+
+                    if run_object and STATE.get("object_scanner_stopped") and object_scanner_running:
+                        object_scanner_running = False
+                        STATE["object_scanner_stopped"] = False
+                        STATE["object_scanner_current_file"] = ""
+                        STATE["object_scanner_current"] = 0
+                        STATE["object_scanner_total"] = 0
+                        run_object = False
+
+                    if not run_index and not run_document and not run_face and not run_object:
+                        break
+
                     while STATE.get("paused"):
                         time.sleep(0.5)
+                        
+                        if run_document and STATE.get("document_scanner_stopped") and document_scanner_running:
+                            document_scanner_running = False
+                            STATE["document_scanner_stopped"] = False
+                            STATE["document_scanner_current_file"] = ""
+                            STATE["document_scanner_current"] = 0
+                            STATE["document_scanner_total"] = 0
+                            run_document = False
+
+                        if run_face and STATE.get("face_scanner_stopped") and face_scanner_running:
+                            face_scanner_running = False
+                            STATE["face_scanner_stopped"] = False
+                            STATE["face_scanner_current_file"] = ""
+                            STATE["face_scanner_current"] = 0
+                            STATE["face_scanner_total"] = 0
+                            run_face = False
+
+                        if run_object and STATE.get("object_scanner_stopped") and object_scanner_running:
+                            object_scanner_running = False
+                            STATE["object_scanner_stopped"] = False
+                            STATE["object_scanner_current_file"] = ""
+                            STATE["object_scanner_current"] = 0
+                            STATE["object_scanner_total"] = 0
+                            run_object = False
+
                         if combined_scanner_stopped or (run_index and STATE.get("stopped")):
                             break
-                        if not run_index and run_face and STATE.get("face_scanner_stopped"):
-                            break
-                        if not run_index and run_document and STATE.get("document_scanner_stopped"):
-                            break
-                        if not run_index and run_object and STATE.get("object_scanner_stopped"):
+                        if not run_index and not run_document and not run_face and not run_object:
                             break
 
                     if combined_scanner_stopped or (run_index and STATE.get("stopped")):
                         break
-                    if not run_index and run_face and STATE.get("face_scanner_stopped"):
-                        break
-                    if not run_index and run_document and STATE.get("document_scanner_stopped"):
-                        break
-                    if not run_index and run_object and STATE.get("object_scanner_stopped"):
+                    if not run_index and not run_document and not run_face and not run_object:
                         break
                         
                     file = Path(file_str)
@@ -2542,70 +2625,92 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         print(f"CRITICAL: Unified Worker Error: {e}")
         traceback.print_exc()
     finally:
-        if run_index:
-            is_stopped = STATE.get("stopped", False) or combined_scanner_stopped
-            STATE["running"] = False
-            if is_stopped:
-                STATE["status"] = "Stopped"
-            else:
-                STATE["status"] = "Completed"
-        if run_face:
+        with scanner_lock:
+            if run_index:
+                is_stopped = STATE.get("stopped", False) or combined_scanner_stopped
+                STATE["running"] = False
+                if is_stopped:
+                    STATE["status"] = "Stopped"
+                else:
+                    STATE["status"] = "Completed"
+            
             face_scanner_running = False
-            STATE["face_scanner_current_file"] = ""
-        if run_object:
             object_scanner_running = False
-            STATE["object_scanner_current_file"] = ""
-        if run_document:
             document_scanner_running = False
+            combined_scanner_running = False
+    
+            STATE["face_scanner_current_file"] = ""
+            STATE["object_scanner_current_file"] = ""
             STATE["document_scanner_current_file"] = ""
-        combined_scanner_running = False
+            STATE["face_scanner_stopped"] = False
+            STATE["object_scanner_stopped"] = False
+            STATE["document_scanner_stopped"] = False
+
+            STATE["face_scanner_current"] = 0
+            STATE["face_scanner_total"] = 0
+            STATE["object_scanner_current"] = 0
+            STATE["object_scanner_total"] = 0
+            STATE["document_scanner_current"] = 0
+            STATE["document_scanner_total"] = 0
+
+            STATE["stopped"] = False
+            combined_scanner_stopped = False
 
 @app.post("/scan-faces")
 def scan_faces():
     if cv2 is None:
         raise HTTPException(status_code=500, detail="OpenCV is required for face recognition.")
-    global face_scanner_thread, face_scanner_running
-    if face_scanner_running or object_scanner_running or document_scanner_running or combined_scanner_running or STATE.get("running"):
-        raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
-    face_scanner_running = True
-    STATE["face_scanner_stopped"] = False
-    STATE["paused"] = False
-    face_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": True, "run_object": False})
-    face_scanner_thread.start()
+    global face_scanner_thread, face_scanner_running, combined_scanner_stopped
+    with scanner_lock:
+        if face_scanner_running or object_scanner_running or document_scanner_running or combined_scanner_running or STATE.get("running"):
+            raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
+        face_scanner_running = True
+        combined_scanner_stopped = False
+        STATE["stopped"] = False
+        STATE["face_scanner_stopped"] = False
+        STATE["paused"] = False
+        face_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": True, "run_object": False})
+        face_scanner_thread.start()
     return {"message": "Face scanning and clustering started in the background."}
 
 @app.post("/stop-scan-faces")
 def stop_scan_faces():
     global face_scanner_running
-    if not face_scanner_running:
-        raise HTTPException(status_code=400, detail="Face scanner is not running.")
-    STATE["face_scanner_stopped"] = True
-    STATE["paused"] = False
+    with scanner_lock:
+        STATE["face_scanner_stopped"] = True
+        if not face_scanner_running:
+            return {"message": "Face scanner is not running or already stopped."}
     return {"message": "Stopping face scanner."}
 
 @app.post("/scan-documents")
 def scan_documents():
-    global document_scanner_thread, document_scanner_running
-    if document_scanner_running or face_scanner_running or object_scanner_running or combined_scanner_running or STATE.get("running"):
-        raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
-    document_scanner_running = True
-    STATE["document_scanner_stopped"] = False
-    STATE["paused"] = False
-    document_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": False, "run_document": True})
-    document_scanner_thread.start()
+    global document_scanner_thread, document_scanner_running, combined_scanner_stopped
+    with scanner_lock:
+        if document_scanner_running or face_scanner_running or object_scanner_running or combined_scanner_running or STATE.get("running"):
+            raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
+        document_scanner_running = True
+        combined_scanner_stopped = False
+        STATE["stopped"] = False
+        STATE["document_scanner_stopped"] = False
+        STATE["paused"] = False
+        document_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": False, "run_document": True})
+        document_scanner_thread.start()
     return {"message": "Document text extraction started in the background."}
 
 @app.post("/stop-scan-documents")
 def stop_scan_documents():
     global document_scanner_running
-    if not document_scanner_running:
-        raise HTTPException(status_code=400, detail="Document text extractor is not running.")
-    STATE["document_scanner_stopped"] = True
-    STATE["paused"] = False
+    with scanner_lock:
+        STATE["document_scanner_stopped"] = True
+        if not document_scanner_running:
+            return {"message": "Document text extractor is not running or already stopped."}
     return {"message": "Stopping document text extractor."}
 
 @app.post("/reset-document-scanner-progress")
 def reset_document_scanner_progress():
+    with scanner_lock:
+        if document_scanner_running or face_scanner_running or object_scanner_running or combined_scanner_running or STATE.get("running"):
+            raise HTTPException(status_code=400, detail="Cannot reset progress while a scan is running. Please stop it first.")
     try:
         with SessionLocal() as s:
             s.execute(text("CREATE TABLE IF NOT EXISTS processed_text (file_id INTEGER PRIMARY KEY)"))
@@ -3689,32 +3794,35 @@ def reclassify_people(payload: dict = Body(...)):
                         
     return {"reclassified_count": reclassified_count}
 
-object_scanner_running = False
-object_scanner_thread = None
-
 @app.post("/scan-objects")
 def scan_objects():
-    global object_scanner_thread, object_scanner_running
-    if object_scanner_running or face_scanner_running or document_scanner_running or combined_scanner_running or STATE.get("running"):
-        raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
-    object_scanner_running = True
-    STATE["object_scanner_stopped"] = False
-    STATE["paused"] = False
-    object_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": True, "run_document": False})
-    object_scanner_thread.start()
+    global object_scanner_thread, object_scanner_running, combined_scanner_stopped
+    with scanner_lock:
+        if object_scanner_running or face_scanner_running or document_scanner_running or combined_scanner_running or STATE.get("running"):
+            raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
+        object_scanner_running = True
+        combined_scanner_stopped = False
+        STATE["stopped"] = False
+        STATE["object_scanner_stopped"] = False
+        STATE["paused"] = False
+        object_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": True, "run_document": False})
+        object_scanner_thread.start()
     return {"message": "Object scanning started in the background."}
 
 @app.post("/stop-scan-objects")
 def stop_scan_objects():
     global object_scanner_running
-    if not object_scanner_running:
-        raise HTTPException(status_code=400, detail="Object scanner is not running.")
-    STATE["object_scanner_stopped"] = True
-    STATE["paused"] = False
+    with scanner_lock:
+        STATE["object_scanner_stopped"] = True
+        if not object_scanner_running:
+            return {"message": "Object scanner is not running or already stopped."}
     return {"message": "Stopping object scanner."}
 
 @app.post("/reset-object-scanner-progress")
 def reset_object_scanner_progress():
+    with scanner_lock:
+        if document_scanner_running or face_scanner_running or object_scanner_running or combined_scanner_running or STATE.get("running"):
+            raise HTTPException(status_code=400, detail="Cannot reset progress while a scan is running. Please stop it first.")
     try:
         ai_db_path = get_ai_db_path()
         if ai_db_path.exists():
@@ -3729,6 +3837,9 @@ def reset_object_scanner_progress():
 
 @app.post("/reset-face-scanner-progress")
 def reset_face_scanner_progress():
+    with scanner_lock:
+        if document_scanner_running or face_scanner_running or object_scanner_running or combined_scanner_running or STATE.get("running"):
+            raise HTTPException(status_code=400, detail="Cannot reset progress while a scan is running. Please stop it first.")
     try:
         ai_db_path = get_ai_db_path()
         if ai_db_path.exists():
@@ -3744,12 +3855,6 @@ def reset_face_scanner_progress():
 class TagUpdateRequest(BaseModel):
     file_ids: list[int]
     tags: list[str]
-
-
-
-combined_scanner_running = False
-combined_scanner_stopped = False
-combined_scanner_thread = None
 
 @app.post("/tags/add")
 def add_tags(req: TagUpdateRequest):

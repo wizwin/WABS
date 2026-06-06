@@ -429,6 +429,11 @@ def background_lazy_hasher():
         updates = 0
         mappings = []
         for item_id, path, metadata_json in files:
+            while STATE.get("paused"):
+                time.sleep(0.5)
+                if STATE.get("hasher_stopped") or STATE.get("stopped"):
+                    break
+            
             if STATE.get("hasher_stopped") or STATE.get("stopped"):
                 break
             STATE["hasher_current"] += 1
