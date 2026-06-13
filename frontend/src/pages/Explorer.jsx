@@ -504,7 +504,7 @@ export default function Explorer(props) {
         <div style={{ marginBottom: '16px' }}>
             <h3 style={{ margin: '0 0 8px 0', fontSize: '15px' }}>Detected Tags</h3>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-            {selected.tags.split(' ').filter(t => t.trim()).map(tag => {
+            {selected.tags.split(',').filter(t => t.trim()).map(tag => {
                 const isObj = tag.startsWith('object:');
                 const isPerson = tag.startsWith('person:');
                 const color = isObj ? '#38bdf8' : isPerson ? '#10b981' : '#cbd5e1';

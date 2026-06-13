@@ -14,7 +14,8 @@ except ImportError:
 from backend.app.routes.files import preview, _build_item
 from backend.app.config import load_config
 from backend.app.database import SessionLocal, FileIndex
-from backend.app.utils.utils import _resolve_path
+from backend.app.utils.utils import _resolve_path, parse_tags
+from backend.app.utils.log_utils import log_operation
 from backend.app.utils.media import _evaluate_image_faces, get_cv2_dnn_backends
 import backend.app.state as app_state
 from backend.app.state import STATE
@@ -584,17 +585,17 @@ def remove_person_photo(person_id: int, payload: dict = Body(...)):
             
         conn.commit()
         
-    if deleted_count > 0:
-        if person_name and not person_name.startswith("Unknown Person"):
-            with SessionLocal() as s:
-                f = s.query(FileIndex).filter(FileIndex.id == file_id).first()
-                if f and f.tags:
-                        current_tags = set(f.tags.split())
-                        tag_to_remove = f"person:{person_name}"
-                        if tag_to_remove in current_tags:
-                            current_tags.remove(tag_to_remove)
-                            f.tags = " ".join(sorted(current_tags))
-                            s.commit()
+    # Always ensure the tag is removed from the main index if it's a known person
+    if person_name and not person_name.startswith("Unknown Person"):
+        with SessionLocal() as s:
+            f = s.query(FileIndex).filter(FileIndex.id == file_id).first()
+            if f and f.tags:
+                current_tags = parse_tags(f.tags)
+                tag_to_remove = f"person:{person_name}"
+                if tag_to_remove in current_tags:
+                    current_tags.remove(tag_to_remove)
+                    f.tags = ",".join(sorted(current_tags))
+                    s.commit()
 
         thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
         cached_face = thumb_dir / f"person_{person_id}.jpg"
@@ -604,6 +605,7 @@ def remove_person_photo(person_id: int, payload: dict = Body(...)):
             except Exception:
                 pass
 
+    log_operation(f"Manually untagged person '{person_name}' (ID {person_id}) from file ID {file_id}", user_logs_enabled=cfg.get("enable_logging"))
     return {"success": True, "removed": deleted_count}
 
 @router.post("/people/{person_id}/add-photo")
@@ -627,24 +629,24 @@ def add_person_photo(person_id: int, payload: dict = Body(...)):
         person_name = person_row[0]
         
         cursor.execute("SELECT id FROM faces WHERE person_id = ? AND file_id = ?", (person_id, file_id))
-        if cursor.fetchone():
-            return {"success": True, "message": "Already tagged"}
-            
-        # Insert empty array since it's a manual tag (bypasses similarity checks)
-        cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)", (person_id, file_id, "[]"))
-        conn.commit()
+        already_in_faces = cursor.fetchone() is not None
+        if not already_in_faces:
+            # Insert empty array since it's a manual tag (bypasses similarity checks)
+            cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)", (person_id, file_id, "[]"))
+            conn.commit()
         
     if person_name and not person_name.startswith("Unknown Person"):
         with SessionLocal() as s:
             f = s.query(FileIndex).filter(FileIndex.id == file_id).first()
             if f:
-                current_tags = set((f.tags or "").split())
+                current_tags = parse_tags(f.tags)
                 new_tag = f"person:{person_name}"
                 if new_tag not in current_tags:
                     current_tags.add(new_tag)
-                    f.tags = " ".join(sorted(current_tags))
+                    f.tags = ",".join(sorted(current_tags))
                     s.commit()
 
+    log_operation(f"Manually tagged person '{person_name}' (ID {person_id}) on file ID {file_id}", user_logs_enabled=cfg.get("enable_logging"))
     return {"success": True}
 
 @router.post("/people/{person_id}/rename")
@@ -694,13 +696,13 @@ def rename_person(person_id: int, payload: dict = Body(...)):
                 files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
                 mappings = []
                 for f_id, tags in files_to_update:
-                    current_tags_set = set((tags or "").split())
+                    current_tags_set = parse_tags(tags)
                     if old_name and not old_name.startswith("Unknown Person"):
                         current_tags_set.discard(f"person:{old_name}")
                     if new_name and not new_name.startswith("Unknown Person"):
                         current_tags_set.add(f"person:{new_name}")
                         
-                    new_tags_str = " ".join(sorted(current_tags_set))
+                    new_tags_str = ",".join(sorted(current_tags_set))
                     if new_tags_str != tags:
                         mappings.append({"id": f_id, "tags": new_tags_str})
                 if mappings:
@@ -742,9 +744,9 @@ def delete_person(person_id: int):
                 mappings = []
                 for f_id, tags in files_to_update:
                     if tags:
-                        current_tags_set = set(tags.split())
+                        current_tags_set = parse_tags(tags)
                         current_tags_set.discard(f"person:{old_name}")
-                        new_tags_str = " ".join(sorted(current_tags_set))
+                        new_tags_str = ",".join(sorted(current_tags_set))
                         if new_tags_str != tags:
                             mappings.append({"id": f_id, "tags": new_tags_str})
                 if mappings:

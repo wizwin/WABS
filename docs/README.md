@@ -37,6 +37,23 @@ Once the terminal window opens and the backend starts, open your web browser and
 2. **Index Files:** Go to the **Dashboard** and click **Start** under Indexer Controls.
 3. **Explore:** Use the **Explorer** and **Search** tabs to navigate and manage your data.
 
+### Managing Face Scanning & AI People Profiles
+
+Once the Face Scanner identifies faces, it groups them under automatic profiles in the **People** tab. You can manage these profiles using several built-in AI tools:
+
+1. **Naming & Auto-Merging:**
+   * Rename an "Unknown Person #X" profile to a person's real name (e.g., `John Doe`).
+   * If the name already exists, WABS will **automatically merge** the profiles, moving all faces to the existing person and updating the file tags.
+
+2. **Bulk AI Operations (top of the Unknown People list):**
+   * **Cluster All Unknowns:** Compares all unknown profiles against each other to automatically merge similar faces together.
+   * **Reclassify All Unknowns:** Dissolves all unknown profiles and re-evaluates every face against all named/known persons and unknown groups.
+   * **Purge Small Profiles:** Automatically deletes unknown profiles with fewer than a specified number of photos (e.g., <3) to reclaim space and clean up noise/blurry faces.
+
+3. **Selected AI Operations (appears in the floating bottom panel when selecting checkboxes):**
+   * **Cluster Selected:** Compares only the selected unknown profiles against other unknowns and merges matches.
+   * **Reclassify Selected:** Dissolves only the selected unknown profiles' collections, re-evaluating each face against all named/known persons and other unknowns. This is extremely useful if you just named a person (e.g., `Mary`) and want to check if a few specific unknown profiles contain her faces.
+
 ### Clearing AI Data & Text Manually
 If you want to completely reset the AI's detected faces, people, and object tags, you can manually clear the AI database (or the text extraction cache):
 1. **Stop** the WABS application (close the terminal/command prompt window).

@@ -23,6 +23,7 @@ import backend.app.state as app_state
 from backend.app.state import STATE
 import backend.app.shared_state as shared_state
 from backend.app.utils.log_utils import log_operation
+from backend.app.utils.utils import parse_tags
 
 # Database & Config
 from backend.app.database import SessionLocal, FileIndex
@@ -889,11 +890,10 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     new_tags.append(f"object:{label}")
                                     
                             if new_tags:
-                                current_tags = db_item.tags or ""
+                                current_tags_set = parse_tags(db_item.tags)
                                 for tag in new_tags:
-                                    if tag not in current_tags:
-                                        current_tags = f"{current_tags} {tag}".strip()
-                                db_item.tags = current_tags
+                                    current_tags_set.add(tag)
+                                db_item.tags = ",".join(sorted(current_tags_set))
                                 log_operation(f"Classified objects {new_tags} for file: {file.name}", user_logs_enabled=enable_logging, is_verbose=True)
                         except Exception as e:
                             print(f"ERROR: Failed to classify {file.name}: {e}")

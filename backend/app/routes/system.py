@@ -15,7 +15,7 @@ from backend.app.database import SessionLocal, FileIndex
 from backend.app.config import load_config, save_config
 from backend.app.utils.paths import get_ai_db_path
 from backend.app.utils.cache import EXEMPLAR_CACHE
-from backend.app.utils.utils import _resolve_path
+from backend.app.utils.utils import _resolve_path, parse_tags
 import backend.app.shared_state as shared_state
 
 router = APIRouter()
@@ -621,11 +621,11 @@ def import_people(payload: list = Body(...)):
                             imported_faces_count += 1
                             
                         if name and not name.startswith("Unknown Person"):
-                            current_tags = set((file_item.tags or "").split())
+                            current_tags = parse_tags(file_item.tags)
                             new_tag = f"person:{name}"
                             if new_tag not in current_tags:
                                 current_tags.add(new_tag)
-                                file_item.tags = " ".join(sorted(current_tags))
+                                file_item.tags = ",".join(sorted(current_tags))
                     
                     thumb_path = person_data.get("thumbnail_path")
                     if thumb_path:

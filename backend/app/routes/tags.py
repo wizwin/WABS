@@ -11,6 +11,8 @@ from backend.app.state import STATE
 from backend.app.utils.indexer import _process_unified_scanners
 from backend.app.utils.paths import get_ai_db_path
 from backend.app.config import load_config
+from backend.app.utils.utils import parse_tags
+from backend.app.utils.log_utils import log_operation
 
 router = APIRouter()
 
@@ -26,16 +28,18 @@ def add_tags(req: TagUpdateRequest):
             files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
             mappings = []
             for f_id, tags in files_to_update:
-                current_tags = set((tags or "").split())
+                current_tags = parse_tags(tags)
                 for tag in req.tags:
                     formatted_tag = f"object:{tag}" if ":" not in tag else tag
                     current_tags.add(formatted_tag)
-                new_tags_str = " ".join(sorted(current_tags))
+                new_tags_str = ",".join(sorted(current_tags))
                 if new_tags_str != tags:
                     mappings.append({"id": f_id, "tags": new_tags_str})
             if mappings:
                 s.bulk_update_mappings(FileIndex, mappings)
                 s.commit()
+    
+    log_operation(f"Manually added tags {req.tags} to {len(req.file_ids)} file(s)", user_logs_enabled=load_config().get("enable_logging"))
     return {"status": "success"}
 
 @router.post("/tags/remove")
@@ -48,16 +52,18 @@ def remove_tags(req: TagUpdateRequest):
             for f_id, tags in files_to_update:
                 if not tags:
                     continue
-                current_tags = set((tags or "").split())
+                current_tags = parse_tags(tags)
                 for tag in req.tags:
                     formatted_tag = f"object:{tag}" if ":" not in tag else tag
                     current_tags.discard(formatted_tag)
-                new_tags_str = " ".join(sorted(current_tags))
+                new_tags_str = ",".join(sorted(current_tags))
                 if new_tags_str != tags:
                     mappings.append({"id": f_id, "tags": new_tags_str})
             if mappings:
                 s.bulk_update_mappings(FileIndex, mappings)
                 s.commit()
+    
+    log_operation(f"Manually removed tags {req.tags} from {len(req.file_ids)} file(s)", user_logs_enabled=load_config().get("enable_logging"))
     return {"status": "success"}
 
 @router.delete("/tags/objects/all")
@@ -71,8 +77,9 @@ def clear_all_object_tags():
             mappings = []
             for f_id, tags in files:
                 if tags:
-                    tags_list = [t for t in re.split(r'[\s,]+', tags) if not t.startswith('object:')]
-                    new_tags_str = " ".join(filter(bool, tags_list))
+                    current_tags = parse_tags(tags)
+                    tags_list = [t for t in current_tags if not t.startswith('object:')]
+                    new_tags_str = ",".join(sorted(tags_list))
                     if new_tags_str != tags:
                         mappings.append({"id": f_id, "tags": new_tags_str})
             if mappings:
@@ -95,8 +102,9 @@ def delete_object_tag_globally(tag_name: str):
             mappings = []
             for f_id, tags in files:
                 if tags:
-                    tags_list = [t for t in re.split(r'[\s,]+', tags) if t != tag_to_delete]
-                    new_tags_str = " ".join(filter(bool, tags_list))
+                    current_tags = parse_tags(tags)
+                    tags_list = [t for t in current_tags if t != tag_to_delete]
+                    new_tags_str = ",".join(sorted(tags_list))
                     if new_tags_str != tags:
                         mappings.append({"id": f_id, "tags": new_tags_str})
             if mappings:
@@ -110,7 +118,7 @@ def get_object_tags():
         unique_tags = set()
         for r in s.query(FileIndex.tags).filter(FileIndex.tags.like('%object:%')).yield_per(1000):
             if r[0]:
-                for tag in r[0].split():
+                for tag in parse_tags(r[0]):
                     if tag.startswith('object:'):
                         unique_tags.add(tag)
         return sorted(list(unique_tags))
@@ -135,9 +143,9 @@ def import_tags(payload: list = Body(...)):
             if not path or not new_tags: continue
             file_record = s.query(FileIndex).filter(FileIndex.path == path).first()
             if file_record:
-                current_tags = set((file_record.tags or "").split())
-                imported_tags = set(new_tags.split())
-                new_tags_str = " ".join(sorted(current_tags.union(imported_tags)))
+                current_tags = parse_tags(file_record.tags)
+                imported_tags = parse_tags(new_tags)
+                new_tags_str = ",".join(sorted(current_tags.union(imported_tags)))
                 if new_tags_str != file_record.tags:
                     file_record.tags = new_tags_str
                     imported_count += 1
