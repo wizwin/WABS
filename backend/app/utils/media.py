@@ -203,17 +203,41 @@ def _evaluate_image_faces(file_path, yunet_path: str):
         return []
 
     try:
+        # Read dimensions first using PIL to optimize image decoding
+        from PIL import Image
+        decode_scale = 1.0
+        width, height = 0, 0
+        try:
+            with Image.open(str(file_path)) as pil_img:
+                width, height = pil_img.size
+        except Exception:
+            pass
+
         img_array = np.fromfile(str(file_path), np.uint8)
-        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        img = None
+        
+        # If JPEG and very large, use scale-on-decode flags
+        if width > 0 and height > 0 and str(file_path).lower().endswith(('.jpg', '.jpeg')):
+            max_dim = max(width, height)
+            if max_dim >= 3200:
+                img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_4)
+                decode_scale = 0.25
+            elif max_dim >= 1600:
+                img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_2)
+                decode_scale = 0.5
+
+        if img is None:
+            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+
         if img is None:
             return []
         
-        height, width, _ = img.shape
+        dec_h, dec_w = img.shape[:2]
         target_dim = 800
         scale = 1.0
-        if max(height, width) > target_dim:
-            scale = target_dim / max(height, width)
-            new_w, new_h = int(width * scale), int(height * scale)
+        if max(dec_h, dec_w) > target_dim:
+            scale = target_dim / max(dec_h, dec_w)
+            new_w, new_h = int(dec_w * scale), int(dec_h * scale)
             det_img = cv2.resize(img, (new_w, new_h))
         else:
             det_img = img
@@ -228,13 +252,22 @@ def _evaluate_image_faces(file_path, yunet_path: str):
         
         results = []
         if faces is not None:
-            if scale != 1.0:
-                faces[:, :14] /= scale
             for face in faces:
-                x, y, w, h = [int(v) for v in face[:4]]
-                x, y = max(0, x), max(0, y)
-                face_area = w * h
-                face_crop = img[y:y+h, x:x+w]
+                # Coordinate in det_img space
+                det_x, det_y, det_w, det_h = face[:4]
+                
+                # Scale back to img (decoded) space for cropping
+                x_img = max(0, int(det_x / scale))
+                y_img = max(0, int(det_y / scale))
+                w_img = int(det_w / scale)
+                h_img = int(det_h / scale)
+                
+                # Scale back to original dimensions for area calculation
+                w_orig = int(det_w / (scale * decode_scale))
+                h_orig = int(det_h / (scale * decode_scale))
+                face_area = w_orig * h_orig
+                
+                face_crop = img[y_img:y_img+h_img, x_img:x_img+w_img]
                 sharpness = 0.0
                 if face_crop.size > 0:
                     gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)

@@ -420,6 +420,27 @@ def system_cleanup():
         else:
             main_db_path = Path(__file__).resolve().parent.parent.parent.parent / main_db_path
 
+    # Retrieve configured active backup roots
+    backup_configs = cfg.get("backup_configs", [])
+    active_roots = [Path(c.get("backup_path", "")) for c in backup_configs if c.get("backup_path")]
+    
+    # Classify active roots into online and offline
+    online_roots = [r for r in active_roots if r.exists()]
+    offline_roots = [r for r in active_roots if not r.exists()]
+
+    def is_path_matching_ignoring_drive(root_path: Path, file_path: Path) -> bool:
+        try:
+            # Get path parts ignoring Windows drive letter or anchor
+            root_parts = root_path.parts[1:] if root_path.drive else root_path.parts
+            file_parts = file_path.parts[1:] if file_path.drive else file_path.parts
+            
+            if len(file_parts) >= len(root_parts):
+                if all(f.lower() == r.lower() for f, r in zip(file_parts[:len(root_parts)], root_parts)):
+                    return True
+        except Exception:
+            pass
+        return False
+
     missing_ids = []
     deleted_thumbnails_count = 0
     thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
@@ -429,8 +450,39 @@ def system_cleanup():
             if shared_state.APP_SHUTTING_DOWN:
                 break
             fid, path_str = r[0], r[1]
-            file_path = _resolve_path(Path(path_str))
-            if not file_path.exists():
+            file_path = Path(path_str)
+            resolved_file_path = _resolve_path(file_path)
+            
+            # Check if this file belongs to any active backup location
+            belongs_to_active_config = False
+            is_parent_offline = False
+            
+            # Check offline roots first to protect them
+            for root in offline_roots:
+                if is_path_matching_ignoring_drive(root, file_path):
+                    belongs_to_active_config = True
+                    is_parent_offline = True
+                    break
+                    
+            # If not matched to offline roots, check online roots
+            if not is_parent_offline:
+                for root in online_roots:
+                    if is_path_matching_ignoring_drive(root, file_path):
+                        belongs_to_active_config = True
+                        break
+
+            # Safety evaluation:
+            # 1. If the parent root is offline/unplugged, protect the file: DO NOT delete it!
+            if is_parent_offline:
+                continue
+                
+            # 2. If it belongs to an online active location but the file itself is missing, delete it.
+            # 3. If it does NOT belong to any active backup location (i.e. removed from settings), delete it.
+            if belongs_to_active_config:
+                if not resolved_file_path.exists():
+                    missing_ids.append(fid)
+            else:
+                # Removed from config - clean it up safely
                 missing_ids.append(fid)
                 
         if missing_ids:

@@ -3,7 +3,13 @@
 ## v1.0.0-beta.8
 
 ### 🚀 Major Refactoring & New Features
+*   **Randomized Auto-Pick Cover:** Refactored "Auto-Pick Cover" to select cover photos dynamically and randomly from the top candidate covers (within 50% of the best score, up to 5 candidates). Excludes the current cover photo (if others exist) to rotate covers and prevent getting stuck on the same image.
+*   **Indexer Start/Stop Responsiveness & Lazy Preloading:** Added stop/shutdown checks inside directory walking (`os.walk`) loops in both the main indexer and unified scanners. Replaced full table metadata preloading on startup with dynamic chunked lazy preloading (1,000 files at a time) during runs. Bypasses completion delays on manual stop, making start/stop instant even on massive databases.
 *   **Modular Architecture:** Refactored Backend (`main.py`) and Frontend (`App.jsx`) from a monolithic structure to multiple routes, pages, hooks, etc., making the application modular and easy to maintain.
+*   **Smart Cleanup Safety Filter**: Protects configured backup paths that are currently offline (e.g. unplugged external USB drives or network shares) from being accidentally purged during database cleanup operations. Compares directories using a drive-letter-invariant matching method.
+*   **Multi-Scale Face Detection Fusion**: Runs two concurrent detection passes when `face_sensitivity` is set to `high` (1024px for small/distant background faces, and 320px for large foreground close-ups) and fuses overlapping boxes using Non-Maximum Suppression (NMS) to capture both background and foreground faces accurately.
+*   **Standardized Tag Delimiter:** Standardized all database file tags to be comma-separated `,` instead of space-separated, enabling correct indexing, display, and search for multi-word tags (e.g., `person:John Doe` or `object:cell phone`). Implemented robust synchronization and backward compatibility in parsing.
+*   **DNG RAW Photo Support:** Added full raw DNG photo indexing, face/object scanning, and browser-compatible JPEG preview rendering fallbacks.
 *   **Unified Document Scanning Depth:** Introduced `document_scan_depth` configurations (`low`, `medium`, `high`) dynamically scaling limits across all document types (PDFs, Word, PPT, Excel, Text) inside WABS Settings.
 *   **Memory-Optimized Hybrid Scanning:** Implemented hybrid document parsing that fully tokenizes text under configured limits and scans only for strong alphanumeric identifiers (emails, URLs, hashtags) beyond limits using 128KB chunks and 1,000-count early breakout checks.
 *   **Context-Preserving Capping:** Frequency-sorts and caps boosted identifiers (top 50 strong identifiers, top 100 multi-word proper nouns) to prevent document metadata from crowding out core context keywords during indexing.
@@ -11,16 +17,21 @@
 *   **Memory-Safe Frontend Downloads:** Replaced the browser `data:` URI scheme with memory-safe `Blob` and `URL.createObjectURL(blob)` components in `exportKnownPeople` to prevent browser hangs or freezes on large backups.
 
 ### ⚡ Performance & Caching
+*   **Fast JPEG Scale-on-Decode**: Integrates header-only dimension reads (via Pillow) and leverages OpenCV's native scale-on-decode capabilities (`cv2.IMREAD_REDUCED_COLOR_*`) to decode large images at 1/2 or 1/4 size directly, reducing image load times by 5x-10x.
+*   **Dynamic Chronological & Size Curation**: Implemented a central curation helper (`get_or_create_exemplars`) that curates up to 15 exemplars. For profiles > 15 faces, it samples 50 timeline-distributed files, filters out the bottom 25% blurriest using Laplacian variance, and selects the oldest, newest, middle, smallest, and largest faces before backfilling. Includes a 0ms SQL bypass for small profiles (<= 15 faces).
+*   **In-Memory Exemplar Curation:** Replaced slow disk-based face exemplar curation with a fast (under 5ms), 100% in-memory NumPy curation selecting the centroid, 8 typical representations, 6 diverse boundary faces, and 10 timeline-distributed chronological faces.
 *   **In-Memory Caching on Import:** The `/system/import-people` route now caches full SQLAlchemy `FileIndex` model objects by path, eliminating redundant DB lookup queries when verifying tags and mapping thumbnails.
 
 ### 🐞 Bug Fixes & Refinements
+*   **Scanner Graceful Shutdown:** Configured background scanning threads as daemon threads and mapped `APP_SHUTTING_DOWN` state checks to immediately exit long-running loops on application shutdown.
+*   **Manual Tagging Logs:** Added logging statements for manual tagging/untagging operations under backend `enable_logging`.
 *   **Untagged Media Count & SQL NULL Evaluation:** Solved the bug where "Untagged Media" statistics incorrectly returned near-zero counts on fully scanned archives. Corrected both the `/stats` calculation and the `/files` category queries to properly evaluate SQL `NULL` column behaviors for untagged photos.
 *   **Tags Export NameError:** Fixed a `NameError` crash inside `/system/export-tags` by adding the missing `load_config` import.
 *   **Global Import Transaction Safety:** Wrapped the people profile import workflow in transactional boundaries to automatically roll back session/DB connections on failure and bubble up clear HTTP exceptions.
 
 ### 📝 Documentation
 *   **AI Runner Setup Polish:** Updated local LLM configurations in `README.md` to recommend standard OpenAI-compatible base URLs for Ollama (`http://127.0.0.1:11434/v1`) and LM Studio (`http://127.0.0.1:1234/v1`) along with the model config name (`tinyllama`).
-*   **Architecture Document:** Expanded the AI computer vision section in `ARCHITECTURE.md` to cover the Base64 float32 serialization scheme and import logic.
+*   **Architecture Document:** Expanded the AI computer vision section in `ARCHITECTURE.md` to cover the Base64 float32 serialization scheme, import logic, tag delimiter standardization, and centroid similarity matching.
 
 ## v1.0.0-beta.7
 **Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.7

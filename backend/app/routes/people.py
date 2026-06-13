@@ -19,7 +19,7 @@ from backend.app.utils.log_utils import log_operation
 from backend.app.utils.media import _evaluate_image_faces, get_cv2_dnn_backends
 import backend.app.state as app_state
 from backend.app.state import STATE
-from backend.app.utils.indexer import _process_unified_scanners
+from backend.app.utils.indexer import _process_unified_scanners, get_or_create_exemplars
 from backend.app.utils.cache import EXEMPLAR_CACHE
 from backend.app.utils.paths import get_bundled_model_path, get_ai_db_path
 import backend.app.shared_state as shared_state
@@ -81,101 +81,13 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.55):
         cursor = conn.cursor()
         
         try:
-            # Fetch known person's embeddings
-            cursor.execute("SELECT id, file_id, embedding_json FROM faces WHERE person_id = ? AND embedding_json != '[]'", (person_id,))
-            known_rows = cursor.fetchall()
+            known_embeddings = get_or_create_exemplars(person_id, cursor)
         except sqlite3.OperationalError as e:
             if "no such table" not in str(e).lower():
                 raise HTTPException(status_code=500, detail=f"Database locked or unavailable: {e}")
             raise HTTPException(status_code=404, detail="AI database tables not initialized.")
-        if not known_rows:
+        if not known_embeddings:
             raise HTTPException(status_code=404, detail="Known person faces not found.")
-        
-        current_face_count = len(known_rows)
-        cached = EXEMPLAR_CACHE.get(person_id)
-        if cached and cached.get("count") == current_face_count:
-            known_embeddings = cached["embeddings"]
-        else:
-            # Calculate Curated Reference Embeddings
-            file_id_to_embs = {}
-            for face_id, file_id, emb_json in known_rows:
-                if file_id not in file_id_to_embs:
-                    file_id_to_embs[file_id] = []
-                file_id_to_embs[file_id].append(json.loads(emb_json))
-                
-            import numpy as np
-            file_ids = list(file_id_to_embs.keys())
-            
-            with SessionLocal() as s:
-                files_info = []
-                for i in range(0, len(file_ids), 900):
-                    chunk = file_ids[i:i+900]
-                    chunk_info = s.query(FileIndex.id, FileIndex.modified, FileIndex.path).filter(FileIndex.id.in_(chunk)).all()
-                    files_info.extend(chunk_info)
-                    
-            files_info.sort(key=lambda x: str(x.modified or ""))
-            
-            # Sample up to 50 images evenly distributed across their timeline
-            sample_size = min(50, len(files_info))
-            if len(files_info) > sample_size:
-                indices = np.linspace(0, len(files_info)-1, sample_size, dtype=int)
-                sample_files = [files_info[i] for i in indices]
-            else:
-                sample_files = files_info
-                
-            yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
-            
-            analyzed_files = []
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                futures = {}
-                for f_item in sample_files:
-                    file_path = _resolve_path(Path(f_item.path))
-                    if file_path.exists():
-                        futures[executor.submit(_evaluate_image_faces, file_path, yunet_path)] = f_item
-                        
-                for future in concurrent.futures.as_completed(futures):
-                    f_item = futures[future]
-                    metrics = future.result()
-                    if metrics:
-                        best_metric = max(metrics, key=lambda x: x["score"])
-                        analyzed_files.append({
-                            "file_id": f_item.id, "date": str(f_item.modified or ""),
-                            "area": best_metric["area"], "sharpness": best_metric["sharpness"]
-                        })
-                        
-            selected_file_ids = set()
-            if analyzed_files:
-                analyzed_files.sort(key=lambda x: x["sharpness"], reverse=True)
-                non_blurry = analyzed_files[:max(25, int(len(analyzed_files) * 0.75))]
-                
-                if non_blurry:
-                    non_blurry.sort(key=lambda x: x["date"], reverse=True)
-                    for item in non_blurry[:5]: selected_file_ids.add(item["file_id"])
-                    non_blurry.sort(key=lambda x: x["date"])
-                    for item in non_blurry[:5]: selected_file_ids.add(item["file_id"])
-                    mid_idx = len(non_blurry) // 2
-                    start_mid = max(0, mid_idx - 2)
-                    for item in non_blurry[start_mid:start_mid+5]: selected_file_ids.add(item["file_id"])
-                    non_blurry.sort(key=lambda x: x["area"], reverse=True)
-                    for item in non_blurry[:5]: selected_file_ids.add(item["file_id"])
-                    non_blurry.sort(key=lambda x: x["area"])
-                    valid_far = [x for x in non_blurry if x["area"] > 0]
-                    for item in valid_far[:5]: selected_file_ids.add(item["file_id"])
-                    
-            selected_embeddings = []
-            for fid in selected_file_ids:
-                if fid in file_id_to_embs:
-                    selected_embeddings.extend(file_id_to_embs[fid])
-                    
-            if len(selected_embeddings) < 25:
-                all_embs = [json.loads(row[2]) for row in known_rows if row[2]]
-                for emb in all_embs:
-                    if len(selected_embeddings) >= 25: break
-                    if emb not in selected_embeddings: selected_embeddings.append(emb)
-                        
-            known_embeddings = selected_embeddings[:25]
-            EXEMPLAR_CACHE.put(person_id, {"count": current_face_count, "embeddings": known_embeddings})
 
         # Fetch all unknown persons and their embeddings
         cursor.execute("""
@@ -494,6 +406,11 @@ def auto_suggest_thumbnail(person_id: int):
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         
+        # Retrieve current thumbnail file ID
+        cursor.execute("SELECT thumbnail_file_id FROM people WHERE id = ?", (person_id,))
+        thumb_row = cursor.fetchone()
+        current_thumb_id = thumb_row[0] if thumb_row else None
+        
         # Fetch up to 30 recent faces to evaluate (to avoid locking the CPU for too long)
         cursor.execute("""
             SELECT file_id 
@@ -508,51 +425,69 @@ def auto_suggest_thumbnail(person_id: int):
 
     yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
 
-    best_file_id = None
-    best_score = -1.0
-
     import concurrent.futures
+    import random
     
+    file_ids = [r[0] for r in face_rows]
     file_items = []
     with SessionLocal() as s:
-        for (file_id,) in face_rows:
-            file_item = s.query(FileIndex).filter(FileIndex.id == file_id).first()
-            if file_item:
-                file_items.append((file_id, _resolve_path(Path(file_item.path))))
+        # Batch-query all file records for efficiency
+        db_files = s.query(FileIndex).filter(FileIndex.id.in_(file_ids)).all()
+        for f in db_files:
+            file_items.append((f.id, _resolve_path(Path(f.path))))
                 
+    file_scores = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(_evaluate_image_faces, fp, yunet_path): fid for fid, fp in file_items if fp.exists()}
         for future in concurrent.futures.as_completed(futures):
             fid = futures[future]
-            metrics = future.result()
-            for fm in metrics:
-                if fm["score"] > best_score:
-                    best_score = fm["score"]
-                    best_file_id = fid
-
-    if best_file_id:
-        # Save the best thumbnail back to the database
-        with sqlite3.connect(ai_db_path, timeout=15) as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE people SET thumbnail_file_id = ? WHERE id = ?", (best_file_id, person_id))
-            conn.commit()
-            
-        # Clear the old cached thumbnail so it regenerates on next load
-        thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
-        cached_face = thumb_dir / f"person_{person_id}.jpg"
-        if cached_face.exists():
             try:
-                cached_face.unlink()
+                metrics = future.result()
+                if metrics:
+                    max_score = max(fm["score"] for fm in metrics)
+                    file_scores[fid] = max_score
             except Exception:
                 pass
-                
-        if cfg.get("enable_logging"):
-            import logging
-            logging.info(f"Auto-suggested cover photo {best_file_id} for person {person_id} with score {round(best_score, 2)}")
-            
-        return {"success": True, "new_thumbnail_id": best_file_id, "score": best_score}
+
+    if not file_scores:
+        raise HTTPException(status_code=400, detail="Could not determine a suitable thumbnail.")
+
+    # Sort files by best face score descending
+    sorted_files = sorted(file_scores.items(), key=lambda x: x[1], reverse=True)
+    best_score = sorted_files[0][1]
+
+    # Select candidates with score >= 50% of the best score, limit to top 5
+    candidates = [fid for fid, score in sorted_files if score >= 0.5 * best_score][:5]
+
+    # Try to pick a candidate different from the current thumbnail
+    filtered_candidates = [fid for fid in candidates if fid != current_thumb_id]
+    if filtered_candidates:
+        selected_file_id = random.choice(filtered_candidates)
+    else:
+        selected_file_id = random.choice(candidates)
+
+    selected_score = file_scores[selected_file_id]
+
+    # Save the selected thumbnail back to the database
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE people SET thumbnail_file_id = ? WHERE id = ?", (selected_file_id, person_id))
+        conn.commit()
         
-    raise HTTPException(status_code=400, detail="Could not determine a suitable thumbnail.")
+    # Clear the old cached thumbnail so it regenerates on next load
+    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
+    cached_face = thumb_dir / f"person_{person_id}.jpg"
+    if cached_face.exists():
+        try:
+            cached_face.unlink()
+        except Exception:
+            pass
+            
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Auto-suggested cover photo {selected_file_id} for person {person_id} with score {round(selected_score, 2)}")
+        
+    return {"success": True, "new_thumbnail_id": selected_file_id, "score": selected_score}
 
 @router.post("/people/{person_id}/remove-photo")
 def remove_person_photo(person_id: int, payload: dict = Body(...)):
@@ -844,7 +779,12 @@ def cluster_unknowns(payload: dict = Body(...)):
             if pid not in person_embs:
                 person_embs[pid] = []
             if len(person_embs[pid]) < MAX_EMBS_PER_PERSON:
-                person_embs[pid].append(json.loads(emb_json))
+                try:
+                    emb = json.loads(emb_json)
+                    if emb and len(emb) == 128:
+                        person_embs[pid].append(emb)
+                except Exception:
+                    continue
             person_names[pid] = pname
             
         # Sort all PIDs by number of faces DESC so smaller clusters merge into larger ones
@@ -898,7 +838,7 @@ def cluster_unknowns(payload: dict = Body(...)):
             unk_matrix = np.array(batch_embs, dtype=np.float32)
             unk_norms = np.linalg.norm(unk_matrix, axis=1, keepdims=True)
             unk_matrix_norm = unk_matrix / np.where(unk_norms == 0, 1, unk_norms)
-
+ 
             similarities = np.dot(k_matrix_norm, unk_matrix_norm.T)
             
             col_offset = 0
@@ -989,23 +929,18 @@ def reclassify_people(payload: dict = Body(...)):
         target_person_ids = list(set([r[3] for r in faces_to_reclassify]))
         
         # 2. Fetch the exemplar embeddings for all OTHER profiles (Named and Unselected Unknowns)
-        cursor.execute("""
-            SELECT p.id, f.embedding_json
-            FROM people p
-            JOIN faces f ON p.id = f.person_id
-            WHERE f.embedding_json != '[]'
-        """)
+        cursor.execute("SELECT DISTINCT person_id FROM faces WHERE embedding_json != '[]'")
+        all_pids = [r[0] for r in cursor.fetchall()]
         
         target_ids_set = set(person_ids)
         clusters = {}
-        for pid, emb_json in cursor.fetchall():
+        for pid in all_pids:
             if pid in target_ids_set:
                 continue
-            if pid not in clusters:
-                clusters[pid] = []
-            if len(clusters[pid]) < 15:
-                clusters[pid].append(json.loads(emb_json))
-                
+            curated_embs = get_or_create_exemplars(pid, cursor)
+            if curated_embs:
+                clusters[pid] = curated_embs
+            
         # 3. Delete the old targeted profiles and their faces
         for pid in target_person_ids:
             cursor.execute("DELETE FROM faces WHERE person_id = ?", (pid,))
@@ -1039,6 +974,7 @@ def reclassify_people(payload: dict = Body(...)):
         # 4. Re-cluster the faces
         reclassified_count = 0
         files_to_tag = {}
+        affected_person_ids = set()
         
         cursor.execute("SELECT id, name FROM people WHERE name NOT LIKE 'Unknown Person%'")
         named_people_map = {r[0]: r[1] for r in cursor.fetchall()}
@@ -1084,6 +1020,7 @@ def reclassify_people(payload: dict = Body(...)):
             cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
                             (best_match_id, file_id, emb_json))
             reclassified_count += 1
+            affected_person_ids.add(best_match_id)
             
             if best_match_id in named_people_map:
                 name = named_people_map[best_match_id]
@@ -1092,6 +1029,10 @@ def reclassify_people(payload: dict = Body(...)):
                 files_to_tag[name].add(file_id)
                 
         conn.commit()
+        
+        # Pop affected person IDs' cached exemplars
+        for pid in affected_person_ids:
+            EXEMPLAR_CACHE.pop(pid)
         
     if files_to_tag:
         with SessionLocal() as s:
@@ -1102,11 +1043,11 @@ def reclassify_people(payload: dict = Body(...)):
                     files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
                     mappings = []
                     for f_id, tags in files_to_update:
-                        current_tags_set = set((tags or "").split())
+                        current_tags_set = parse_tags(tags)
                         new_tag = f"person:{name}"
                         if new_tag not in current_tags_set:
                             current_tags_set.add(new_tag)
-                            mappings.append({"id": f_id, "tags": " ".join(sorted(current_tags_set))})
+                            mappings.append({"id": f_id, "tags": ",".join(sorted(current_tags_set))})
                     if mappings:
                         s.bulk_update_mappings(FileIndex, mappings)
                         s.commit()

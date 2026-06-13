@@ -23,7 +23,7 @@ import backend.app.state as app_state
 from backend.app.state import STATE
 import backend.app.shared_state as shared_state
 from backend.app.utils.log_utils import log_operation
-from backend.app.utils.utils import parse_tags
+from backend.app.utils.utils import parse_tags, _resolve_path
 
 # Database & Config
 from backend.app.database import SessionLocal, FileIndex
@@ -274,6 +274,162 @@ def extract_top_keywords(text_data: str, max_words: int = None, is_log: bool = F
 
 worker = None
 
+def get_or_create_exemplars(person_id: int, conn_or_cursor) -> list:
+    from backend.app.utils.cache import EXEMPLAR_CACHE
+    cached = EXEMPLAR_CACHE.get(person_id)
+    
+    cursor = conn_or_cursor if hasattr(conn_or_cursor, "execute") else conn_or_cursor.cursor()
+    cursor.execute("SELECT id, file_id, embedding_json FROM faces WHERE person_id = ? AND embedding_json != '[]'", (person_id,))
+    known_rows = cursor.fetchall()
+    
+    if not known_rows:
+        return []
+        
+    current_face_count = len(known_rows)
+    if cached and cached.get("count") == current_face_count:
+        return cached["embeddings"]
+        
+    # Bypass logic for small profiles (<= 15 faces)
+    if current_face_count <= 15:
+        known_embeddings = []
+        for face_id, file_id, emb_json in known_rows:
+            try:
+                emb = json.loads(emb_json)
+                if emb and len(emb) == 128:
+                    known_embeddings.append(emb)
+            except Exception:
+                continue
+        EXEMPLAR_CACHE.put(person_id, {"count": current_face_count, "embeddings": known_embeddings})
+        return known_embeddings
+
+    # Curate reference embeddings dynamically
+    file_id_to_embs = {}
+    for face_id, file_id, emb_json in known_rows:
+        if file_id not in file_id_to_embs:
+            file_id_to_embs[file_id] = []
+        try:
+            emb = json.loads(emb_json)
+            if emb and len(emb) == 128:
+                file_id_to_embs[file_id].append(emb)
+        except Exception:
+            continue
+            
+    import numpy as np
+    import concurrent.futures
+    from backend.app.utils.media import _evaluate_image_faces
+    from backend.app.utils.paths import get_bundled_model_path
+    
+    file_ids = list(file_id_to_embs.keys())
+    with SessionLocal() as s:
+        files_info = []
+        for i in range(0, len(file_ids), 900):
+            chunk = file_ids[i:i+900]
+            chunk_info = s.query(FileIndex.id, FileIndex.modified, FileIndex.path).filter(FileIndex.id.in_(chunk)).all()
+            files_info.extend(chunk_info)
+            
+    files_info.sort(key=lambda x: str(x.modified or ""))
+    
+    selected_file_ids = set()
+    yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
+    
+    # Sample at most 50 files timeline-distributed
+    sampled_files = []
+    if len(files_info) > 50:
+        seen_indices = set()
+        for i in range(50):
+            idx = int(round(i * (len(files_info) - 1) / 49.0))
+            if idx not in seen_indices:
+                seen_indices.add(idx)
+                sampled_files.append(files_info[idx])
+    else:
+        sampled_files = files_info
+        
+    analyzed_files = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {}
+        for f_item in sampled_files:
+            file_path = _resolve_path(Path(f_item.path))
+            if file_path.exists():
+                futures[executor.submit(_evaluate_image_faces, file_path, yunet_path)] = f_item
+                
+        for future in concurrent.futures.as_completed(futures):
+            f_item = futures[future]
+            try:
+                metrics = future.result()
+                if metrics:
+                    best_metric = max(metrics, key=lambda x: x["score"])
+                    analyzed_files.append({
+                        "file_id": f_item.id,
+                        "date": str(f_item.modified or ""),
+                        "area": best_metric["area"],
+                        "sharpness": best_metric["sharpness"]
+                    })
+            except Exception:
+                continue
+
+    if analyzed_files:
+        # Sort analyzed files by sharpness descending
+        analyzed_files.sort(key=lambda x: x["sharpness"], reverse=True)
+        # Discard bottom 25% blurriest files (keep at least 25 files if available)
+        non_blurry_count = max(25, int(len(analyzed_files) * 0.75))
+        non_blurry = analyzed_files[:non_blurry_count]
+        blurry_files = analyzed_files[non_blurry_count:]
+        
+        if non_blurry:
+            # Sort non_blurry by date (chronological) ascending
+            non_blurry.sort(key=lambda x: x["date"])
+            
+            # Select up to 5 oldest
+            oldest = non_blurry[:5]
+            # Select up to 5 newest
+            newest = non_blurry[-5:] if len(non_blurry) > 5 else []
+            
+            # Select up to 5 middle files
+            mid_idx = len(non_blurry) // 2
+            start_mid = max(0, mid_idx - 2)
+            end_mid = min(len(non_blurry), mid_idx + 3)
+            middle = non_blurry[start_mid:end_mid]
+            
+            for item in oldest + newest + middle:
+                selected_file_ids.add(item["file_id"])
+                
+            # Sort non_blurry by area (scale) ascending
+            non_blurry.sort(key=lambda x: x["area"])
+            
+            # Select up to 5 smallest
+            smallest = non_blurry[:5]
+            # Select up to 5 largest
+            largest = non_blurry[-5:] if len(non_blurry) > 5 else []
+            
+            for item in smallest + largest:
+                selected_file_ids.add(item["file_id"])
+                
+            # Backfill from non_blurry (sorted by sharpness descending) if we have fewer than 15 unique files
+            if len(selected_file_ids) < 15:
+                non_blurry.sort(key=lambda x: x["sharpness"], reverse=True)
+                for item in non_blurry:
+                    if len(selected_file_ids) >= 15:
+                        break
+                    selected_file_ids.add(item["file_id"])
+                    
+            # Backfill from blurry_files (sorted by sharpness descending) if we still have fewer than 15 unique files
+            if len(selected_file_ids) < 15 and blurry_files:
+                blurry_files.sort(key=lambda x: x["sharpness"], reverse=True)
+                for item in blurry_files:
+                    if len(selected_file_ids) >= 15:
+                        break
+                    selected_file_ids.add(item["file_id"])
+            
+    selected_embeddings = []
+    for fid in selected_file_ids:
+        if fid in file_id_to_embs:
+            selected_embeddings.extend(file_id_to_embs[fid])
+            
+    known_embeddings = selected_embeddings[:15]
+    EXEMPLAR_CACHE.put(person_id, {"count": current_face_count, "embeddings": known_embeddings})
+    return known_embeddings
+
+
 def _process_unified_scanners(run_index: bool = False, run_face: bool = False, run_object: bool = False, run_document: bool = False):
     enable_logging = False
 
@@ -410,12 +566,10 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                 cursor.execute("SELECT file_id FROM processed_files")
                 face_processed_ids = set(r[0] for r in cursor.fetchall())
 
-                cursor.execute("SELECT person_id, embedding_json FROM faces WHERE embedding_json != '[]'")
-                for p_id, emb_str in cursor.fetchall():
-                    if p_id not in clusters:
-                        clusters[p_id] = []
-                    if len(clusters[p_id]) < 15:
-                        clusters[p_id].append(json.loads(emb_str))
+                cursor.execute("SELECT DISTINCT person_id FROM faces WHERE embedding_json != '[]'")
+                p_ids = [r[0] for r in cursor.fetchall()]
+                for p_id in p_ids:
+                    clusters[p_id] = get_or_create_exemplars(p_id, cursor)
 
                 cursor.execute("SELECT MAX(id) FROM people")
                 p_row = cursor.fetchone()
@@ -458,6 +612,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     if app_state.combined_scanner_stopped or STATE.get("stopped"):
                         break
                     for f in filenames:
+                        if app_state.combined_scanner_stopped or STATE.get("stopped"):
+                            break
                         files_to_process.append(os.path.join(dirpath, f))
         else:
             with SessionLocal() as s:
@@ -514,20 +670,24 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
             with SessionLocal() as session:
-                # Store lightweight info mapping to avoid millions of session.get() queries
-                if run_index:
-                    file_cache = {}
-                    if files_to_process:
-                        for r in session.query(FileIndex.id, FileIndex.path, FileIndex.size, FileIndex.modified, FileIndex.category, FileIndex.filename).yield_per(5000):
-                            if app_state.combined_scanner_stopped or STATE.get("stopped"):
-                                break
-                            file_cache[r.path] = {"id": r.id, "size": r.size, "modified": r.modified, "category": r.category, "filename": r.filename}
-                else:
-                    file_cache = preloaded_cache
+                # Store lightweight info mapping dynamically in chunks of 1000 to avoid loading millions of rows at startup
+                file_cache = {} if run_index else preloaded_cache
                 
                 for idx, file_str in enumerate(files_to_process):
                     if shared_state.APP_SHUTTING_DOWN:
                         break
+                    
+                    if run_index and file_str not in file_cache:
+                        # Clear old cache to limit memory usage, and load the next chunk of 1,000 files
+                        file_cache.clear()
+                        chunk = files_to_process[idx : idx + 1000]
+                        db_items = session.query(FileIndex.id, FileIndex.path, FileIndex.size, FileIndex.modified, FileIndex.category, FileIndex.filename).filter(FileIndex.path.in_(chunk)).all()
+                        for r in db_items:
+                            file_cache[r.path] = {"id": r.id, "size": r.size, "modified": r.modified, "category": r.category, "filename": r.filename}
+                        for p in chunk:
+                            if p not in file_cache:
+                                file_cache[p] = None
+
                     if idx % 100 == 0:
                         enable_logging = load_config().get("enable_logging", False)
                     if run_document and STATE.get("document_scanner_stopped") and app_state.document_scanner_running:
@@ -826,6 +986,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
 
                     # --- OPTIMIZATION: Read file ONCE from disk for both ML models ---
                     img = None
+                    decode_scale = 1.0
                     try:
                         if category == 'document' and file.suffix.lower() == '.pdf' and fitz is not None:
                             doc = fitz.open(str(file))
@@ -838,17 +999,38 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                 img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
                             doc.close()
                         else:
+                            # Read dimensions first using PIL to optimize image decoding
+                            from PIL import Image, ImageOps
+                            width, height = 0, 0
+                            try:
+                                with Image.open(file) as pil_img:
+                                    width, height = pil_img.size
+                            except Exception:
+                                pass
+                            
                             img_array = np.fromfile(str(file), np.uint8)
-                            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                            
+                            # If JPEG and very large, use scale-on-decode flags
+                            if width > 0 and height > 0 and file.suffix.lower() in ('.jpg', '.jpeg'):
+                                max_dim = max(width, height)
+                                if max_dim >= 3200:
+                                    img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_4)
+                                    decode_scale = 0.25
+                                elif max_dim >= 1600:
+                                    img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_2)
+                                    decode_scale = 0.5
+                            
+                            if img is None:
+                                img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
                             if img is None:
                                 try:
-                                    from PIL import Image, ImageOps
                                     with Image.open(file) as pil_img:
                                         pil_img = ImageOps.exif_transpose(pil_img)
                                         if pil_img.mode != 'RGB':
                                             pil_img = pil_img.convert('RGB')
                                         img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+                                        decode_scale = 1.0
                                 except Exception:
                                     pass # Final failure will be caught by `if img is None` below
                     except Exception as e:
@@ -904,39 +1086,60 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     # --- Run Face Detector ---
                     if needs_face and detector is not None:
                         try:
-                            height, width, _ = img.shape
-                            target_dim = 800
-                            scale = 1.0
-                            if max(height, width) > target_dim:
-                                scale = target_dim / max(height, width)
-                                new_w, new_h = int(width * scale), int(height * scale)
-                                det_img = cv2.resize(img, (new_w, new_h))
-                                detector.setInputSize((new_w, new_h))
-                            else:
-                                det_img = img
-                                detector.setInputSize((width, height))
-                                
-                            success, faces = detector.detect(det_img)
+                            dec_h, dec_w, _ = img.shape
+                            face_sensitivity = cfg.get("face_sensitivity", "medium")
                             
-                            if faces is None:
-                                target_dim = 320
+                            # Helper to run detection at a given target dimension
+                            # returns faces with coordinates in dec_img (img) space
+                            def run_detection_pass(target_dim):
                                 scale = 1.0
-                                if max(height, width) > target_dim:
-                                    scale = target_dim / max(height, width)
-                                    new_w, new_h = int(width * scale), int(height * scale)
+                                if max(dec_h, dec_w) > target_dim:
+                                    scale = target_dim / max(dec_h, dec_w)
+                                    new_w, new_h = int(dec_w * scale), int(dec_h * scale)
                                     det_img = cv2.resize(img, (new_w, new_h))
                                     detector.setInputSize((new_w, new_h))
                                 else:
                                     det_img = img
-                                    detector.setInputSize((width, height))
+                                    detector.setInputSize((dec_w, dec_h))
                                 try:
                                     success, faces = detector.detect(det_img)
+                                    if success and faces is not None:
+                                        scaled_faces = faces.copy()
+                                        if scale != 1.0:
+                                            scaled_faces[:, :14] /= scale
+                                        return scaled_faces
                                 except Exception:
                                     pass
+                                return None
+
+                            if face_sensitivity == "high":
+                                faces_high = run_detection_pass(1024)
+                                faces_low = run_detection_pass(320)
+                                
+                                combined = []
+                                if faces_high is not None:
+                                    combined.append(faces_high)
+                                if faces_low is not None:
+                                    combined.append(faces_low)
+                                    
+                                if combined:
+                                    all_faces = np.vstack(combined)
+                                    bboxes = [[int(f[0]), int(f[1]), int(f[2]), int(f[3])] for f in all_faces]
+                                    scores = [float(f[14]) for f in all_faces]
+                                    indices = cv2.dnn.NMSBoxes(bboxes, scores, score_threshold=face_threshold, nms_threshold=0.4)
+                                    if len(indices) > 0:
+                                        flat_indices = np.array(indices).flatten().tolist()
+                                        faces = all_faces[flat_indices]
+                                    else:
+                                        faces = None
+                                else:
+                                    faces = None
+                            else:
+                                faces = run_detection_pass(800)
+                                if faces is None:
+                                    faces = run_detection_pass(320)
 
                             if faces is not None:
-                                if scale != 1.0:
-                                    faces[:, :14] /= scale
                                 for face in faces:
                                     face_align = recognizer.alignCrop(img, face)
                                     face_feature = recognizer.feature(face_align)
@@ -946,7 +1149,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     best_sim = -1.0
                                     
                                     if cluster_matrix_norm is not None:
-                                        emb_np = np.array(embedding)
+                                        emb_np = np.array(embedding, dtype=np.float32)
                                         emb_norm = np.linalg.norm(emb_np)
                                         if emb_norm > 0:
                                             emb_np_norm = emb_np / emb_norm
@@ -967,11 +1170,11 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                                 break
                                         clusters[best_match_id] = [embedding]
                                         
-                                        emb_np = np.array(embedding)
+                                        emb_np = np.array(embedding, dtype=np.float32)
                                         emb_norm = np.linalg.norm(emb_np)
                                         emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
                                         if cluster_matrix_norm is None:
-                                            cluster_matrix_norm = np.array([emb_np_norm])
+                                            cluster_matrix_norm = np.array([emb_np_norm], dtype=np.float32)
                                             cluster_ids_list = [best_match_id]
                                         else:
                                             cluster_matrix_norm = np.vstack([cluster_matrix_norm, emb_np_norm])
@@ -980,7 +1183,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                         if len(clusters[best_match_id]) < 15:
                                             clusters[best_match_id].append(embedding)
                                             
-                                            emb_np = np.array(embedding)
+                                            emb_np = np.array(embedding, dtype=np.float32)
                                             emb_norm = np.linalg.norm(emb_np)
                                             emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
                                             cluster_matrix_norm = np.vstack([cluster_matrix_norm, emb_np_norm])
@@ -1003,7 +1206,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                 conn.commit()
 
             # Prevent frontend UI progress bar from instantly disappearing before registering 100% completion
-            time.sleep(1.5)
+            if not (STATE.get("stopped") or app_state.combined_scanner_stopped):
+                time.sleep(1.5)
 
     except Exception as e:
         print(f"CRITICAL: Unified Worker Error: {e}")
@@ -1569,11 +1773,13 @@ def run():
                 combined_excluded_list = list(set(global_excluded_list + backup_excluded_list))
 
                 for dirpath, dirnames, filenames in os.walk(str(root_path)):
-                    if shared_state.APP_SHUTTING_DOWN:
+                    if shared_state.APP_SHUTTING_DOWN or STATE.get("stopped"):
                         break
                     if combined_excluded_list:
                         dirnames[:] = [d for d in dirnames if d not in combined_excluded_list]
                     for f in filenames:
+                        if shared_state.APP_SHUTTING_DOWN or STATE.get("stopped"):
+                            break
                         raw_files.append(os.path.join(dirpath, f))
             
             raw_files.sort()
