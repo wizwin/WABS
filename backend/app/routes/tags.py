@@ -10,6 +10,7 @@ import backend.app.state as app_state
 from backend.app.state import STATE
 from backend.app.utils.indexer import _process_unified_scanners
 from backend.app.utils.paths import get_ai_db_path
+from backend.app.config import load_config
 
 router = APIRouter()
 

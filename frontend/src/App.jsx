@@ -26,7 +26,7 @@ export function useAppState() {
 const [page,setPage]=useState('dashboard')
 const [query,setQuery]=useState('')
 const [settings,setSettings]=useState({})
-const [stats,setStats]=useState({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0,searchable_documents:0,tagged_objects:0})
+const [stats,setStats]=useState({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0,searchable_documents:0,tagged_objects:0,untagged_media:0})
 const [indexer,setIndexer]=useState({running:false,paused:false,stopped:false,current:0,total:0,current_file:'',status:'Idle',indexed:0,face_scanner_running:false,object_scanner_running:false,document_scanner_running:false,hasher_running:false,hasher_current:0,hasher_total:0,face_scanner_current:0,face_scanner_total:0,object_scanner_current:0,object_scanner_total:0,document_scanner_current:0,document_scanner_total:0})
 const [showSidebar, setShowSidebar] = useState(true)
 const [showTimeline, setShowTimeline] = useState(true)

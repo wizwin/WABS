@@ -24,7 +24,7 @@ export function useSystemOps({
         explorer.setOffset(0)
         explorer.setStartOffset(0)
         explorer.setHasMore(false)
-        setStats({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0,searchable_documents:0,tagged_objects:0})
+        setStats({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0,searchable_documents:0,tagged_objects:0,untagged_media:0})
         tagsState.setObjectTags([])
       } else if (action === 'start' || action === 'update') {
         await axios.post(`${API}/indexer/${action}`, combinedOptions)

@@ -72,9 +72,12 @@ WABS supports powerful search operators to help you precisely filter your archiv
 WABS supports using local LLMs (like LM Studio or Ollama) to automatically categorize unknown files securely on your own machine.
 1. Go to **Settings** and check **Enable AI Classification**.
 2. In the **AI Provider Base URL** field, enter your local runner's chat API endpoint:
-   * *LM Studio:* `http://127.0.0.1:1234/v1/chat/completions`
-   * *Ollama:* `http://127.0.0.1:11434/v1/chat/completions`
-3. You can leave the **OpenAI API Key** field completely empty!
+   * *LM Studio:* `http://127.0.0.1:1234/v1`
+   * *Ollama:* `http://127.0.0.1:11434/v1`
+3. In the **AI Model** field, configure your local model name:
+   * *LM Studio:* (configured in LM Studio UI)
+   * *Ollama:* `tinyllama` (or your preferred local model)
+4. You can leave the **OpenAI API Key** field completely empty!
 
 ## Notes & Limitations
 

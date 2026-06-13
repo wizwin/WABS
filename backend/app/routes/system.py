@@ -54,6 +54,17 @@ def stats():
         stats_dict["known_faces"] = 0
         stats_dict["unknown_faces"] = 0
         stats_dict["tagged_objects"] = 0
+        stats_dict["untagged_media"] = 0
+
+        try:
+            untagged_count = s.query(func.count(FileIndex.id)).filter(
+                FileIndex.category == 'photo',
+                (FileIndex.tags.is_(None) | (FileIndex.tags == ''))
+            ).scalar() or 0
+            stats_dict["untagged_media"] = int(untagged_count)
+        except Exception:
+            pass
+
         ai_db_path = get_ai_db_path()
         if ai_db_path.exists():
             try:

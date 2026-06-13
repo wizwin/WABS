@@ -2,8 +2,25 @@
 
 ## v1.0.0-beta.8
 
-### 🚀 Major Refactoring
+### 🚀 Major Refactoring & New Features
 *   **Modular Architecture:** Refactored Backend (`main.py`) and Frontend (`App.jsx`) from a monolithic structure to multiple routes, pages, hooks, etc., making the application modular and easy to maintain.
+*   **Unified Document Scanning Depth:** Introduced `document_scan_depth` configurations (`low`, `medium`, `high`) dynamically scaling limits across all document types (PDFs, Word, PPT, Excel, Text) inside WABS Settings.
+*   **Memory-Optimized Hybrid Scanning:** Implemented hybrid document parsing that fully tokenizes text under configured limits and scans only for strong alphanumeric identifiers (emails, URLs, hashtags) beyond limits using 128KB chunks and 1,000-count early breakout checks.
+*   **Context-Preserving Capping:** Frequency-sorts and caps boosted identifiers (top 50 strong identifiers, top 100 multi-word proper nouns) to prevent document metadata from crowding out core context keywords during indexing.
+*   **High-Efficiency Face Export & Import:** Redesigned the export and import utility to serialize 128D face embeddings as compact binary `float32` Base64 strings, saving ~72% of the space for embeddings.
+*   **Memory-Safe Frontend Downloads:** Replaced the browser `data:` URI scheme with memory-safe `Blob` and `URL.createObjectURL(blob)` components in `exportKnownPeople` to prevent browser hangs or freezes on large backups.
+
+### ⚡ Performance & Caching
+*   **In-Memory Caching on Import:** The `/system/import-people` route now caches full SQLAlchemy `FileIndex` model objects by path, eliminating redundant DB lookup queries when verifying tags and mapping thumbnails.
+
+### 🐞 Bug Fixes & Refinements
+*   **Untagged Media Count & SQL NULL Evaluation:** Solved the bug where "Untagged Media" statistics incorrectly returned near-zero counts on fully scanned archives. Corrected both the `/stats` calculation and the `/files` category queries to properly evaluate SQL `NULL` column behaviors for untagged photos.
+*   **Tags Export NameError:** Fixed a `NameError` crash inside `/system/export-tags` by adding the missing `load_config` import.
+*   **Global Import Transaction Safety:** Wrapped the people profile import workflow in transactional boundaries to automatically roll back session/DB connections on failure and bubble up clear HTTP exceptions.
+
+### 📝 Documentation
+*   **AI Runner Setup Polish:** Updated local LLM configurations in `README.md` to recommend standard OpenAI-compatible base URLs for Ollama (`http://127.0.0.1:11434/v1`) and LM Studio (`http://127.0.0.1:1234/v1`) along with the model config name (`tinyllama`).
+*   **Architecture Document:** Expanded the AI computer vision section in `ARCHITECTURE.md` to cover the Base64 float32 serialization scheme and import logic.
 
 ## v1.0.0-beta.7
 **Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.7
