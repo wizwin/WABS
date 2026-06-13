@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import axios from 'axios';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
@@ -39,6 +39,21 @@ export default function Explorer(props) {
   const loadFilesAbortController = useRef(null);
   const searchAbortController = useRef(null);
   const loadingMoreRef = useRef(false);
+
+  const lastDuplicatesUpdateRef = useRef(indexer?.duplicates_status_changed_at);
+
+  // Monitor the backend indexer state for changes to duplicate mappings
+  useEffect(() => {
+    const currentUpdate = indexer?.duplicates_status_changed_at;
+    if (currentUpdate && currentUpdate !== lastDuplicatesUpdateRef.current) {
+      lastDuplicatesUpdateRef.current = currentUpdate;
+      
+      // Refresh the duplicates list automatically if we are currently viewing duplicates
+      if (filterCategory === 'duplicates' && loadFiles) {
+        loadFiles(0, false, filterCategory, sortBy, sortOrder);
+      }
+    }
+  }, [indexer?.duplicates_status_changed_at, filterCategory, sortBy, sortOrder, loadFiles]);
 
   return (
     <>
@@ -195,7 +210,7 @@ export default function Explorer(props) {
             <option value='other'>Others</option>
             <option value='duplicates'>Duplicates</option>
             <option value='searchable_documents'>Searchable Docs</option>
-            <option value='tagged_objects'>Tagged Media</option>
+            <option value='untagged'>Untagged Media</option>
         </select>
 
         <label style={{marginLeft:'10px'}}>Sort by:</label>

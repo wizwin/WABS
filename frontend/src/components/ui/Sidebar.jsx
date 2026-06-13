@@ -26,7 +26,7 @@ export function Sidebar({
             <AppIcon size={40} />
             <div>
               <h2 style={{ margin: 0, fontSize: '20px', color: '#f8fafc' }}>WABS</h2>
-              <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta.7</div>
+              <div style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>v1.0.0-beta.8</div>
             </div>
           </div>
 

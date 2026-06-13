@@ -1,5 +1,10 @@
 # WABS Changelog
 
+## v1.0.0-beta.8
+
+### 🚀 Major Refactoring
+*   **Modular Architecture:** Refactored Backend (`main.py`) and Frontend (`App.jsx`) from a monolithic structure to multiple routes, pages, hooks, etc., making the application modular and easy to maintain.
+
 ## v1.0.0-beta.7
 **Full Changelog**: https://github.com/wizwin/WABS/commits/v1.0.0-beta.7
 

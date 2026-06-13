@@ -614,7 +614,7 @@ useEffect(() => {
     setTimelineUpdateTick(prev => prev + 1);
   }
   return () => { isMounted = false; clearTimeout(timeoutId); };
-}, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, indexer.combined_scanner_running, indexer.paused, page]);
+}, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, indexer.document_scanner_running, indexer.combined_scanner_running, indexer.paused, page]);
 
 function getOfflinePlaceholder(text, bgColor, textColor) {
   const key = `${text}-${bgColor}-${textColor}`;

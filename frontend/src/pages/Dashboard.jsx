@@ -62,7 +62,7 @@ export default function Dashboard(props) {
         <StatCard title="Known People" value={stats.known_faces || 0} icon={<FaceIcon />} color="#10b981" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); setNamedPeoplePage(1); setNamedPersonSearchQuery(''); loadPeople(); }} />
         <StatCard title="Unknown People" value={stats.unknown_faces || 0} icon={<FaceIcon />} color="#94a3b8" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); setNamedPersonSearchQuery(''); loadPeople(); setTimeout(() => document.getElementById('unknown-people-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 300); }} />
         <StatCard title="Object Tags" value={objectTags.length || 0} icon={<CategoryIcon />} color="#38bdf8" onClick={() => { setPage('tags'); setSelected(null); setTagsPage(1); setTagSearchQuery(''); }} />
-        <StatCard title="Tagged Media" value={stats.tagged_objects || 0} icon={<ImageIcon />} color="#f59e0b" onClick={() => handleCategoryClick('tagged_objects')} />
+        <StatCard title="Untagged Media" value={Math.max(0, (stats.photos || 0) - (stats.tagged_objects || 0))} icon={<ImageIcon />} color="#f59e0b" onClick={() => handleCategoryClick('untagged')} />
         <StatCard title="Searchable Docs" value={stats.searchable_documents || 0} icon={<DescriptionIcon />} color="#ec4899" onClick={() => handleCategoryClick('searchable_documents')} />
         </div>
 
@@ -179,7 +179,7 @@ export default function Dashboard(props) {
         <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.document_scanner_current_file || ''}</div>
         </>
         ) : (
-        <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} onClick={startDocumentScan} style={{ width: '100%' }} title="Extract content from PDFs and Documents so they appear in search results">
+        <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} onClick={startDocumentScan} style={{ width: '100%' }} title="Extract content from PDFs and Documents so they appear in search results">
         Extract Document Text
         </ActionButton>
         )}

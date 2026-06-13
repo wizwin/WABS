@@ -30,3 +30,5 @@ config.yaml
 /Releases
 /database
 wabs.log
+*.db-shm
+*.db-wal

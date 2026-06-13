@@ -345,6 +345,8 @@ export function useExplorer({
   }
 
   const handleItemClick = (e, item) => {
+    if (e.target.tagName && e.target.tagName.toLowerCase() === 'input' && e.target.type === 'checkbox') return;
+
     setSelected(item);
     const currentIndex = sortedFiles.findIndex(f => f.path === item.path);
     if (currentIndex === -1) return;
@@ -405,8 +407,10 @@ export function useExplorer({
     });
   
     let addedCount = 0;
+    let hasVerifiedDups = false;
     Object.values(hashGroups).forEach(group => {
       if (group.length > 1) {
+        hasVerifiedDups = true;
         for (let i = 1; i < group.length; i++) {
           if (!nextChecked.has(group[i].path)) {
             nextChecked.add(group[i].path);
@@ -417,7 +421,11 @@ export function useExplorer({
     });
   
     if (addedCount === 0) {
-      alert("No new verified duplicate copies found to select. Please wait for 'Verify Hashes' to complete.");
+      if (hasVerifiedDups) {
+        showToastMessage("All verified duplicate copies are already selected.");
+      } else {
+        alert("No verified duplicate copies found. Please run 'Verify Hashes' first.");
+      }
     } else {
       setCheckedFiles(nextChecked);
       showToastMessage(`Auto-selected ${addedCount} verified duplicate(s).`);
@@ -425,12 +433,36 @@ export function useExplorer({
   };
 
   async function deleteSelected() {
-    if (filterCategory === 'duplicates' && !(settings.allow_unverified_deletion ?? settings.ui_preferences?.allow_unverified_deletion)) {
+    if (filterCategory === 'duplicates') {
       const filesToDelete = Array.from(checkedFiles).map(p => globalFileCache.current.get(p)).filter(Boolean);
-      const hasUnverified = filesToDelete.some(f => !f.metadata?.sha256);
-      if (hasUnverified) {
-        alert('Deletion Blocked: One or more selected files lack a verified SHA-256 sum.\n\nBecause your cold storage backup might be offline, we cannot guarantee these are true duplicates yet. You can override this protection in the Settings menu.');
-        return;
+      
+      if (!(settings.allow_unverified_deletion ?? settings.ui_preferences?.allow_unverified_deletion)) {
+        const hasUnverified = filesToDelete.some(f => !f.metadata?.sha256);
+        if (hasUnverified) {
+          alert('Deletion Blocked: One or more selected files lack a verified SHA-256 sum.\n\nBecause your cold storage backup might be offline, we cannot guarantee these are true duplicates yet. You can override this protection in the Settings menu.');
+          return;
+        }
+      }
+
+      const hashCountsInDeletion = {};
+      filesToDelete.forEach(f => {
+        if (f.metadata?.sha256) {
+          hashCountsInDeletion[f.metadata.sha256] = (hashCountsInDeletion[f.metadata.sha256] || 0) + 1;
+        }
+      });
+
+      const totalHashCounts = {};
+      files.forEach(f => {
+        if (f.metadata?.sha256) {
+          totalHashCounts[f.metadata.sha256] = (totalHashCounts[f.metadata.sha256] || 0) + 1;
+        }
+      });
+
+      for (const hash of Object.keys(hashCountsInDeletion)) {
+        if (hashCountsInDeletion[hash] === totalHashCounts[hash]) {
+          alert('Deletion Blocked: You cannot delete all verified copies of a file. You must keep at least one copy.');
+          return;
+        }
       }
     }
   
@@ -446,6 +478,10 @@ export function useExplorer({
   }
 
   async function openSelected() {
+    if (checkedFiles.size > 5) {
+      const proceed = window.confirm(`You are trying to open ${checkedFiles.size} files at once. This might open too many windows and slow down your system. Do you want to proceed?`);
+      if (!proceed) return;
+    }
     for(const path of checkedFiles) await openFile(path);
   }
 

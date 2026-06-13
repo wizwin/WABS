@@ -11,6 +11,7 @@ import sqlite3
 from collections import Counter
 from threading import Thread
 from pathlib import Path
+import logging
 
 try:
     import cv2
@@ -20,6 +21,7 @@ except ImportError:
 # State Management
 import backend.app.state as app_state
 from backend.app.state import STATE
+from backend.app.utils.log_utils import log_operation
 
 # Database & Config
 from backend.app.database import SessionLocal, FileIndex
@@ -79,38 +81,175 @@ STOP_WORDS = frozenset({
     "my", "me", "am", "i", "he", "she", "his", "hers", "him", "her", "us", "you", "yours"
 })
 
-def extract_top_keywords(text_data: str, max_words: int = None) -> str:
+# OPTIMIZATION: Order matters. Most common patterns (URLs, emails, filenames) 
+# are placed first to speed up regex evaluation by matching earlier.
+LOG_EXCLUDED_PATTERN = re.compile(
+    # Dates (YYYY-MM-DD, etc.)
+    r'\b(?:\d{4}[-/\.]\d{2}[-/\.]\d{2}|\d{2}[-/\.]\d{2}[-/\.]\d{4})\b|'
+    # Times (10:30 AM, 14:00, etc.)
+    r'\b(?:[01]?\d|2[0-3]):[0-5]\d(?:\s?[aApP][mM])?\b|'
+    # IPv4 Addresses
+    r'\b(?:\d{1,3}\.){3}\d{1,3}\b|'
+    # IPv6 Addresses
+    r'(?<![a-zA-Z0-9])(?:[a-fA-F0-9]{0,4}:){2,7}[a-fA-F0-9]{1,4}(?![a-zA-Z0-9])|'
+    # MAC Addresses
+    r'\b(?:[0-9A-Fa-f]{2}[:-]){5}(?:[0-9A-Fa-f]{2})\b'
+)
+
+HIGH_PRIORITY_ENTITIES_PATTERN = re.compile(
+    # URLs
+    r'https?://[a-zA-Z0-9./_?&=-]+|'                                                                # URLs
+    # Emails
+    r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|'                                              # Emails
+    # Filenames & Extensions (.pdf, file.mp4)
+    r'(?<![a-zA-Z0-9])[a-zA-Z0-9_.-]*\.[a-zA-Z0-9]{2,5}\b|'
+    # Phone Numbers
+    r'\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b|'
+    # Social Media Handles / Hashtags
+    r'(?<![a-zA-Z0-9])[@#][a-zA-Z0-9_]+\b|'
+    # Version Numbers & Kernels
+    r'\b(?:[vV]\d+(?:\.\d+)+(?:-[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*)?|\d+(?:\.\d+)+-[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*|\d+(?:\.\d+){2,})\b|'
+    # Multi-word Proper Nouns / Products
+    r'\b[A-Z][a-zA-Z0-9]*(?: [A-Z0-9][a-zA-Z0-9]*){1,3}\b|'
+    # UUIDs/GUIDs
+    r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b|'
+    # Ethereum Addresses
+    r'\b0x[a-fA-F0-9]{40}\b|'
+    # Bitcoin Addresses
+    r'\b(?:[13][a-km-zA-HJ-NP-Z1-9]{25,34}|bc1[a-zA-HJ-NP-Z0-9]{39,59})\b'
+)
+
+CODE_ENTITIES_PATTERN = re.compile(
+    # snake_case / kebab-case
+    r'(?<![a-zA-Z0-9])[a-zA-Z0-9]+(?:[_-][a-zA-Z0-9]+)+(?![a-zA-Z0-9])|'
+    # CamelCase / PascalCase
+    r'(?<![a-zA-Z0-9])(?:[a-z0-9]+[A-Z][a-zA-Z0-9]*|[A-Z]+[a-z0-9]+[A-Z][a-zA-Z0-9]*|[A-Z]{2,}[a-z0-9][a-zA-Z0-9]*)(?![a-zA-Z0-9])'
+)
+
+WORD_PATTERN = re.compile(r'\b[a-z0-9]{3,}\b')
+
+CODE_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".json", ".xml", ".yaml", ".yml", ".c", ".cpp", ".h", ".java", ".cs", ".go", ".rs", ".rb", ".php", ".sh", ".bat", ".ps1", ".sql", ".ini"}
+PLAIN_TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".htm"} | CODE_EXTENSIONS
+
+# Pre-compiled regex patterns used for heuristically filtering out meaningless text tokens.
+# Filters 5+ consecutive consonants (likely random hashes)
+CONS_PATTERN = re.compile(r'[bcdfghjklmnpqrstvwxz]{5,}')
+
+# Filters alphanumeric hashes with embedded digits (e.g., tD2ar)
+SURROUNDED_DIGIT_PATTERN = re.compile(r'[A-Za-z][0-9]+[A-Za-z]')
+
+# Splits strings by delimiters to inspect individual parts
+SPLIT_PATTERN = re.compile(r'[\.\-\_\/]')
+
+# Matches semantic version strings (e.g., v1.0, 1.2.3)
+SEMANTIC_VERSION_PATTERN = re.compile(r'^[vV]?\d+(?:\.\d+)+$')
+
+# Matches common short filenames (e.g., ui.js, me.md)
+SHORT_FILENAME_PATTERN = re.compile(r'^[a-zA-Z0-9]{1,2}\.[a-z]{2,4}$')
+
+# --- Patterns for Metadata & Tagging ---
+# Extracts alphanumeric words from path parts for tagging.
+TAG_WORD_PATTERN = re.compile(r'[a-zA-Z0-9]+')
+
+# Matches YYYY:MM:DD format in EXIF date strings.
+EXIF_DATE_PATTERN = re.compile(r"(\d{4}):(\d{2}):(\d{2})")
+
+# Matches encrypted file extensions like .crypt12
+CRYPT_EXT_PATTERN = re.compile(r"^\.crypt\d{2,}$")
+
+def extract_top_keywords(text_data: str, max_words: int = None, is_log: bool = False) -> str:
     if max_words is None:
         max_words = int(load_config().get("text_extraction_limit", 300))
 
-    words = re.findall(r'\b[a-z0-9]{3,}\b', text_data.lower())
-    word_counts = Counter(words)
+    def is_meaningful(token: str) -> bool:
+        if len(token) > 50: 
+            return False
+        t_lower = token.lower()
+        if t_lower in STOP_WORDS: 
+            return False
+            
+        if CONS_PATTERN.search(t_lower): 
+            return False
+            
+        parts = [p for p in SPLIT_PATTERN.split(token) if p]
+        if not parts: 
+            return False # String is just delimiters/symbols
+            
+        # Skip meaningless minified property sequences (e.g., a.j.ga, n.Pa, c.1g, U.7f)
+        if len(parts) > 1 and all(len(p) <= 2 and p.isalnum() for p in parts):
+            # Allow semantic versions (e.g., v1.0, 1.2.3)
+            if SEMANTIC_VERSION_PATTERN.match(token):
+                pass
+            # Allow common short lowercase filenames (e.g., ui.js, me.md)
+            elif SHORT_FILENAME_PATTERN.match(token):
+                pass
+            else:
+                return False
+                
+        # Skip isolated 1 or 2 character tokens matched by special patterns (e.g., 8J, 4A, .4Q)
+        if len(parts) == 1 and len(token.strip('. \n\r\t')) <= 2:
+            return False
+            
+        is_special = '@' in token or '://' in token
+        for part in parts:
+            # Exclude minified random hashes containing digits inside letters (e.g., tD2ar, ddj0n)
+            if len(part) > 4 and SURROUNDED_DIGIT_PATTERN.search(part):
+                return False
+                
+        return True
 
-    meaningful_words = {}
-    codes_and_numbers = []
+    code_entities = CODE_ENTITIES_PATTERN.findall(text_data)
+    high_priority_entities = HIGH_PRIORITY_ENTITIES_PATTERN.findall(text_data)
+    if not is_log:
+        high_priority_entities.extend(LOG_EXCLUDED_PATTERN.findall(text_data))
 
-    for w, count in word_counts.items():
-        if not w.isalpha():
-            codes_and_numbers.append(w)
-        elif w not in STOP_WORDS:
-            meaningful_words[w] = count
+    all_counts = Counter()
+    for ent in code_entities:
+        if is_meaningful(ent):
+            all_counts[ent] += 1
+            
+    for ent in high_priority_entities:
+        if is_meaningful(ent):
+            all_counts[ent] += 1000  # Artificially boost to prioritize over high-frequency normal words
 
-    top_words = [word for word, _ in Counter(meaningful_words).most_common(max_words)]
-    return " ".join(top_words + codes_and_numbers)
+    words = WORD_PATTERN.findall(text_data.lower())
+    for w in words:
+        if is_meaningful(w):
+            all_counts[w] += 1
+
+    top_items = [item for item, _ in all_counts.most_common(max_words)]
+    return " ".join(top_items)
 
 worker = None
 
 def _process_unified_scanners(run_index: bool = False, run_face: bool = False, run_object: bool = False, run_document: bool = False):
+
+    """
+    Main routine for processing files through AI scanners and text extraction.
+    """
     
     if run_face:
         app_state.face_scanner_running = True
+        STATE["face_scanner_running"] = True
+        app_state.face_scanner_stopped = False
         STATE["face_scanner_stopped"] = False
+        STATE["face_scanner_total"] = 0
+        STATE["face_scanner_current"] = 0
     if run_object:
         app_state.object_scanner_running = True
+        STATE["object_scanner_running"] = True
+        app_state.object_scanner_stopped = False
         STATE["object_scanner_stopped"] = False
+        STATE["object_scanner_total"] = 0
+        STATE["object_scanner_current"] = 0
     if run_document:
         app_state.document_scanner_running = True
+        STATE["document_scanner_running"] = True
         STATE["document_scanner_stopped"] = False
+        STATE["document_scanner_total"] = 0
+        STATE["document_scanner_current"] = 0
+
+    print(f"[DEBUG-SCANNER] _process_unified_scanners called. run_face={run_face}, run_document={run_document}")
 
     try:
         import numpy as np
@@ -118,7 +257,10 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         from backend.app.utils.media import get_cv2_dnn_backends
             
         cfg = load_config()
+        enable_logging = cfg.get("enable_logging", False)
         ai_db_path = get_ai_db_path()
+
+        log_operation("Started unified scanners.", user_logs_enabled=enable_logging)
 
         # --- Object Setup ---
         net, classes, object_threshold = None, None, 0.15
@@ -175,6 +317,9 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
 
         if run_document:
             with SessionLocal() as s:
+                s.execute(text("CREATE TABLE IF NOT EXISTS processed_text (file_id INTEGER PRIMARY KEY)"))
+                s.execute(text("CREATE VIRTUAL TABLE IF NOT EXISTS file_text_fts USING fts5(file_id UNINDEXED, content)"))
+                s.commit()
                 text_processed_ids = set(r[0] for r in s.execute(text("SELECT file_id FROM processed_text")).fetchall())
 
         ai_db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -239,6 +384,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
 
         # --- Build File List ---
         files_to_process = []
+        preloaded_cache = {}
+        
         if run_index:
             backup_configs = cfg.get("backup_configs", [])
             roots = [Path(c.get("backup_path", "")) for c in backup_configs if c.get("backup_path")]
@@ -253,7 +400,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         files_to_process.append(os.path.join(dirpath, f))
         else:
             with SessionLocal() as s:
-                q = s.query(FileIndex.path)
+                q = s.query(FileIndex.path, FileIndex.id, FileIndex.category, FileIndex.filename)
                 categories = []
                 if run_face or run_object:
                     categories.append('photo')
@@ -270,9 +417,14 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         break
                     if not run_index and run_object and STATE.get("object_scanner_stopped"):
                         break
-                    files_to_process.append(p[0])
+                        
+                    path_str, item_id, cat, filename = p[0], p[1], p[2], p[3]
+
+                    files_to_process.append(path_str)
+                    preloaded_cache[path_str] = {"id": item_id, "size": "", "modified": "", "category": cat, "filename": filename}
 
         total_files = len(files_to_process)
+
         if run_index:
             STATE["total"] = total_files
             STATE["current"] = 0
@@ -288,6 +440,12 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         if run_document:
             STATE["document_scanner_total"] = total_files
             STATE["document_scanner_current"] = 0
+
+        # Give frontend time to register that a scan has officially started with 0 progress
+        # This prevents the UI from getting stuck at "Calculating..." if the queue is empty
+        # or finishes too quickly.
+        if not run_index:
+            time.sleep(1.5)
             
         processed_count = 0
         
@@ -296,42 +454,40 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             cursor = conn.cursor()
             with SessionLocal() as session:
                 # Store lightweight info mapping to avoid millions of session.get() queries
-                file_cache = {}
-                for r in session.query(FileIndex.id, FileIndex.path, FileIndex.size, FileIndex.modified, FileIndex.category, FileIndex.filename).yield_per(5000):
-                    if app_state.combined_scanner_stopped or (run_index and STATE.get("stopped")):
-                        break
-                    if not run_index and run_document and STATE.get("document_scanner_stopped"):
-                        break
-                    if not run_index and run_face and STATE.get("face_scanner_stopped"):
-                        break
-                    if not run_index and run_object and STATE.get("object_scanner_stopped"):
-                        break
-                    file_cache[r.path] = {"id": r.id, "size": r.size, "modified": r.modified, "category": r.category, "filename": r.filename}
+                if run_index:
+                    file_cache = {}
+                    if files_to_process:
+                        for r in session.query(FileIndex.id, FileIndex.path, FileIndex.size, FileIndex.modified, FileIndex.category, FileIndex.filename).yield_per(5000):
+                            if app_state.combined_scanner_stopped or STATE.get("stopped"):
+                                break
+                            file_cache[r.path] = {"id": r.id, "size": r.size, "modified": r.modified, "category": r.category, "filename": r.filename}
+                else:
+                    file_cache = preloaded_cache
                 
                 for idx, file_str in enumerate(files_to_process):
                     if run_document and STATE.get("document_scanner_stopped") and app_state.document_scanner_running:
                         app_state.document_scanner_running = False
-                        STATE["document_scanner_stopped"] = False
+                        STATE["document_scanner_running"] = False
                         STATE["document_scanner_current_file"] = ""
-                        STATE["document_scanner_current"] = 0
-                        STATE["document_scanner_total"] = 0
                         run_document = False
+                        STATE["document_scanner_stopped"] = False
+                        app_state.document_scanner_stopped = False
 
                     if run_face and STATE.get("face_scanner_stopped") and app_state.face_scanner_running:
                         app_state.face_scanner_running = False
-                        STATE["face_scanner_stopped"] = False
+                        STATE["face_scanner_running"] = False
                         STATE["face_scanner_current_file"] = ""
-                        STATE["face_scanner_current"] = 0
-                        STATE["face_scanner_total"] = 0
                         run_face = False
+                        STATE["face_scanner_stopped"] = False
+                        app_state.face_scanner_stopped = False
 
                     if run_object and STATE.get("object_scanner_stopped") and app_state.object_scanner_running:
                         app_state.object_scanner_running = False
-                        STATE["object_scanner_stopped"] = False
+                        STATE["object_scanner_running"] = False
                         STATE["object_scanner_current_file"] = ""
-                        STATE["object_scanner_current"] = 0
-                        STATE["object_scanner_total"] = 0
                         run_object = False
+                        STATE["object_scanner_stopped"] = False
+                        app_state.object_scanner_stopped = False
 
                     if not run_index and not run_document and not run_face and not run_object:
                         break
@@ -341,27 +497,27 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         
                         if run_document and STATE.get("document_scanner_stopped") and app_state.document_scanner_running:
                             app_state.document_scanner_running = False
-                            STATE["document_scanner_stopped"] = False
+                            STATE["document_scanner_running"] = False
                             STATE["document_scanner_current_file"] = ""
-                            STATE["document_scanner_current"] = 0
-                            STATE["document_scanner_total"] = 0
                             run_document = False
+                            STATE["document_scanner_stopped"] = False
+                            app_state.document_scanner_stopped = False
 
                         if run_face and STATE.get("face_scanner_stopped") and app_state.face_scanner_running:
                             app_state.face_scanner_running = False
-                            STATE["face_scanner_stopped"] = False
+                            STATE["face_scanner_running"] = False
                             STATE["face_scanner_current_file"] = ""
-                            STATE["face_scanner_current"] = 0
-                            STATE["face_scanner_total"] = 0
                             run_face = False
+                            STATE["face_scanner_stopped"] = False
+                            app_state.face_scanner_stopped = False
 
                         if run_object and STATE.get("object_scanner_stopped") and app_state.object_scanner_running:
                             app_state.object_scanner_running = False
-                            STATE["object_scanner_stopped"] = False
+                            STATE["object_scanner_running"] = False
                             STATE["object_scanner_current_file"] = ""
-                            STATE["object_scanner_current"] = 0
-                            STATE["object_scanner_total"] = 0
                             run_object = False
+                            STATE["object_scanner_stopped"] = False
+                            app_state.object_scanner_stopped = False
 
                         if app_state.combined_scanner_stopped or (run_index and STATE.get("stopped")):
                             break
@@ -374,9 +530,6 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         break
                         
                     file = Path(file_str)
-                    if not file.exists():
-                        continue
-                        
                     if run_index:
                         STATE["current"] += 1
                         STATE["current_file"] = str(file)
@@ -389,6 +542,9 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     if run_document and not STATE.get("document_scanner_stopped"):
                         STATE["document_scanner_current"] += 1
                         STATE["document_scanner_current_file"] = file.name
+                        
+                    if not file.exists():
+                        continue
 
                     # --- 1. Indexing Phase ---
                     cached_info = file_cache.get(file_str)
@@ -460,7 +616,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         continue
                         
                     # Fetch full SQLAlchemy object ONLY if we need to modify tags or it wasn't fetched yet
-                    if not db_item:
+                    if not db_item and needs_object:
                         db_item = session.get(FileIndex, db_item_id)
                         
                     filename_lower = cached_info["filename"].lower() if cached_info["filename"] else ""
@@ -507,19 +663,29 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                         if row_text:
                                             extracted_text += row_text + " "
                                 wb.close()
-                            elif ext in ['.txt', '.md', '.csv', '.json', '.log', '.py', '.js', '.html']:
+                            elif ext in PLAIN_TEXT_EXTENSIONS:
                                 with open(str(file), 'r', encoding='utf-8', errors='ignore') as f:
                                     extracted_text = f.read(50000)
                             
                             extracted_text = extracted_text.strip()
                             if extracted_text:
-                                optimized_text = extract_top_keywords(extracted_text)
+                                optimized_text = extract_top_keywords(extracted_text, is_log=(ext in ['.log']))
+                                log_operation(f"Extracted text: { optimized_text }", user_logs_enabled=enable_logging, is_verbose=True)
                                 optimized_text = optimized_text.replace('\x00', ' ')
-                                session.execute(text("INSERT INTO file_text_fts (file_id, content) VALUES (:f, :c)"), {"f": db_item_id, "c": optimized_text})
+                                try:
+                                    with session.begin_nested():
+                                        session.execute(text("INSERT INTO file_text_fts (file_id, content) VALUES (:f, :c)"), {"f": db_item_id, "c": optimized_text})
+                                except Exception as fts_e:
+                                    print(f"FTS index error on {file.name}: {fts_e}")
+                                log_operation(f"Extracted and indexed text for file: {file.name}", user_logs_enabled=enable_logging, is_verbose=True)
                         except Exception:
                             pass 
                         finally:
-                            session.execute(text("INSERT OR IGNORE INTO processed_text (file_id) VALUES (:f)"), {"f": db_item_id})
+                            try:
+                                with session.begin_nested():
+                                    session.execute(text("INSERT OR IGNORE INTO processed_text (file_id) VALUES (:f)"), {"f": db_item_id})
+                            except Exception:
+                                pass
                             text_processed_ids.add(db_item_id)
 
                     if not needs_face and not needs_object:
@@ -598,6 +764,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     if tag not in current_tags:
                                         current_tags = f"{current_tags} {tag}".strip()
                                 db_item.tags = current_tags
+                                log_operation(f"Classified objects {new_tags} for file: {file.name}", user_logs_enabled=enable_logging, is_verbose=True)
                         except Exception as e:
                             print(f"ERROR: Failed to classify {file.name}: {e}")
                             
@@ -690,6 +857,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                             cluster_ids_list.append(best_match_id)
                                     cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
                                                     (best_match_id, db_item_id, json.dumps(embedding)))
+                                    log_operation(f"Detected and mapped face for file: {file.name} to person_id: {best_match_id}", user_logs_enabled=enable_logging, is_verbose=True)
                         except Exception as e:
                             print(f"Face processing error on {file.name}: {e}")
                             
@@ -703,6 +871,9 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
 
                 session.commit()
                 conn.commit()
+
+            # Prevent frontend UI progress bar from instantly disappearing before registering 100% completion
+            time.sleep(1.5)
 
     except Exception as e:
         print(f"CRITICAL: Unified Worker Error: {e}")
@@ -722,21 +893,31 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             app_state.document_scanner_running = False
             app_state.combined_scanner_running = False
     
+            STATE["face_scanner_running"] = False
+            STATE["object_scanner_running"] = False
+            STATE["document_scanner_running"] = False
+            
             STATE["face_scanner_current_file"] = ""
             STATE["object_scanner_current_file"] = ""
             STATE["document_scanner_current_file"] = ""
+            
+            STATE["face_scanner_total"] = 0
+            STATE["face_scanner_current"] = 0
+            STATE["object_scanner_total"] = 0
+            STATE["object_scanner_current"] = 0
+            STATE["document_scanner_total"] = 0
+            STATE["document_scanner_current"] = 0
+
+            # The 'stopped' flags are intentionally NOT reset here.
+            # They are reset at the beginning of the next run to avoid race conditions
+            # where the frontend misses the 'stopped=True' signal from a manual stop.
+            
             STATE["face_scanner_stopped"] = False
             STATE["object_scanner_stopped"] = False
             STATE["document_scanner_stopped"] = False
-
-            STATE["face_scanner_current"] = 0
-            STATE["face_scanner_total"] = 0
-            STATE["object_scanner_current"] = 0
-            STATE["object_scanner_total"] = 0
-            STATE["document_scanner_current"] = 0
-            STATE["document_scanner_total"] = 0
-
-            STATE["stopped"] = False
+            app_state.face_scanner_stopped = False
+            app_state.object_scanner_stopped = False
+            app_state.document_scanner_stopped = False
             app_state.combined_scanner_stopped = False
 
 def classify(ext):
@@ -751,11 +932,11 @@ def classify(ext):
         return "document"
     if ext in [".epub",".mobi",".azw3",".cbz",".cbr",".chm"]:
         return "ebook"
-    if ext in [".py",".js",".jsx",".ts",".tsx",".html",".css",".json",".xml",".yaml",".yml",".c",".cpp",".h",".java",".cs",".go",".rs",".rb",".php",".sh",".bat",".ps1",".sql",".ini"]:
+    if ext in CODE_EXTENSIONS:
         return "code"
     if ext in [".ttf",".otf",".woff",".woff2",".eot"]:
         return "font"
-    if ext in [".db",".sqlite",".sqlite3",".mdb",".accdb"] or re.match(r"^\.crypt\d{2,}$", ext):
+    if ext in [".db",".sqlite",".sqlite3",".mdb",".accdb"] or CRYPT_EXT_PATTERN.match(ext):
         return "database"
     if ext in [".zip",".rar",".7z",".tar",".gz",".bz2",".xz"]:
         return "compressed"
@@ -775,10 +956,10 @@ def build_tags(metadata, category, ext, path_obj=None):
             
     if path_obj:
         for part in path_obj.parts[:-1]:
-            words = re.findall(r'[a-zA-Z0-9]+', part)
+            words = TAG_WORD_PATTERN.findall(part)
             tags.extend([w.lower() for w in words if len(w) > 2])
             
-        words = re.findall(r'[a-zA-Z0-9]+', path_obj.stem)
+        words = TAG_WORD_PATTERN.findall(path_obj.stem)
         tags.extend([w.lower() for w in words if len(w) > 2])
         
     return ",".join(set(tags))
@@ -841,7 +1022,7 @@ def extract_metadata_for_file(path, category):
                         if date:
                             date_text = str(date)
                             metadata["date"] = date_text
-                            if m := re.match(r"(\d{4}):(\d{2}):(\d{2})", date_text):
+                            if m := EXIF_DATE_PATTERN.match(date_text):
                                 year, month, day = m.groups()
                                 tags.append(f"date:{year}")
                                 tags.append(f"date:{year}-{month}")
@@ -1067,12 +1248,18 @@ def background_ai_categorize(cfg):
         session.close()
 
 def background_lazy_hasher():
+    """
+    Background task to calculate SHA-256 hashes for files with identical sizes to find exact duplicates.
+    """
     if STATE.get("hasher_running"):
         return
     STATE["hasher_running"] = True
     STATE["hasher_stopped"] = False
     session = SessionLocal()
+    cfg = load_config()
+    enable_logging = cfg.get("enable_logging", False)
     try:
+        log_operation("Started background lazy hasher.", user_logs_enabled=enable_logging)
         dup_sizes_query = session.query(FileIndex.size).filter(
             FileIndex.size != '0', 
             FileIndex.size.isnot(None)
@@ -1122,6 +1309,7 @@ def background_lazy_hasher():
                     if updates >= 500:
                         session.bulk_update_mappings(FileIndex, mappings)
                         session.commit()
+                        STATE["duplicates_status_changed_at"] = time.time()
                         mappings = []
                         updates = 0
             except Exception as e:
@@ -1129,15 +1317,21 @@ def background_lazy_hasher():
         if mappings:
             session.bulk_update_mappings(FileIndex, mappings)
             session.commit()
+            STATE["duplicates_status_changed_at"] = time.time()
     except Exception as e:
         print(f"Lazy hasher error: {e}")
     finally:
         STATE["hasher_running"] = False
         STATE["hasher_current_file"] = ""
+        STATE["duplicates_status_changed_at"] = time.time()
         session.close()
 
 def run():
+    """
+    Main routine for discovering and indexing files from configured backup paths.
+    """
     cfg = load_config()
+    enable_logging = cfg.get("enable_logging", False)
     backup_configs = cfg.get("backup_configs", [])
     if not backup_configs:
         backup_configs = [{"backup_path": cfg.get("backup_path", "")}]
@@ -1145,6 +1339,7 @@ def run():
     roots = [Path(c.get("backup_path", "")) for c in backup_configs if c.get("backup_path")]
     valid_roots = [r for r in roots if r.exists() and r.is_dir()]
 
+    log_operation("Started indexer run.", user_logs_enabled=enable_logging)
     try:
         with SessionLocal() as session:
             others = session.query(FileIndex).filter(FileIndex.category == 'other').all()
@@ -1346,6 +1541,7 @@ def run():
                             exists.metadata_json = json.dumps(metadata)
                             exists.tags = tags
                             session.add(exists)
+                            log_operation(f"Updated index for file: {file.name}", user_logs_enabled=enable_logging, is_verbose=True)
                     else:
                         session.add(
                             FileIndex(
@@ -1359,6 +1555,7 @@ def run():
                                 metadata_json=json.dumps(metadata)
                             )
                         )
+                        log_operation(f"Indexed new file: {file.name}", user_logs_enabled=enable_logging, is_verbose=True)
 
                     if idx > 0 and idx % BATCH_SIZE == 0:
                         session.commit()

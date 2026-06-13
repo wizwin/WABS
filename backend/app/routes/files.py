@@ -16,6 +16,7 @@ from backend.app.database import SessionLocal, FileIndex
 from backend.app.config import load_config
 from backend.app.utils.utils import _resolve_path
 from backend.app.utils.media import generate_photo_thumbnail, generate_video_thumbnail, generate_document_thumbnail
+from backend.app.utils.indexer import PLAIN_TEXT_EXTENSIONS
 
 router = APIRouter()
 
@@ -64,8 +65,8 @@ def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", so
                     q = q.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
                 elif category == "searchable_documents":
                     q = q.filter(text("files.id IN (SELECT file_id FROM processed_text)"))
-                elif category == "tagged_objects":
-                    q = q.filter(FileIndex.tags.like('%object:%'))
+                elif category == "untagged":
+                    q = q.filter(FileIndex.category == 'photo', ~FileIndex.tags.like('%object:%'))
                 else:
                     q = q.filter(FileIndex.category == category)
                     
@@ -173,7 +174,7 @@ def preview(item_id:int, theme: str = "dark"):
             if success and cached_thumb.exists():
                 return FileResponse(str(cached_thumb), media_type="image/jpeg")
                     
-        elif file_category in ["document", "code"] or file_path.suffix.lower() in [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".html", ".htm", ".css", ".c", ".cpp", ".h", ".java", ".cs", ".go", ".rs", ".rb", ".php", ".sh", ".bat", ".sql"]:
+        elif file_category in ["document", "code"] or file_path.suffix.lower() in PLAIN_TEXT_EXTENSIONS:
             if file_path.suffix.lower() == ".pdf":
                 thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
                 thumb_dir.mkdir(parents=True, exist_ok=True)

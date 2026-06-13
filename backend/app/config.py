@@ -15,16 +15,42 @@ else:
 CFG = BASE / "config.yaml"
 
 DEFAULT = {
-    "backup_path":"C:/Backup",
-    "database_path":"./database/archive.db",
-    "thumbnail_path":"./cache/thumbnails",
-    "thumbnail_size":256,
-    "ai_enabled":False,
-    "ai_provider":"OpenAI",
-    "ai_model":"gpt-4o-mini",
-    "openai_api_key":"",
-    "path_mapping_enabled":False,
-    "original_backup_path":"C:/Backup"
+    "ai_api_key": "",
+    "ai_enabled": False,
+    "ai_model": "gpt-4o-mini",
+    "ai_provider": "OpenAI",
+    "allow_unverified_deletion": False,
+    "animations_enabled": True,
+    "backup_configs": [],
+    "database_path": "./database/archive.db",
+    "details_width": 317,
+    "disable_lazy_loading": False,
+    "enable_logging": False,
+    "enable_photo_thumbnail_cache": True,
+    "face_clustering_sensitivity": "medium",
+    "face_sensitivity": "medium",
+    "hidden_people": [],
+    "lazy_load_chunk_size": 50,
+    "min_unknown_photos": 1,
+    "object_sensitivity": "medium",
+    "path_mapping_enabled": False,
+    "photo_thumbnail_size_limit_mb": 5,
+    "pinned_people": [],
+    "read_only_mode": True,
+    "run_document_scan": False,
+    "run_face_scan": False,
+    "run_object_scan": False,
+    "show_details": False,
+    "show_full_timeline": False,
+    "show_sidebar": True,
+    "show_timeline": True,
+    "sidebar_width": 237,
+    "smart_searches": [],
+    "text_extraction_limit": 300,
+    "theme": "dark",
+    "thumbnail_path": "./cache/thumbnails",
+    "thumbnail_size": 256,
+    "timeline_width": 158
 }
 
 def _get_machine_key():
@@ -77,9 +103,16 @@ def load_config():
     with open(CFG,"r") as f:
         config = yaml.safe_load(f) or {}
 
+    # Flatten legacy ui_preferences if present in existing config
+    if "ui_preferences" in config:
+        ui_prefs = config.pop("ui_preferences")
+        if isinstance(ui_prefs, dict):
+            for k, v in ui_prefs.items():
+                config.setdefault(k, v)
+
     # Decode the API key into memory if the obfuscated version exists
-    if "openai_api_key_enc" in config:
-        config["openai_api_key"] = _decode_key(config.pop("openai_api_key_enc"))
+    if "ai_api_key_enc" in config:
+        config["ai_api_key"] = _decode_key(config.pop("ai_api_key_enc"))
 
     for key, value in DEFAULT.items():
         config.setdefault(key, value)
@@ -88,9 +121,12 @@ def load_config():
 
 def save_config(data):
     save_data = data.copy()
+    # Remove legacy ui_preferences just in case it was passed
+    save_data.pop("ui_preferences", None)
+
     # Obfuscate the API key before writing it to the disk
-    if "openai_api_key" in save_data:
-        save_data["openai_api_key_enc"] = _encode_key(save_data.pop("openai_api_key"))
+    if "ai_api_key" in save_data:
+        save_data["ai_api_key_enc"] = _encode_key(save_data.pop("ai_api_key"))
         
     with open(CFG,"w") as f:
         yaml.dump(save_data, f)
