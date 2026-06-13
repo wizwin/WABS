@@ -730,7 +730,7 @@ function renderValue(value){
     showSearchHelp, setShowSearchHelp, toastMessage, setToastMessage, showToast, setShowToast,
     suggestionsData, setSuggestionsData, focusedSuggestionIndex, setFocusedSuggestionIndex,
     combinedOptions, setCombinedOptions, settingsTab, setSettingsTab, testingAI, setTestingAI, aiSearchPrompt, setAiSearchPrompt,
-    generatingSearch, setGeneratingSearch, actionInProgress, setActionInProgress, dataOpProgress, setDataOpProgress,
+    generatingSearch, setGeneratingSearch, isFindingSimilar, setIsFindingSimilar, actionInProgress, setActionInProgress, dataOpProgress, setDataOpProgress,
     dbFilename, setDbFilename, saveSettings, choosePath, choosePathForConfig, testAIConnection, generateSearchWithAI, clearCache, loadDashboard,
     updateUIPreferences, togglePinPerson,
     fullTimelineData, setFullTimelineData, timelineUpdateTick, setTimelineUpdateTick, applySuggestion, getOfflinePlaceholder, renderThumb, renderMetadata, renderValue,
@@ -792,7 +792,8 @@ export default function App() {
     else if (dataOpProgress.id === 'purge') { taskText = "Purging Profiles..."; ledColor = "#ef4444"; } // Red
     else if (dataOpProgress.id?.includes('cleanup')) { taskText = "Cleaning Database..."; ledColor = "#06b6d4"; } // Cyan
     else { taskText = "Processing System Task..."; ledColor = "#3b82f6"; }
-  } else if (actionInProgress) { taskText = "System Operation..."; ledColor = "#64748b"; } // Slate
+  } else if (isFindingSimilar) { taskText = "Searching Faces..."; ledColor = "#38bdf8"; } // Sky
+  else if (actionInProgress) { taskText = "System Operation..."; ledColor = "#64748b"; } // Slate
   else if (indexer.data_operation_running) { taskText = "Remote Data Operation..."; ledColor = "#3b82f6"; } // Blue
 
   return(

@@ -25,6 +25,19 @@ export default function People(props) {
     unknownPeoplePage, sortedUnknownPeopleForUI
   } = props;
 
+  const isClusterSelectedActive = dataOpProgress?.id === 'clusterSelected';
+  const isReclassifySelectedActive = dataOpProgress?.id === 'reclassifySelected';
+  const isClusterAllActive = dataOpProgress?.id === 'clusterAll';
+  const isReclassifyAllActive = dataOpProgress?.id === 'reclassifyAll';
+  const isPurgeActive = dataOpProgress?.id === 'purge';
+
+  const isAnyDataOpPending = actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation);
+  const selectedClusterDisabled = isClusterSelectedActive ? !!indexer.cancel_data_operation : isAnyDataOpPending;
+  const selectedReclassifyDisabled = isReclassifySelectedActive ? !!indexer.cancel_data_operation : isAnyDataOpPending;
+  const bulkClusterDisabled = isClusterAllActive ? !!indexer.cancel_data_operation : isAnyDataOpPending;
+  const bulkReclassifyDisabled = isReclassifyAllActive ? !!indexer.cancel_data_operation : isAnyDataOpPending;
+  const purgeDisabled = isPurgeActive ? !!indexer.cancel_data_operation : isAnyDataOpPending;
+
   return (
     <>
         {
@@ -84,19 +97,19 @@ export default function People(props) {
                         />
                         <span style={{ color: '#10b981', fontSize: '13px', minWidth: '35px', fontWeight: 'bold' }}>{Math.round(similarityThreshold * 100)}%</span>
                         </div>
-                        <ActionButton disabled={(dataOpProgress && dataOpProgress.id === 'clusterSelected') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} className="btn btn-secondary" style={{ padding: '6px 12px', color: dataOpProgress?.id === 'clusterSelected' ? '#ef4444' : '#10b981', borderColor: dataOpProgress?.id === 'clusterSelected' ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'clusterSelected' ? cancelAiAction : clusterSelectedUnknowns} title="Compare selected unknown people against other unknowns and merge matches automatically.">
-                        {dataOpProgress && dataOpProgress.id === 'clusterSelected' ? 
+                        <ActionButton disabled={selectedClusterDisabled} className="btn btn-secondary" style={{ padding: '6px 12px', color: isClusterSelectedActive ? '#ef4444' : '#10b981', borderColor: isClusterSelectedActive ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={isClusterSelectedActive ? cancelAiAction : clusterSelectedUnknowns} title="Compare selected unknown people against other unknowns and merge matches automatically.">
+                        {isClusterSelectedActive ? 
                             <><CloseIcon fontSize="small" /> Cancel</> : 
                             <><FaceIcon fontSize="small" /> Cluster Selected</>}
                         </ActionButton>
-                        <ActionButton disabled={(dataOpProgress && dataOpProgress.id === 'reclassifySelected') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} className="btn btn-secondary" style={{ padding: '6px 12px', color: dataOpProgress?.id === 'reclassifySelected' ? '#ef4444' : '#f59e0b', borderColor: dataOpProgress?.id === 'reclassifySelected' ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'reclassifySelected' ? cancelAiAction : reclassifySelectedUnknowns} title="Break apart selected profiles and re-evaluate each face against all knowns and unknowns.">
-                        {dataOpProgress && dataOpProgress.id === 'reclassifySelected' ? 
+                        <ActionButton disabled={selectedReclassifyDisabled} className="btn btn-secondary" style={{ padding: '6px 12px', color: isReclassifySelectedActive ? '#ef4444' : '#f59e0b', borderColor: isReclassifySelectedActive ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={isReclassifySelectedActive ? cancelAiAction : reclassifySelectedUnknowns} title="Break apart selected profiles and re-evaluate each face against all knowns and unknowns.">
+                        {isReclassifySelectedActive ? 
                             <><CloseIcon fontSize="small" /> Cancel</> : 
                             <><FaceIcon fontSize="small" /> Reclassify Selected</>}
                         </ActionButton>
-                        {dataOpProgress && (dataOpProgress.id === 'clusterSelected' || dataOpProgress.id === 'reclassifySelected') && dataOpProgress.total > 0 && (
+                        {(isClusterSelectedActive || isReclassifySelectedActive) && dataOpProgress?.total > 0 && (
                         <div style={{ width: '100%', flexBasis: '100%', marginTop: '8px', padding: '0 8px' }}>
-                            <ProgressBar current={dataOpProgress.current} total={dataOpProgress.total} color={dataOpProgress.id === 'clusterSelected' ? '#10b981' : '#f59e0b'} />
+                            <ProgressBar current={dataOpProgress.current} total={dataOpProgress.total} color={isClusterSelectedActive ? '#10b981' : '#f59e0b'} />
                         </div>
                         )}
                     </div>
@@ -289,20 +302,20 @@ export default function People(props) {
                             />
                             <span style={{ color: '#10b981', fontSize: '14px', minWidth: '40px', fontWeight: 'bold' }}>{Math.round(similarityThreshold * 100)}%</span>
                             </div>
-                        <ActionButton disabled={(dataOpProgress && dataOpProgress.id === 'clusterAll') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} className="btn btn-secondary" style={{ padding: '8px 16px', color: dataOpProgress?.id === 'clusterAll' ? '#ef4444' : '#10b981', borderColor: dataOpProgress?.id === 'clusterAll' ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'clusterAll' ? cancelAiAction : clusterAllUnknowns} title="Compare ALL unknown people against each other and merge matches automatically.">
-                            {dataOpProgress && dataOpProgress.id === 'clusterAll' ? 
+                        <ActionButton disabled={bulkClusterDisabled} className="btn btn-secondary" style={{ padding: '8px 16px', color: isClusterAllActive ? '#ef4444' : '#10b981', borderColor: isClusterAllActive ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={isClusterAllActive ? cancelAiAction : clusterAllUnknowns} title="Compare ALL unknown people against each other and merge matches automatically.">
+                            {isClusterAllActive ? 
                             <><CloseIcon fontSize="small" /> Cancel Clustering</> : 
                                 <><FaceIcon fontSize="small" /> Cluster All Unknowns</>}
                             </ActionButton>
-                        <ActionButton disabled={(dataOpProgress && dataOpProgress.id === 'reclassifyAll') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} className="btn btn-secondary" style={{ padding: '8px 16px', color: dataOpProgress?.id === 'reclassifyAll' ? '#ef4444' : '#f59e0b', borderColor: dataOpProgress?.id === 'reclassifyAll' ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'reclassifyAll' ? cancelAiAction : reclassifyAllUnknowns} title="Break apart all unknown profiles and re-evaluate each face against all knowns and unknowns.">
-                            {dataOpProgress && dataOpProgress.id === 'reclassifyAll' ? 
+                        <ActionButton disabled={bulkReclassifyDisabled} className="btn btn-secondary" style={{ padding: '8px 16px', color: isReclassifyAllActive ? '#ef4444' : '#f59e0b', borderColor: isReclassifyAllActive ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={isReclassifyAllActive ? cancelAiAction : reclassifyAllUnknowns} title="Break apart all unknown profiles and re-evaluate each face against all knowns and unknowns.">
+                            {isReclassifyAllActive ? 
                             <><CloseIcon fontSize="small" /> Cancel Reclassifying</> : 
                                 <><FaceIcon fontSize="small" /> Reclassify All Unknowns</>}
                             </ActionButton>
                         </div>
-                        {dataOpProgress && (dataOpProgress.id === 'clusterAll' || dataOpProgress.id === 'reclassifyAll') && dataOpProgress.total > 0 && (
+                        {(isClusterAllActive || isReclassifyAllActive) && dataOpProgress?.total > 0 && (
                         <div style={{ marginTop: '16px' }}>
-                            <ProgressBar current={dataOpProgress.current} total={dataOpProgress.total} color={dataOpProgress.id === 'clusterAll' ? '#10b981' : '#f59e0b'} />
+                            <ProgressBar current={dataOpProgress.current} total={dataOpProgress.total} color={isClusterAllActive ? '#10b981' : '#f59e0b'} />
                         </div>
                         )}
                     </div>
@@ -321,10 +334,10 @@ export default function People(props) {
                                 />
                             </div>
                             <ActionButton 
-                            disabled={(dataOpProgress && dataOpProgress.id === 'purge') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} 
+                            disabled={purgeDisabled} 
                             className="btn btn-secondary" 
                             onClick={dataOpProgress?.id === 'purge' ? cancelAiAction : purgeSmallUnknowns}
-                            title={(dataOpProgress && dataOpProgress.id === 'purge') ? "" : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to purge" : ""}
+                            title={(dataOpProgress && dataOpProgress.id === 'purge') ? "" : purgeDisabled ? "Stop all background tasks to purge" : ""}
                             style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '6px' }}
                             >
                             {dataOpProgress && dataOpProgress.id === 'purge' ? (
