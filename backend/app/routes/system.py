@@ -426,6 +426,8 @@ def system_cleanup():
     
     with SessionLocal() as s:
         for r in s.query(FileIndex.id, FileIndex.path).yield_per(1000):
+            if shared_state.APP_SHUTTING_DOWN:
+                break
             fid, path_str = r[0], r[1]
             file_path = _resolve_path(Path(path_str))
             if not file_path.exists():
@@ -443,6 +445,8 @@ def system_cleanup():
 
         if thumb_dir.exists():
             for f in thumb_dir.rglob('*.jpg'):
+                if shared_state.APP_SHUTTING_DOWN:
+                    break
                 if f.is_file() and not f.name.startswith("person_") and f.stem not in valid_file_ids:
                     try:
                         f.unlink()
@@ -517,6 +521,8 @@ def export_people():
         export_data = []
         with SessionLocal() as s:
             for pid, name, thumb_id in people_rows:
+                if shared_state.APP_SHUTTING_DOWN:
+                    break
                 thumb_path = None
                 if thumb_id:
                     thumb_file = s.get(FileIndex, thumb_id)
@@ -565,6 +571,8 @@ def import_people(payload: list = Body(...)):
             
             with SessionLocal() as session:
                 for person_data in payload:
+                    if shared_state.APP_SHUTTING_DOWN:
+                        break
                     name = person_data.get("name")
                     if not name:
                         continue

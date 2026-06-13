@@ -157,7 +157,7 @@ def scan_objects():
         STATE["stopped"] = False
         STATE["object_scanner_stopped"] = False
         STATE["paused"] = False
-        object_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": True, "run_document": False})
+        object_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": True, "run_document": False}, daemon=True)
         object_scanner_thread.start()
         
     if load_config().get("enable_logging"):

@@ -1129,7 +1129,7 @@ def scan_faces():
         STATE["stopped"] = False
         STATE["face_scanner_stopped"] = False
         STATE["paused"] = False
-        face_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": True, "run_object": False})
+        face_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": True, "run_object": False}, daemon=True)
         face_scanner_thread.start()
         
     if load_config().get("enable_logging"):

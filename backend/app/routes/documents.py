@@ -23,7 +23,7 @@ def scan_documents():
         STATE["stopped"] = False
         STATE["document_scanner_stopped"] = False
         STATE["paused"] = False
-        document_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": False, "run_document": True})
+        document_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": False, "run_document": True}, daemon=True)
         document_scanner_thread.start()
         
     if load_config().get("enable_logging"):

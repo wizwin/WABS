@@ -21,6 +21,7 @@ except ImportError:
 # State Management
 import backend.app.state as app_state
 from backend.app.state import STATE
+import backend.app.shared_state as shared_state
 from backend.app.utils.log_utils import log_operation
 
 # Database & Config
@@ -524,6 +525,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     file_cache = preloaded_cache
                 
                 for idx, file_str in enumerate(files_to_process):
+                    if shared_state.APP_SHUTTING_DOWN:
+                        break
                     if idx % 100 == 0:
                         enable_logging = load_config().get("enable_logging", False)
                     if run_document and STATE.get("document_scanner_stopped") and app_state.document_scanner_running:
@@ -554,6 +557,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         break
 
                     while STATE.get("paused"):
+                        if shared_state.APP_SHUTTING_DOWN:
+                            break
                         time.sleep(0.5)
                         
                         if run_document and STATE.get("document_scanner_stopped") and app_state.document_scanner_running:
@@ -585,6 +590,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         if not run_index and not run_document and not run_face and not run_object:
                             break
 
+                    if shared_state.APP_SHUTTING_DOWN:
+                        break
                     if app_state.combined_scanner_stopped or (run_index and STATE.get("stopped")):
                         break
                     if not run_index and not run_document and not run_face and not run_object:
@@ -1367,6 +1374,8 @@ def background_ai_categorize(cfg):
             return
             
         for idx, item in enumerate(items):
+            if shared_state.APP_SHUTTING_DOWN:
+                break
             if idx % 100 == 0:
                 cfg = load_config()
             if STATE.get("stopped"):
@@ -1420,13 +1429,19 @@ def background_lazy_hasher():
         updates = 0
         mappings = []
         for idx, (item_id, path, metadata_json) in enumerate(files):
+            if shared_state.APP_SHUTTING_DOWN:
+                break
             if idx % 100 == 0:
                 enable_logging = load_config().get("enable_logging", False)
             while STATE.get("paused"):
+                if shared_state.APP_SHUTTING_DOWN:
+                    break
                 time.sleep(0.5)
                 if STATE.get("hasher_stopped") or STATE.get("stopped"):
                     break
             
+            if shared_state.APP_SHUTTING_DOWN:
+                break
             if STATE.get("hasher_stopped") or STATE.get("stopped"):
                 break
             STATE["hasher_current"] += 1
@@ -1554,6 +1569,8 @@ def run():
                 combined_excluded_list = list(set(global_excluded_list + backup_excluded_list))
 
                 for dirpath, dirnames, filenames in os.walk(str(root_path)):
+                    if shared_state.APP_SHUTTING_DOWN:
+                        break
                     if combined_excluded_list:
                         dirnames[:] = [d for d in dirnames if d not in combined_excluded_list]
                     for f in filenames:
@@ -1621,7 +1638,8 @@ def run():
                 files_to_process = raw_files
 
             for idx, file_str in enumerate(files_to_process):
-
+                if shared_state.APP_SHUTTING_DOWN:
+                    break
                 file = Path(file_str)
 
                 if STATE["stopped"]:
@@ -1629,11 +1647,15 @@ def run():
                     break
 
                 while STATE["paused"]:
+                    if shared_state.APP_SHUTTING_DOWN:
+                        break
                     STATE["status"] = "Paused"
                     time.sleep(0.3)
                     if STATE["stopped"]:
                         break
 
+                if shared_state.APP_SHUTTING_DOWN:
+                    break
                 if STATE["stopped"]:
                     STATE["status"] = "Stopped"
                     break

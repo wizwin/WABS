@@ -88,7 +88,7 @@ def indexer_start(req: IndexRequest = None):
         if req.tag or req.face or req.document:
             app_state.combined_scanner_running = True
             app_state.combined_scanner_stopped = False
-            app_state.combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document})
+            app_state.combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document}, daemon=True)
             app_state.combined_scanner_thread.start()
         else:
             start_indexing()
@@ -154,7 +154,7 @@ def indexer_update(req: IndexRequest = None):
         if req.tag or req.face or req.document:
             app_state.combined_scanner_running = True
             app_state.combined_scanner_stopped = False
-            app_state.combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document})
+            app_state.combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document}, daemon=True)
             app_state.combined_scanner_thread.start()
         else:
             start_indexing()
@@ -224,7 +224,7 @@ def indexer_reindex(req: IndexRequest = None):
         if req.tag or req.face or req.document:
             app_state.combined_scanner_running = True
             app_state.combined_scanner_stopped = False
-            app_state.combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document})
+            app_state.combined_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": True, "run_object": req.tag, "run_face": req.face, "run_document": req.document}, daemon=True)
             app_state.combined_scanner_thread.start()
         else:
             start_indexing()
