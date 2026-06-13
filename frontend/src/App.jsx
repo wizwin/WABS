@@ -80,28 +80,28 @@ const showToastMessage = (message, action = null) => {
 const sharedState = useRef({});
 
 const explorer = useExplorer({
-  settings, page, setPage, query, setQuery, showToastMessage, sharedState
+  settings, page, setPage, query, setQuery, showToastMessage, sharedState, indexer, actionInProgress, dataOpProgress, setActionInProgress
 });
 
 const tagsState = useTags({
-  indexer, checkedFiles: explorer.checkedFiles, setCheckedFiles: explorer.setCheckedFiles, globalFileCache: explorer.globalFileCache, page, filterCategory: explorer.filterCategory,
-  loadFiles: explorer.loadFiles, goToSearch: explorer.goToSearch, selected: explorer.selected, setSelected: explorer.setSelected, loadDashboard, showToastMessage, setActionInProgress, setDataOpProgress
+  indexer, setIndexer, checkedFiles: explorer.checkedFiles, setCheckedFiles: explorer.setCheckedFiles, globalFileCache: explorer.globalFileCache, page, filterCategory: explorer.filterCategory,
+  loadFiles: explorer.loadFiles, goToSearch: explorer.goToSearch, selected: explorer.selected, setSelected: explorer.setSelected, loadDashboard, showToastMessage, setActionInProgress, setDataOpProgress, actionInProgress, dataOpProgress
 });
 
 const peopleState = usePeople({
-  indexer, settings, page, setPage, selected: explorer.selected, setSelected: explorer.setSelected, checkedFiles: explorer.checkedFiles, setCheckedFiles: explorer.setCheckedFiles, globalFileCache: explorer.globalFileCache, filterCategory: explorer.filterCategory, loadFiles: explorer.loadFiles, goToSearch: explorer.goToSearch, loadDashboard, showToastMessage, setActionInProgress, setDataOpProgress, setOffset: explorer.setOffset, setStartOffset: explorer.setStartOffset, setHasMore: explorer.setHasMore
+  indexer, setIndexer, settings, page, setPage, selected: explorer.selected, setSelected: explorer.setSelected, checkedFiles: explorer.checkedFiles, setCheckedFiles: explorer.setCheckedFiles, globalFileCache: explorer.globalFileCache, filterCategory: explorer.filterCategory, loadFiles: explorer.loadFiles, goToSearch: explorer.goToSearch, loadDashboard, showToastMessage, setActionInProgress, setDataOpProgress, setOffset: explorer.setOffset, setStartOffset: explorer.setStartOffset, setHasMore: explorer.setHasMore, actionInProgress, dataOpProgress
 });
 
 sharedState.current.people = peopleState;
 
 const scannerState = useScanners({
   indexer, setIndexer, setStats, setActionInProgress, setDataOpProgress,
-  showToastMessage, loadDashboard, combinedOptions, explorer, tagsState, peopleState, page
+  showToastMessage, loadDashboard, combinedOptions, explorer, tagsState, peopleState, page, actionInProgress, dataOpProgress
 });
 
 const systemOpsState = useSystemOps({
   indexer, setIndexer, setStats, setActionInProgress, setDataOpProgress,
-  showToastMessage, loadDashboard, combinedOptions, explorer, tagsState, peopleState, page
+  showToastMessage, loadDashboard, combinedOptions, explorer, tagsState, peopleState, page, actionInProgress, dataOpProgress
 });
 
 useEffect(() => {
@@ -238,6 +238,12 @@ async function loadSettings(){
 }
 
 async function saveSettings(){
+ if (window.wabs_action_in_progress) return;
+ if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+   alert("Please stop all background tasks before saving settings to prevent database or path conflicts.");
+   return;
+ }
+ window.wabs_action_in_progress = true;
  const payload = { ...settings };
  if (payload.database_path && typeof payload.database_path === 'string' && !payload.database_path.endsWith('.db')) {
    const separator = payload.database_path.includes('\\') ? '\\' : '/';
@@ -253,6 +259,7 @@ async function saveSettings(){
  } else if (page === 'search') {
    await explorer.goToSearch(explorer.filterCategory);
  }
+ window.wabs_action_in_progress = false;
 }
 
 async function choosePath(field, mode){
@@ -327,16 +334,22 @@ async function generateSearchWithAI() {
 }
 
 async function clearCache() {
-  if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
-    alert("Please stop all background tasks before clearing the thumbnail cache to prevent file access conflicts.");
+  if (window.wabs_action_in_progress) return;
+  if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+    alert("Please stop all background tasks before clearing the thumbnail cache to prevent database and file access conflicts.");
     return;
   }
   if (!window.confirm('Are you sure you want to clear the thumbnail cache? The cached images will be permanently deleted and automatically regenerated as needed.')) return;
+  window.wabs_action_in_progress = true;
+  setActionInProgress(true);
   try {
     await axios.post(`${API}/clear-cache`);
     showToastMessage('Thumbnail cache cleared successfully.');
   } catch(err) {
     alert('Error clearing cache: ' + (err?.response?.data?.detail || err.message));
+  } finally {
+    window.wabs_action_in_progress = false;
+    setActionInProgress(false);
   }
 }
 
@@ -347,16 +360,29 @@ async function loadDashboard(){
    axios.get(`${API}/indexer/status?t=${timestamp}`)
  ])
  setStats(prev => ({...prev, ...statsRes.data}))
- setIndexer(indexerRes.data)
+  const indexerData = indexerRes.data;
+  if (indexerData) {
+    if (indexerData.cancel_data_operation) indexerData.data_operation_running = false;
+    if (indexerData.stopped) indexerData.running = false;
+    if (indexerData.combined_scanner_stopped) indexerData.combined_scanner_running = false;
+    if (indexerData.face_scanner_stopped) indexerData.face_scanner_running = false;
+    if (indexerData.object_scanner_stopped) indexerData.object_scanner_running = false;
+    if (indexerData.document_scanner_stopped) indexerData.document_scanner_running = false;
+    if (indexerData.hasher_stopped) indexerData.hasher_running = false;
+  }
+  setIndexer(indexerData)
 }
 
 async function handleShutdown() {
   if (window.confirm('Are you sure you want to shut down the WABS server?')) {
     setIsShuttingDown(true);
     try {
-      const isAnyScannerRunning = indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running;
+      const isAnyScannerRunning = indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || indexer.data_operation_running;
       
       if (isAnyScannerRunning) {
+        if (indexer.data_operation_running) {
+          try { await axios.post(`${API}/system/cancel-data-operation`); } catch(e) {}
+        }
         if (indexer.running || indexer.combined_scanner_running) {
           try { await axios.post(`${API}/indexer/stop`); } catch(e) {}
         }
@@ -379,7 +405,7 @@ async function handleShutdown() {
           try {
             const r = await axios.get(`${API}/indexer/status?t=${Date.now()}`);
             const status = r.data;
-            if (!status.running && !status.combined_scanner_running && !status.face_scanner_running && !status.object_scanner_running && !status.document_scanner_running && !status.hasher_running) {
+            if (!status.running && !status.combined_scanner_running && !status.face_scanner_running && !status.object_scanner_running && !status.document_scanner_running && !status.hasher_running && !status.data_operation_running) {
               break;
             }
           } catch(e) {
@@ -405,6 +431,7 @@ async function handleShutdown() {
 async function handleForceShutdown() {
   window.wabsForceShutdown = true;
   try {
+    try { await axios.post(`${API}/system/cancel-data-operation`); } catch(e) {}
     await axios.post(`${API}/shutdown`);
     setIsShuttingDown(false);
     setIsShutdown(true);
@@ -593,7 +620,8 @@ useEffect(() => {
           face_scanner_running: false,
           object_scanner_running: false,
           document_scanner_running: false,
-          combined_scanner_running: false
+          combined_scanner_running: false,
+          data_operation_running: false
         }));
         showToastMessage("Connection lost. Stopped monitoring background tasks.");
         return; // Stop polling and gracefully unlock UI
@@ -604,7 +632,7 @@ useEffect(() => {
     if (isMounted) timeoutId = setTimeout(poll, delay);
   };
 
-  if ((indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.combined_scanner_running) && !indexer.paused) {
+  if ((indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.combined_scanner_running || indexer.data_operation_running) && !indexer.paused) {
     timeoutId = setTimeout(poll, 1000);
   } else {
     // Perform one final fetch when scanners stop to ensure all UI counters are fully up to date
@@ -614,7 +642,7 @@ useEffect(() => {
     setTimelineUpdateTick(prev => prev + 1);
   }
   return () => { isMounted = false; clearTimeout(timeoutId); };
-}, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, indexer.document_scanner_running, indexer.combined_scanner_running, indexer.paused, page]);
+}, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, indexer.document_scanner_running, indexer.combined_scanner_running, indexer.data_operation_running, indexer.paused, page]);
 
 function getOfflinePlaceholder(text, bgColor, textColor) {
   const key = `${text}-${bgColor}-${textColor}`;
@@ -750,6 +778,23 @@ export default function App() {
     timelineItems, mergeConflictData
   } = appState;
 
+  const isTaskRunning = indexer.running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || indexer.combined_scanner_running || indexer.data_operation_running || actionInProgress || dataOpProgress;
+  let taskText = "Tasks Running...";
+  let ledColor = "#10b981"; // Emerald
+  if (indexer.running || indexer.combined_scanner_running) { taskText = "Indexing Files..."; ledColor = "#3b82f6"; } // Blue
+  else if (indexer.face_scanner_running) { taskText = "Scanning Faces..."; ledColor = "#8b5cf6"; } // Purple
+  else if (indexer.object_scanner_running) { taskText = "Scanning Objects..."; ledColor = "#f59e0b"; } // Amber
+  else if (indexer.document_scanner_running) { taskText = "Extracting Text..."; ledColor = "#06b6d4"; } // Cyan
+  else if (indexer.hasher_running) { taskText = "Finding Duplicates..."; ledColor = "#ec4899"; } // Pink
+  else if (dataOpProgress) {
+    if (dataOpProgress.id?.includes('cluster')) { taskText = "Clustering Faces..."; ledColor = "#10b981"; }
+    else if (dataOpProgress.id?.includes('reclassify')) { taskText = "Reclassifying Faces..."; ledColor = "#f59e0b"; }
+    else if (dataOpProgress.id === 'purge') { taskText = "Purging Profiles..."; ledColor = "#ef4444"; } // Red
+    else if (dataOpProgress.id?.includes('cleanup')) { taskText = "Cleaning Database..."; ledColor = "#06b6d4"; } // Cyan
+    else { taskText = "Processing System Task..."; ledColor = "#3b82f6"; }
+  } else if (actionInProgress) { taskText = "System Operation..."; ledColor = "#64748b"; } // Slate
+  else if (indexer.data_operation_running) { taskText = "Remote Data Operation..."; ledColor = "#3b82f6"; } // Blue
+
   return(
 <SettingsContext.Provider value={{ animationsEnabled: (settings.animations_enabled ?? settings.ui_preferences?.animations_enabled) !== false, theme: settings.theme || 'dark' }}>
 <div className='layout' data-theme={settings.theme || 'dark'}>
@@ -881,6 +926,11 @@ export default function App() {
     @keyframes spin {
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
+    }
+    @keyframes led-pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.35; }
+      100% { opacity: 1; }
     }
   `}
 </style>
@@ -1086,6 +1136,34 @@ export default function App() {
         <ActionButton className="btn btn-secondary" onClick={() => peopleState.setMergeConflictData(null)}>Cancel</ActionButton>
       </div>
     </div>
+  </div>
+)}
+{isTaskRunning && !isShutdown && !isShuttingDown && (
+  <div className="floating-panel preserve-colors" style={{
+    position: 'fixed',
+    bottom: '24px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    background: '#1e293b',
+    border: '1px solid #334155',
+    borderRadius: '24px',
+    padding: '8px 16px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    zIndex: 9998,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+    pointerEvents: 'none'
+  }}>
+    <div style={{
+      width: '10px',
+      height: '10px',
+      borderRadius: '50%',
+      backgroundColor: ledColor,
+      boxShadow: `0 0 8px ${ledColor}`,
+      animation: 'led-pulse 1.5s infinite'
+    }} />
+    <span style={{ color: '#f8fafc', fontSize: '13px', fontWeight: 'bold' }}>{taskText}</span>
   </div>
 )}
 </div>

@@ -21,6 +21,7 @@ from backend.app.state import STATE
 from backend.app.utils.indexer import start_indexing, _process_unified_scanners, background_lazy_hasher
 from backend.app.database import SessionLocal, FileIndex
 from backend.app.utils.paths import get_ai_db_path
+from backend.app.utils.validators import wait_for_stopping_scanners
 from pydantic import BaseModel
 
 class IndexRequest(BaseModel):
@@ -32,6 +33,10 @@ router = APIRouter()
 
 @router.post("/verify-duplicates")
 def verify_duplicates():
+    wait_for_stopping_scanners()
+    with app_state.scanner_lock:
+        if STATE.get("running") or app_state.combined_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running or STATE.get("hasher_running") or STATE.get("data_operation_running"):
+            raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
     if load_config().get("enable_logging"):
         import logging
         logging.info("Duplicate verification started.")
@@ -43,7 +48,10 @@ def stop_verify_duplicates():
     if load_config().get("enable_logging"):
         import logging
         logging.info("Duplicate verification stopped.")
-    STATE["hasher_stopped"] = True
+    with app_state.scanner_lock:
+        STATE["hasher_stopped"] = True
+        STATE["stopped"] = True
+        app_state.combined_scanner_stopped = True
     return {"status": "stopping"}
 
 @router.post("/indexer/set-options")
@@ -79,8 +87,9 @@ def indexer_start(req: IndexRequest = None):
 
     if cv2 is None and (req.tag or req.face or req.document):
         raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
+    wait_for_stopping_scanners()
     with app_state.scanner_lock:
-        if STATE.get("running") or app_state.combined_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running:
+        if STATE.get("running") or app_state.combined_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running or STATE.get("data_operation_running") or STATE.get("hasher_running"):
             return {"started": True, "ignored": True}
         STATE["update_only"] = False
         STATE["stopped"] = False
@@ -107,9 +116,10 @@ def indexer_pause():
 
 @router.post("/indexer/resume")
 def indexer_resume():
+    wait_for_stopping_scanners()
     with app_state.scanner_lock:
         if not STATE.get("running") and not app_state.combined_scanner_running:
-            if app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running:
+            if app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running or STATE.get("data_operation_running") or STATE.get("hasher_running"):
                 # Cannot resume main indexer while a standalone scanner is running
                 return {"resumed_from_db": False, "ignored": True}
             # router was closed or stopped. Resume intelligently continues from the DB state.
@@ -133,6 +143,7 @@ def indexer_stop():
         STATE["face_scanner_stopped"] = True
         STATE["object_scanner_stopped"] = True
         STATE["document_scanner_stopped"] = True
+        STATE["hasher_stopped"] = True
     if load_config().get("enable_logging"):
         import logging
         logging.info("Archive indexing stopped.")
@@ -145,8 +156,9 @@ def indexer_update(req: IndexRequest = None):
 
     if cv2 is None and (req.tag or req.face or req.document):
         raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
+    wait_for_stopping_scanners()
     with app_state.scanner_lock:
-        if STATE.get("running") or app_state.combined_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running:
+        if STATE.get("running") or app_state.combined_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running or STATE.get("data_operation_running") or STATE.get("hasher_running"):
             return {"updating": False, "ignored": True}
         STATE["update_only"] = True
         STATE["stopped"] = False
@@ -170,8 +182,9 @@ def indexer_reindex(req: IndexRequest = None):
 
     if cv2 is None and (req.tag or req.face or req.document):
         raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
+    wait_for_stopping_scanners()
     with app_state.scanner_lock:
-        if STATE.get("running") or app_state.combined_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running:
+        if STATE.get("running") or app_state.combined_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running or STATE.get("data_operation_running") or STATE.get("hasher_running"):
             return {"reindexing": False, "ignored": True}
         with SessionLocal() as s:
             from sqlalchemy import text

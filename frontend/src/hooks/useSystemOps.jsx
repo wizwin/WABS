@@ -3,19 +3,31 @@ import { API } from '../States';
 
 export function useSystemOps({
   indexer, setIndexer, setStats, setActionInProgress, setDataOpProgress,
-  showToastMessage, loadDashboard, combinedOptions, explorer, tagsState, peopleState, page
+  showToastMessage, loadDashboard, combinedOptions, explorer, tagsState, peopleState, page, actionInProgress, dataOpProgress
 }) {
 
+  // Handles start, stop, pause, resume, and full reindexing controls for the main file indexer.
   async function indexerAction(action){
-    const isAnyRunning = indexer.running || indexer.combined_scanner_running;
+    if (window.wabs_action_in_progress) return;
+    const isAnyRunning = indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation) || actionInProgress || !!dataOpProgress;
     if ((action === 'start' || action === 'update' || action === 'reindex') && isAnyRunning) {
       return;
     }
+    if ((action === 'stop' || action === 'pause' || action === 'resume') && actionInProgress) {
+      return;
+    }
 
+    const isStartingAction = action === 'start' || action === 'update' || action === 'reindex';
+    if (isStartingAction) {
+      window.wabs_action_in_progress = true;
+    }
     setActionInProgress(true);
     try {
       if(action === 'reindex'){
-        if(!window.confirm('Are you sure you want to completely re-index the archive? This will wipe the current database and may take a considerable amount of time for large backups.')) return;
+        if(!window.confirm('Are you sure you want to completely re-index the archive? This will wipe the current database and may take a considerable amount of time for large backups.')) {
+          if (isStartingAction) window.wabs_action_in_progress = false;
+          return;
+        }
         await axios.post(`${API}/indexer/reindex`, combinedOptions)
         explorer.setFiles([])
         explorer.setSearchCache([])
@@ -44,18 +56,27 @@ export function useSystemOps({
       }
       await loadDashboard()
     } finally {
+      if (isStartingAction) {
+        window.wabs_action_in_progress = false;
+      }
       setActionInProgress(false);
     }
   }
 
+  // Triggers an offline backup of WABS configuration and database files to a chosen folder.
   async function backupDatabase() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks (Indexing, Face/Object Scanning, Text Extraction, Hash Verification) before backing up the database to ensure data consistency.");
       return;
     }
+    window.wabs_action_in_progress = true;
     try {
       const dest = await axios.get(`${API}/choose-path?mode=directory`);
-      if (!dest.data || !dest.data.path) return;
+      if (!dest.data || !dest.data.path) {
+        window.wabs_action_in_progress = false;
+        return;
+      }
       setActionInProgress(true);
       setDataOpProgress({ id: 'backup' });
       await axios.post(`${API}/system/backup`, { destination: dest.data.path });
@@ -63,19 +84,27 @@ export function useSystemOps({
     } catch (err) {
       alert('Error backing up database: ' + (err?.response?.data?.detail || err.message));
     } finally {
+      window.wabs_action_in_progress = false;
       setActionInProgress(false);
       setDataOpProgress(null);
     }
   }
 
+  // Scans for missing files, cleans dead links/AI references, and vacuums databases. Bypasses offline paths to prevent accidental purges.
   async function cleanupDatabase() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks (Indexing, Face/Object Scanning, Text Extraction, Hash Verification) before running the cleanup routine.");
       return;
     }
-    if (!window.confirm('Are you sure you want to run the cleanup routine? This will scan the entire database for missing files, remove their dead links, clean up empty AI profiles, and vacuum the databases. This may take several minutes for large archives.')) return;
+    window.wabs_action_in_progress = true;
+    if (!window.confirm('Are you sure you want to run the cleanup routine? This will scan the entire database for missing files, remove their dead links, clean up empty AI profiles, and vacuum the databases. This may take several minutes for large archives.')) {
+      window.wabs_action_in_progress = false;
+      return;
+    }
     setActionInProgress(true);
     setDataOpProgress({ id: 'cleanup' });
+    let wasCancelled = false;
     try {
       showToastMessage('Database cleanup & optimization in progress...');
       const r = await axios.post(`${API}/system/cleanup`);
@@ -89,14 +118,24 @@ export function useSystemOps({
         else if (page === 'search') await explorer.goToSearch(explorer.filterCategory);
       }
     } catch (err) {
-      alert('Error running cleanup: ' + (err?.response?.data?.detail || err.message));
+      if (err?.response?.data?.detail === 'Operation cancelled' || indexer.cancel_data_operation) {
+        wasCancelled = true;
+        showToastMessage('Cleanup cancelled by user.');
+        await loadDashboard();
+      } else {
+        alert('Error running cleanup: ' + (err?.response?.data?.detail || err.message));
+      }
     } finally {
-      setActionInProgress(false);
-      setDataOpProgress(null);
+      if (!wasCancelled) {
+        window.wabs_action_in_progress = false;
+        setActionInProgress(false);
+        setDataOpProgress(null);
+      }
     }
   }
 
   async function stopVerifyDuplicates() {
+    if (actionInProgress) return;
     setActionInProgress(true);
     try {
       setIndexer(prev => ({ ...prev, hasher_stopped: true }));
@@ -110,7 +149,14 @@ export function useSystemOps({
     }
   }
 
+  // Triggers background SHA-256 verification of files sharing matching sizes/names to locate duplicates.
   async function verifyDuplicates() {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+      alert("Please stop all background tasks before verifying duplicates.");
+      return;
+    }
+    window.wabs_action_in_progress = true;
     setActionInProgress(true);
     try {
       setIndexer(prev => ({ ...prev, hasher_running: true, hasher_stopped: false }));
@@ -121,6 +167,7 @@ export function useSystemOps({
       setIndexer(prev => ({ ...prev, hasher_running: false }));
       alert('Error starting verification: ' + (err?.response?.data?.detail || err.message))
     } finally {
+      window.wabs_action_in_progress = false;
       setActionInProgress(false);
     }
   }

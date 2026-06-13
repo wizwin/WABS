@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 # FastAPI & Router
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Depends
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy import func, Integer, text
 
@@ -17,6 +17,9 @@ from backend.app.config import load_config
 from backend.app.utils.utils import _resolve_path
 from backend.app.utils.media import generate_photo_thumbnail, generate_video_thumbnail, generate_document_thumbnail
 from backend.app.utils.indexer import PLAIN_TEXT_EXTENSIONS
+from backend.app.utils.validators import check_no_scanners_running, lock_data_operation
+import backend.app.shared_state as shared_state
+from backend.app.state import STATE
 
 router = APIRouter()
 
@@ -96,6 +99,8 @@ def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", so
             yield "["
             first = True
             for r in q.offset(offset).limit(limit).yield_per(1000):
+                if shared_state.APP_SHUTTING_DOWN:
+                    break
                 if not first: yield ","
                 first = False
                 yield json.dumps(_build_item(r, cache_flag))
@@ -262,8 +267,12 @@ def open_folder(path: str = Body(..., embed=True)):
 
     return {"opened": True, "path": str(folder_path), "platform": system_name}
 
-@router.post("/delete-files")
+@router.post("/delete-files", dependencies=[Depends(lock_data_operation)])
 def delete_files(paths: list[str] = Body(..., embed=True)):
+    """
+    Deletes files from the disk and removes their entries from the database.
+    Special code: Enforces Read-Only protections for specific backup locations.
+    """
     cfg = load_config()
     if cfg.get("read_only_mode", True):
         raise HTTPException(status_code=403, detail="Read-Only Mode is enabled. Deletion is blocked.")
@@ -285,6 +294,8 @@ def delete_files(paths: list[str] = Body(..., embed=True)):
     deleted_count = 0
     with SessionLocal() as session:
         for path_str in paths:
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             file_path = _resolve_path(Path(path_str))
             try:
                 if file_path.exists() and file_path.is_file():
@@ -302,14 +313,19 @@ def delete_files(paths: list[str] = Body(..., embed=True)):
         logging.info(f"Deleted {deleted_count} files.")
     return {"deleted": deleted_count}
 
-@router.post("/copy-files")
+@router.post("/copy-files", dependencies=[Depends(lock_data_operation)])
 def copy_files(paths: list[str] = Body(...), destination: str = Body(...)):
+    """
+    Copies multiple files to a selected destination directory.
+    """
     dest_path = Path(destination)
     if not dest_path.exists() or not dest_path.is_dir():
         raise HTTPException(status_code=400, detail="Invalid destination directory")
     
     copied_count = 0
     for path_str in paths:
+        if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+            raise HTTPException(status_code=400, detail="Operation cancelled")
         src = _resolve_path(Path(path_str))
         if src.exists() and src.is_file():
             try:
@@ -325,8 +341,12 @@ def copy_files(paths: list[str] = Body(...), destination: str = Body(...)):
         logging.info(f"Successfully copied {copied_count} files to destination.")
     return {"copied": copied_count}
 
-@router.post("/move-files")
+@router.post("/move-files", dependencies=[Depends(lock_data_operation)])
 def move_files(paths: list[str] = Body(...), destination: str = Body(...)):
+    """
+    Moves multiple files to a selected destination and updates their database paths.
+    Special code: Enforces Read-Only protections to block movements out of protected backup locations.
+    """
     cfg = load_config()
     if cfg.get("read_only_mode", True):
         raise HTTPException(status_code=403, detail="Read-Only Mode is enabled. Moving files is blocked.")
@@ -353,6 +373,8 @@ def move_files(paths: list[str] = Body(...), destination: str = Body(...)):
     updates = {}
     with SessionLocal() as session:
         for path_str in paths:
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             src = _resolve_path(Path(path_str))
             if src.exists() and src.is_file():
                 try:

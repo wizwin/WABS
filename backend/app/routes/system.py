@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, Request, HTTPException
+from fastapi import APIRouter, Body, Request, HTTPException, Depends
 from pathlib import Path
 import json
 import sqlite3
@@ -17,6 +17,8 @@ from backend.app.utils.paths import get_ai_db_path
 from backend.app.utils.cache import EXEMPLAR_CACHE
 from backend.app.utils.utils import _resolve_path, parse_tags
 import backend.app.shared_state as shared_state
+from backend.app.utils.validators import check_no_scanners_running, lock_data_operation
+from backend.app.state import STATE
 
 router = APIRouter()
 
@@ -187,8 +189,9 @@ def settings():
         
     return merge_defaults(cfg, defaults)
 
-@router.post("/settings")
+@router.post("/settings", dependencies=[Depends(lock_data_operation)])
 def save(data:dict):
+
     save_config(data)
     shared_state.LOGGING_ENABLED = data.get("enable_logging", False)
     if load_config().get("enable_logging"):
@@ -284,8 +287,9 @@ def generate_search(payload: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Request failed: {e}")
 
-@router.post("/clear-cache")
+@router.post("/clear-cache", dependencies=[Depends(lock_data_operation)])
 def clear_cache():
+
     import logging
     cfg = load_config()
     thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
@@ -300,6 +304,11 @@ def clear_cache():
                 logging.error(f"Critical error: Failed to clear cache: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to clear cache: {e}")
     return {"cleared": True, "message": "Cache was already empty"}
+
+@router.post("/system/cancel-data-operation")
+def cancel_data_operation():
+    STATE["cancel_data_operation"] = True
+    return {"status": "cancelling"}
 
 @router.post("/shutdown")
 def shutdown(request: Request):
@@ -363,8 +372,9 @@ def free_memory():
 
     return {"status": "Memory released"}
 
-@router.post("/system/backup")
+@router.post("/system/backup", dependencies=[Depends(lock_data_operation)])
 def backup_databases(payload: dict = Body(...)):
+
     dest_dir = payload.get("destination")
     if not dest_dir:
         raise HTTPException(status_code=400, detail="Destination directory is required.")
@@ -408,8 +418,12 @@ def backup_databases(payload: dict = Body(...)):
             logging.error(f"Critical error: Backup failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Backup failed: {e}")
 
-@router.post("/system/cleanup")
+@router.post("/system/cleanup", dependencies=[Depends(lock_data_operation)])
 def system_cleanup():
+    """
+    Performs database cleanup, unlinks orphaned thumbnails, and purges orphaned AI records.
+    Special code: Protects backup directories that are currently offline from being purged.
+    """
     cfg = load_config()
     ai_db_path = get_ai_db_path()
     db_path_str = cfg.get("database_path") or "archive.db"
@@ -447,8 +461,8 @@ def system_cleanup():
     
     with SessionLocal() as s:
         for r in s.query(FileIndex.id, FileIndex.path).yield_per(1000):
-            if shared_state.APP_SHUTTING_DOWN:
-                break
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             fid, path_str = r[0], r[1]
             file_path = Path(path_str)
             resolved_file_path = _resolve_path(file_path)
@@ -487,6 +501,8 @@ def system_cleanup():
                 
         if missing_ids:
             for i in range(0, len(missing_ids), 900):
+                if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                    raise HTTPException(status_code=400, detail="Operation cancelled")
                 chunk = missing_ids[i:i + 900]
                 s.query(FileIndex).filter(FileIndex.id.in_(chunk)).delete(synchronize_session=False)
                 s.execute(text(f"DELETE FROM processed_text WHERE file_id IN ({','.join(map(str, chunk))})"))
@@ -497,8 +513,8 @@ def system_cleanup():
 
         if thumb_dir.exists():
             for f in thumb_dir.rglob('*.jpg'):
-                if shared_state.APP_SHUTTING_DOWN:
-                    break
+                if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                    raise HTTPException(status_code=400, detail="Operation cancelled")
                 if f.is_file() and not f.name.startswith("person_") and f.stem not in valid_file_ids:
                     try:
                         f.unlink()
@@ -508,8 +524,11 @@ def system_cleanup():
 
     return {"status": "success", "removed_files": len(missing_ids), "removed_thumbnails": deleted_thumbnails_count, "message": "Cleanup and optimization complete."}
 
-@router.post("/system/purge-unknowns")
+@router.post("/system/purge-unknowns", dependencies=[Depends(lock_data_operation)])
 def purge_unknowns(payload: dict = Body(...)):
+    """
+    Deletes small noisy Unknown profiles containing fewer than a threshold of photos.
+    """
     threshold = int(payload.get("threshold", 3))
     cfg = load_config()
     ai_db_path = get_ai_db_path()
@@ -534,6 +553,8 @@ def purge_unknowns(payload: dict = Body(...)):
         
         if ids_to_delete:
             for i in range(0, len(ids_to_delete), 900):
+                if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                    raise HTTPException(status_code=400, detail="Operation cancelled")
                 chunk = ids_to_delete[i:i+900]
                 placeholders = ",".join("?" * len(chunk))
                 cursor.execute(f"DELETE FROM faces WHERE person_id IN ({placeholders})", chunk)
@@ -550,8 +571,12 @@ def purge_unknowns(payload: dict = Body(...)):
         
     return {"status": "success", "purged_profiles": purged_count}
 
-@router.get("/system/export-people")
+@router.get("/system/export-people", dependencies=[Depends(lock_data_operation)])
 def export_people():
+    """
+    Exports named profiles and their embeddings as JSON.
+    Special code: Packs float32 face arrays as Base64 strings, saving ~72% storage.
+    """
     if load_config().get("enable_logging"):
         import logging
         logging.info("Exporting people data.")
@@ -573,8 +598,8 @@ def export_people():
         export_data = []
         with SessionLocal() as s:
             for pid, name, thumb_id in people_rows:
-                if shared_state.APP_SHUTTING_DOWN:
-                    break
+                if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                    raise HTTPException(status_code=400, detail="Operation cancelled")
                 thumb_path = None
                 if thumb_id:
                     thumb_file = s.get(FileIndex, thumb_id)
@@ -599,8 +624,12 @@ def export_people():
                     export_data.append({"name": name, "thumbnail_path": thumb_path, "faces": faces})
     return export_data
 
-@router.post("/system/import-people")
+@router.post("/system/import-people", dependencies=[Depends(lock_data_operation)])
 def import_people(payload: list = Body(...)):
+    """
+    Imports profiles from JSON backup.
+    Special code: Caches FileIndex objects in-memory to prevent duplicate DB lookup calls.
+    """
     if load_config().get("enable_logging"):
         import logging
         logging.info(f"Importing {len(payload)} people profiles.")
@@ -623,8 +652,8 @@ def import_people(payload: list = Body(...)):
             
             with SessionLocal() as session:
                 for person_data in payload:
-                    if shared_state.APP_SHUTTING_DOWN:
-                        break
+                    if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                        raise HTTPException(status_code=400, detail="Operation cancelled")
                     name = person_data.get("name")
                     if not name:
                         continue

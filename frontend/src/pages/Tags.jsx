@@ -14,7 +14,7 @@ export default function Tags(props) {
     page, clearAllObjectTags, actionInProgress, indexer, stopObjectScan, startObjectScan,
     tagSearchQuery, setTagSearchQuery, setTagsPage, filteredTags, tagsPage, setFilterCategory,
     doSearch, deleteTagGlobally, objectTags, stopDocumentScan, startDocumentScan, showToastMessage,
-    loadDashboard
+    loadDashboard, dataOpProgress
   } = props;
 
   return (
@@ -36,8 +36,8 @@ export default function Tags(props) {
                 className="btn btn-secondary" 
                 style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', flexShrink: 0, whiteSpace: 'nowrap' }} 
                 onClick={clearAllObjectTags}
-                disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running}
-                title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to clear tags" : "Permanently remove all 'object:' tags from the entire database."}
+                disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)}
+                title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to clear tags" : "Permanently remove all 'object:' tags from the entire database."}
             >
             Clear All Tags
             </ActionButton>
@@ -46,7 +46,7 @@ export default function Tags(props) {
                 <CloseIcon fontSize="small" /> {indexer.object_scanner_stopped ? 'Stopping...' : 'Stop Scanning'}
             </ActionButton>
             ) : (
-            <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.document_scanner_running || indexer.hasher_running} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startObjectScan}>
+            <ActionButton disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startObjectScan}>
                 <PlayCircleIcon fontSize="small" /> Classify Objects & Scenes
             </ActionButton>
             )}
@@ -91,7 +91,7 @@ export default function Tags(props) {
                 <ActionButton className="btn btn-secondary" style={{ padding: '8px 16px', background: '#1e293b', color: '#38bdf8', borderColor: '#3b82f6', fontSize: '14px', paddingRight: '32px' }} onClick={() => { setFilterCategory('all'); doSearch(tag, 'all'); }}>
                 {tagName}
                 </ActionButton>
-                <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} style={{ position: 'absolute', top: '50%', right: '6px', transform: 'translateY(-50%)', background: 'transparent', color: '#ef4444', borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', padding: 0, minWidth: 0 }} onClick={() => deleteTagGlobally(tag)} title={(actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to delete tag" : `Delete tag "${tagName}" globally`}>
+                <ActionButton disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} style={{ position: 'absolute', top: '50%', right: '6px', transform: 'translateY(-50%)', background: 'transparent', color: '#ef4444', borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', padding: 0, minWidth: 0 }} onClick={() => deleteTagGlobally(tag)} title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to delete tag" : `Delete tag "${tagName}" globally`}>
                 <CloseIcon fontSize="small" />
                 </ActionButton>
             </div>
@@ -125,7 +125,7 @@ export default function Tags(props) {
             className="btn btn-secondary" 
             style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', flexShrink: 0, whiteSpace: 'nowrap' }} 
             onClick={async () => {
-                if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+                if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
                     alert("Please stop all background tasks before modifying data to prevent database conflicts.");
                     return;
                 }
@@ -138,8 +138,8 @@ export default function Tags(props) {
                     alert('Error clearing text: ' + (err?.response?.data?.detail || err.message));
                 }
             }}
-            disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running}
-            title={(actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to clear extracted text" : "Permanently remove all extracted text from the entire database."}
+            disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)}
+            title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to clear extracted text" : "Permanently remove all extracted text from the entire database."}
         >
             Clear Extracted Text
         </ActionButton>
@@ -149,7 +149,7 @@ export default function Tags(props) {
             <CloseIcon fontSize="small" /> {indexer.document_scanner_stopped ? 'Stopping...' : 'Stop Extraction'}
             </ActionButton>
         ) : (
-            <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startDocumentScan} title="Extract content from PDFs and Documents so they appear in search results">
+            <ActionButton disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startDocumentScan} title="Extract content from PDFs and Documents so they appear in search results">
             <PlayCircleIcon fontSize="small" /> Extract Document Text
             </ActionButton>
         )}

@@ -33,7 +33,7 @@ export default function Explorer(props) {
     toggleCheck, handleItemClick, openContainingFolder, setSelected, openFile,
     renderThumb, checkFileReadOnly, hasMore, loadingMore, showDetails, detailsWidth,
     selected, getPersonThumbUrl, currentPerson, personPreviewPhotos, renderMetadata,
-    setLoadingMore, handleScroll
+    setLoadingMore, handleScroll, dataOpProgress
   } = props;
 
   const loadFilesAbortController = useRef(null);
@@ -240,7 +240,7 @@ export default function Explorer(props) {
                 {indexer.hasher_stopped ? 'Stopping...' : 'Stop Verification'}
             </ActionButton>
             ) : (
-            <ActionButton disabled={actionInProgress} className="btn btn-secondary" style={{ marginLeft: '10px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={verifyDuplicates}>
+            <ActionButton disabled={actionInProgress || !!dataOpProgress} className="btn btn-secondary" style={{ marginLeft: '10px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={verifyDuplicates}>
                 <CheckCircleIcon fontSize="small" style={{ color: '#10b981' }} />
                 Verify Hashes
             </ActionButton>
@@ -290,14 +290,14 @@ export default function Explorer(props) {
             <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={copySelected}>Copy</ActionButton>
             {!isSelectionReadOnly && (
                 <>
-                <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={moveSelected}>Move</ActionButton>
-                <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={deleteSelected}>Delete</ActionButton>
+                <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={moveSelected}>Move</ActionButton>
+                <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={deleteSelected}>Delete</ActionButton>
                 </>
             )}
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
-            <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingPerson ? '#334155' : undefined }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); setIsTaggingObject(false); loadPeople(); }}>Tag Person</ActionButton>
+            <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingPerson ? '#334155' : undefined }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); setIsTaggingObject(false); loadPeople(); }}>Tag Person</ActionButton>
             {isTaggingPerson && Array.isArray(people) && (
                 <div style={{ display: 'flex', gap: '4px' }}>
                 <select 
@@ -308,8 +308,8 @@ export default function Explorer(props) {
                     <option value="" disabled>Select person...</option>
                     {sortedNamedPeopleDropdown.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
-                <ActionButton className="btn btn-secondary" style={{ padding: '4px 8px', color: '#10b981' }} onClick={() => personTagInput && assignPhotosToPerson(personTagInput, Array.from(checkedFiles))}>Add</ActionButton>
-                <ActionButton className="btn btn-secondary" style={{ padding: '4px 8px', color: '#ef4444' }} onClick={() => {
+                <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '4px 8px', color: '#10b981' }} onClick={() => personTagInput && assignPhotosToPerson(personTagInput, Array.from(checkedFiles))}>Add</ActionButton>
+                <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '4px 8px', color: '#ef4444' }} onClick={() => {
                     if (!personTagInput) return;
                     const fileIds = Array.from(checkedFiles).map(path => globalFileCache.current.get(path)?.id).filter(id => id);
                     removePersonPhotosBulk(personTagInput, fileIds);
@@ -319,7 +319,7 @@ export default function Explorer(props) {
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
-            <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingObject ? '#334155' : undefined }} onClick={() => { setIsTaggingObject(!isTaggingObject); setIsTaggingPerson(false); }} title={(actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to manage tags" : ""}>Manage Tags</ActionButton>
+            <ActionButton disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingObject ? '#334155' : undefined }} onClick={() => { setIsTaggingObject(!isTaggingObject); setIsTaggingPerson(false); }} title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to manage tags" : ""}>Manage Tags</ActionButton>
             {isTaggingObject && (
                 <div style={{ display: 'flex', gap: '4px' }}>
                 <input 
@@ -340,8 +340,8 @@ export default function Explorer(props) {
                     <option key={tag} value={tag.replace('object:', '')} />
                     ))}
                 </datalist>
-                <ActionButton className="btn btn-secondary" style={{ padding: '4px 8px', color: '#10b981' }} onClick={() => addTagsToSelected(tagInput)}>Add</ActionButton>
-                <ActionButton className="btn btn-secondary" style={{ padding: '4px 8px', color: '#ef4444' }} onClick={() => removeTagsFromSelected(tagInput)}>Remove</ActionButton>
+                <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '4px 8px', color: '#10b981' }} onClick={() => addTagsToSelected(tagInput)}>Add</ActionButton>
+                <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '4px 8px', color: '#ef4444' }} onClick={() => removeTagsFromSelected(tagInput)}>Remove</ActionButton>
                 </div>
             )}
             </div>

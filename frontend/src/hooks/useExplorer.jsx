@@ -3,7 +3,7 @@ import axios from 'axios';
 import { API, parseFileDate, dateFormatter } from '../States';
 
 export function useExplorer({
-  settings, page, setPage, query, setQuery, showToastMessage, sharedState
+  settings, page, setPage, query, setQuery, showToastMessage, sharedState, indexer, actionInProgress, dataOpProgress, setActionInProgress
 }) {
   const [files, setFiles] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -59,6 +59,7 @@ export function useExplorer({
     return Array.from(checkedFiles).some(checkFileReadOnly);
   }, [checkedFiles, settings]);
 
+  // Loads files in chunks from the backend with AbortController query cancellation support.
   async function loadFiles(nextOffset = 0, append = false, cat = filterCategory, sBy = sortBy, sOrd = sortOrder) {
     if (loadFilesAbortController.current) {
       loadFilesAbortController.current.abort();
@@ -96,6 +97,7 @@ export function useExplorer({
     }
   }
 
+  // Debounces search query key inputs and initiates search transitions.
   function doSearch(value, cat = filterCategory, sBy = sortBy, sOrd = sortOrder) {
     setQuery(value);
   
@@ -432,7 +434,15 @@ export function useExplorer({
     }
   };
 
+  // Deletes currently selected files from disk and DB index. Includes unverified SHA-256 safeguards for duplicates.
   async function deleteSelected() {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))) {
+      alert("Cannot delete files while a background task or data operation is running. Please stop it first.");
+      return;
+    }
+    window.wabs_action_in_progress = true;
+
     if (filterCategory === 'duplicates') {
       const filesToDelete = Array.from(checkedFiles).map(p => globalFileCache.current.get(p)).filter(Boolean);
       
@@ -440,6 +450,7 @@ export function useExplorer({
         const hasUnverified = filesToDelete.some(f => !f.metadata?.sha256);
         if (hasUnverified) {
           alert('Deletion Blocked: One or more selected files lack a verified SHA-256 sum.\n\nBecause your cold storage backup might be offline, we cannot guarantee these are true duplicates yet. You can override this protection in the Settings menu.');
+          window.wabs_action_in_progress = false;
           return;
         }
       }
@@ -461,12 +472,17 @@ export function useExplorer({
       for (const hash of Object.keys(hashCountsInDeletion)) {
         if (hashCountsInDeletion[hash] === totalHashCounts[hash]) {
           alert('Deletion Blocked: You cannot delete all verified copies of a file. You must keep at least one copy.');
+          window.wabs_action_in_progress = false;
           return;
         }
       }
     }
   
-    if(!window.confirm(`Are you sure you want to permanently delete ${checkedFiles.size} files from your disk and database? This action cannot be undone.`)) return;
+    if(!window.confirm(`Are you sure you want to permanently delete ${checkedFiles.size} files from your disk and database? This action cannot be undone.`)) {
+      window.wabs_action_in_progress = false;
+      return;
+    }
+    setActionInProgress(true);
     try {
       await axios.post(`${API}/delete-files`, { paths: Array.from(checkedFiles) });
       setFiles(prev => prev.filter(f => !checkedFiles.has(f.path)));
@@ -474,6 +490,9 @@ export function useExplorer({
       if(selected && checkedFiles.has(selected.path)) setSelected(null);
     } catch(err) {
       alert('Error deleting files: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      window.wabs_action_in_progress = false;
+      setActionInProgress(false);
     }
   }
 
@@ -486,21 +505,42 @@ export function useExplorer({
   }
 
   async function copySelected() {
+    if (window.wabs_action_in_progress) return;
+    window.wabs_action_in_progress = true;
     try {
       const dest = await axios.get(`${API}/choose-path?mode=directory`);
-      if (!dest.data || !dest.data.path) return;
+      if (!dest.data || !dest.data.path) {
+        window.wabs_action_in_progress = false;
+        return;
+      }
+      setActionInProgress(true);
       const res = await axios.post(`${API}/copy-files`, { paths: Array.from(checkedFiles), destination: dest.data.path });
       alert(`Successfully copied ${res.data.copied} files.`);
       setCheckedFiles(new Set());
     } catch(err) {
       alert('Error copying files: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      window.wabs_action_in_progress = false;
+      setActionInProgress(false);
     }
   }
 
+  // Moves checked files to a chosen destination directory, updating the index metadata paths.
   async function moveSelected() {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))) {
+      alert("Cannot move files while a background task or data operation is running. Please stop it first.");
+      return;
+    }
+    window.wabs_action_in_progress = true;
+
     try {
       const dest = await axios.get(`${API}/choose-path?mode=directory`);
-      if (!dest.data || !dest.data.path) return;
+      if (!dest.data || !dest.data.path) {
+        window.wabs_action_in_progress = false;
+        return;
+      }
+      setActionInProgress(true);
       const res = await axios.post(`${API}/move-files`, { paths: Array.from(checkedFiles), destination: dest.data.path });
       const updates = res.data.updates || {};
       setFiles(prev => prev.map(f => updates[f.path] ? { ...f, path: updates[f.path] } : f));
@@ -509,6 +549,9 @@ export function useExplorer({
       setCheckedFiles(new Set());
     } catch(err) {
       alert('Error moving files: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      window.wabs_action_in_progress = false;
+      setActionInProgress(false);
     }
   }
 

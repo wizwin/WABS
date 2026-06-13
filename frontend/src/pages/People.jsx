@@ -46,7 +46,7 @@ export default function People(props) {
                 <CloseIcon fontSize="small" /> {indexer.face_scanner_stopped ? 'Stopping...' : 'Stop Scanning'}
             </ActionButton>
             ) : (
-            <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startFaceScan}>
+            <ActionButton disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startFaceScan}>
                 <PlayCircleIcon fontSize="small" /> Scan Archive for Faces
             </ActionButton>
             )}
@@ -67,10 +67,10 @@ export default function People(props) {
             
             {hasUnknownSelected && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
-                <ActionButton disabled={actionInProgress} className="btn btn-secondary" style={{ padding: '6px 12px', background: showSelectedUnknownsActions ? '#334155' : undefined }} onClick={() => setShowSelectedUnknownsActions(!showSelectedUnknownsActions)}>
+                <ActionButton disabled={actionInProgress} className="btn btn-secondary" style={{ padding: '6px 12px', background: (showSelectedUnknownsActions || (dataOpProgress && ['clusterSelected', 'reclassifySelected'].includes(dataOpProgress.id))) ? '#334155' : undefined }} onClick={() => setShowSelectedUnknownsActions(!showSelectedUnknownsActions)}>
                     <SettingsApplicationsIcon fontSize="small" style={{ marginRight: '6px', verticalAlign: 'middle', display: 'inline-flex' }} /> AI Actions
                 </ActionButton>
-                {showSelectedUnknownsActions && (
+                {(showSelectedUnknownsActions || (dataOpProgress && ['clusterSelected', 'reclassifySelected'].includes(dataOpProgress.id))) && (
                     <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
                         <div style={{ display: 'flex', gap: '6px', alignItems: 'center', padding: '0 8px' }}>
                         <span style={{ color: '#94a3b8', fontSize: '13px' }}>Threshold:</span>
@@ -84,12 +84,12 @@ export default function People(props) {
                         />
                         <span style={{ color: '#10b981', fontSize: '13px', minWidth: '35px', fontWeight: 'bold' }}>{Math.round(similarityThreshold * 100)}%</span>
                         </div>
-                        <ActionButton disabled={indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (actionInProgress && dataOpProgress?.id !== 'clusterSelected')} className="btn btn-secondary" style={{ padding: '6px 12px', color: dataOpProgress?.id === 'clusterSelected' ? '#ef4444' : '#10b981', borderColor: dataOpProgress?.id === 'clusterSelected' ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'clusterSelected' ? cancelAiAction : clusterSelectedUnknowns} title="Compare selected unknown people against other unknowns and merge matches automatically.">
+                        <ActionButton disabled={(dataOpProgress && dataOpProgress.id === 'clusterSelected') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} className="btn btn-secondary" style={{ padding: '6px 12px', color: dataOpProgress?.id === 'clusterSelected' ? '#ef4444' : '#10b981', borderColor: dataOpProgress?.id === 'clusterSelected' ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'clusterSelected' ? cancelAiAction : clusterSelectedUnknowns} title="Compare selected unknown people against other unknowns and merge matches automatically.">
                         {dataOpProgress && dataOpProgress.id === 'clusterSelected' ? 
                             <><CloseIcon fontSize="small" /> Cancel</> : 
                             <><FaceIcon fontSize="small" /> Cluster Selected</>}
                         </ActionButton>
-                        <ActionButton disabled={indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (actionInProgress && dataOpProgress?.id !== 'reclassifySelected')} className="btn btn-secondary" style={{ padding: '6px 12px', color: dataOpProgress?.id === 'reclassifySelected' ? '#ef4444' : '#f59e0b', borderColor: dataOpProgress?.id === 'reclassifySelected' ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'reclassifySelected' ? cancelAiAction : reclassifySelectedUnknowns} title="Break apart selected profiles and re-evaluate each face against all knowns and unknowns.">
+                        <ActionButton disabled={(dataOpProgress && dataOpProgress.id === 'reclassifySelected') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} className="btn btn-secondary" style={{ padding: '6px 12px', color: dataOpProgress?.id === 'reclassifySelected' ? '#ef4444' : '#f59e0b', borderColor: dataOpProgress?.id === 'reclassifySelected' ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'reclassifySelected' ? cancelAiAction : reclassifySelectedUnknowns} title="Break apart selected profiles and re-evaluate each face against all knowns and unknowns.">
                         {dataOpProgress && dataOpProgress.id === 'reclassifySelected' ? 
                             <><CloseIcon fontSize="small" /> Cancel</> : 
                             <><FaceIcon fontSize="small" /> Reclassify Selected</>}
@@ -105,7 +105,7 @@ export default function People(props) {
             )}
 
             {checkedPeople.size > 1 && (
-            <ActionButton disabled={indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={mergeSelectedPeople} title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to merge profiles" : ""}>Merge Selected</ActionButton>
+            <ActionButton disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={mergeSelectedPeople} title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to merge profiles" : ""}>Merge Selected</ActionButton>
             )}
             <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedPeople(new Set())}>Clear Selection</ActionButton>
         </div>
@@ -166,7 +166,14 @@ export default function People(props) {
                     style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, cursor: 'pointer', transform: 'scale(1.2)' }}
                     />
                     <div 
-                    onClick={(e) => deletePerson(e, p.id, p.name)}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+                            alert("Please stop all background tasks before modifying profiles.");
+                            return;
+                        }
+                        deletePerson(e, p.id, p.name);
+                    }}
                     style={{position: 'absolute', top: '8px', right: '8px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', width: '26px', height: '26px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', zIndex: 10}}
                     title="Revert to Unknown Person"
                     >
@@ -195,6 +202,7 @@ export default function People(props) {
                             value={editingNames[p.id] !== undefined ? editingNames[p.id] : (p.name || '')} 
                             onClick={e => e.stopPropagation()}
                             onChange={e => setEditingNames(prev => ({ ...prev, [p.id]: e.target.value }))}
+                            disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)}
                             onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
                             onBlur={e => {
                                 let newName = e.target.value.trim();
@@ -243,7 +251,7 @@ export default function People(props) {
                     <h2 id="unknown-people-section" style={{ margin: 0, color: '#f8fafc', fontSize: '20px' }}>Unknown People</h2>
                     <ActionButton 
                     className="btn btn-secondary" 
-                    style={{ padding: '4px 10px', color: showUnknownsActions ? '#38bdf8' : '#94a3b8', borderColor: showUnknownsActions ? '#3b82f6' : '#334155', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', background: showUnknownsActions ? '#0f172a' : undefined }} 
+                    style={{ padding: '4px 10px', color: (showUnknownsActions || (dataOpProgress && ['clusterAll', 'reclassifyAll', 'purge'].includes(dataOpProgress.id))) ? '#38bdf8' : '#94a3b8', borderColor: (showUnknownsActions || (dataOpProgress && ['clusterAll', 'reclassifyAll', 'purge'].includes(dataOpProgress.id))) ? '#3b82f6' : '#334155', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', background: (showUnknownsActions || (dataOpProgress && ['clusterAll', 'reclassifyAll', 'purge'].includes(dataOpProgress.id))) ? '#0f172a' : undefined }} 
                     onClick={() => setShowUnknownsActions(!showUnknownsActions)}
                     >
                     <SettingsApplicationsIcon fontSize="small" /> AI Actions
@@ -262,7 +270,7 @@ export default function People(props) {
                 )}
                 </div>
                 
-                {showUnknownsActions && (
+                {(showUnknownsActions || (dataOpProgress && ['clusterAll', 'reclassifyAll', 'purge'].includes(dataOpProgress.id))) && (
                 <div style={{ background: '#0f172a', padding: '16px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '24px' }}>
                     <h3 style={{ margin: '0 0 16px 0', fontSize: '15px', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '8px' }}><SettingsApplicationsIcon fontSize="small" style={{ color: '#3b82f6' }} /> Bulk AI Operations</h3>
                     
@@ -281,12 +289,12 @@ export default function People(props) {
                             />
                             <span style={{ color: '#10b981', fontSize: '14px', minWidth: '40px', fontWeight: 'bold' }}>{Math.round(similarityThreshold * 100)}%</span>
                             </div>
-                        <ActionButton disabled={indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (actionInProgress && dataOpProgress?.id !== 'clusterAll')} className="btn btn-secondary" style={{ padding: '8px 16px', color: dataOpProgress?.id === 'clusterAll' ? '#ef4444' : '#10b981', borderColor: dataOpProgress?.id === 'clusterAll' ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'clusterAll' ? cancelAiAction : clusterAllUnknowns} title="Compare ALL unknown people against each other and merge matches automatically.">
+                        <ActionButton disabled={(dataOpProgress && dataOpProgress.id === 'clusterAll') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} className="btn btn-secondary" style={{ padding: '8px 16px', color: dataOpProgress?.id === 'clusterAll' ? '#ef4444' : '#10b981', borderColor: dataOpProgress?.id === 'clusterAll' ? '#b91c1c' : '#059669', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'clusterAll' ? cancelAiAction : clusterAllUnknowns} title="Compare ALL unknown people against each other and merge matches automatically.">
                             {dataOpProgress && dataOpProgress.id === 'clusterAll' ? 
                             <><CloseIcon fontSize="small" /> Cancel Clustering</> : 
                                 <><FaceIcon fontSize="small" /> Cluster All Unknowns</>}
                             </ActionButton>
-                        <ActionButton disabled={indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (actionInProgress && dataOpProgress?.id !== 'reclassifyAll')} className="btn btn-secondary" style={{ padding: '8px 16px', color: dataOpProgress?.id === 'reclassifyAll' ? '#ef4444' : '#f59e0b', borderColor: dataOpProgress?.id === 'reclassifyAll' ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'reclassifyAll' ? cancelAiAction : reclassifyAllUnknowns} title="Break apart all unknown profiles and re-evaluate each face against all knowns and unknowns.">
+                        <ActionButton disabled={(dataOpProgress && dataOpProgress.id === 'reclassifyAll') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} className="btn btn-secondary" style={{ padding: '8px 16px', color: dataOpProgress?.id === 'reclassifyAll' ? '#ef4444' : '#f59e0b', borderColor: dataOpProgress?.id === 'reclassifyAll' ? '#b91c1c' : '#d97706', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={dataOpProgress?.id === 'reclassifyAll' ? cancelAiAction : reclassifyAllUnknowns} title="Break apart all unknown profiles and re-evaluate each face against all knowns and unknowns.">
                             {dataOpProgress && dataOpProgress.id === 'reclassifyAll' ? 
                             <><CloseIcon fontSize="small" /> Cancel Reclassifying</> : 
                                 <><FaceIcon fontSize="small" /> Reclassify All Unknowns</>}
@@ -313,10 +321,10 @@ export default function People(props) {
                                 />
                             </div>
                             <ActionButton 
-                            disabled={(actionInProgress && dataOpProgress?.id !== 'purge') || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
+                            disabled={(dataOpProgress && dataOpProgress.id === 'purge') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} 
                             className="btn btn-secondary" 
                             onClick={dataOpProgress?.id === 'purge' ? cancelAiAction : purgeSmallUnknowns}
-                            title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to purge" : ""}
+                            title={(dataOpProgress && dataOpProgress.id === 'purge') ? "" : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to purge" : ""}
                             style={{ padding: '8px 16px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', display: 'flex', alignItems: 'center', gap: '6px' }}
                             >
                             {dataOpProgress && dataOpProgress.id === 'purge' ? (
@@ -344,7 +352,14 @@ export default function People(props) {
                     style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, cursor: 'pointer', transform: 'scale(1.2)' }}
                     />
                     <div 
-                    onClick={(e) => deletePerson(e, p.id, p.name)}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+                            alert("Please stop all background tasks before modifying profiles.");
+                            return;
+                        }
+                        deletePerson(e, p.id, p.name);
+                    }}
                     style={{position: 'absolute', top: '8px', right: '8px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', width: '26px', height: '26px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', zIndex: 10}}
                     title="Delete / Ignore Person"
                     >
@@ -366,6 +381,7 @@ export default function People(props) {
                             value={editingNames[p.id] !== undefined ? editingNames[p.id] : (p.name || '')} 
                             onClick={e => e.stopPropagation()}
                             onChange={e => setEditingNames(prev => ({ ...prev, [p.id]: e.target.value }))}
+                            disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)}
                             onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
                             onBlur={e => {
                                 let newName = e.target.value.trim();

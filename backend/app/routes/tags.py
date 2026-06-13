@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Depends
 from sqlalchemy import text
 import re
 import sqlite3
@@ -13,6 +13,8 @@ from backend.app.utils.paths import get_ai_db_path
 from backend.app.config import load_config
 from backend.app.utils.utils import parse_tags
 from backend.app.utils.log_utils import log_operation
+from backend.app.utils.validators import check_no_scanners_running, lock_data_operation, wait_for_stopping_scanners
+import backend.app.shared_state as shared_state
 
 router = APIRouter()
 
@@ -20,10 +22,15 @@ class TagUpdateRequest(BaseModel):
     file_ids: list[int]
     tags: list[str]
 
-@router.post("/tags/add")
+@router.post("/tags/add", dependencies=[Depends(lock_data_operation)])
 def add_tags(req: TagUpdateRequest):
+    """
+    Manually appends tags to a batch of files.
+    """
     with SessionLocal() as s:
         for i in range(0, len(req.file_ids), 900):
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             chunk = req.file_ids[i:i + 900]
             files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
             mappings = []
@@ -42,10 +49,15 @@ def add_tags(req: TagUpdateRequest):
     log_operation(f"Manually added tags {req.tags} to {len(req.file_ids)} file(s)", user_logs_enabled=load_config().get("enable_logging"))
     return {"status": "success"}
 
-@router.post("/tags/remove")
+@router.post("/tags/remove", dependencies=[Depends(lock_data_operation)])
 def remove_tags(req: TagUpdateRequest):
+    """
+    Manually removes tags from a batch of files.
+    """
     with SessionLocal() as s:
         for i in range(0, len(req.file_ids), 900):
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             chunk = req.file_ids[i:i + 900]
             files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
             mappings = []
@@ -66,12 +78,17 @@ def remove_tags(req: TagUpdateRequest):
     log_operation(f"Manually removed tags {req.tags} from {len(req.file_ids)} file(s)", user_logs_enabled=load_config().get("enable_logging"))
     return {"status": "success"}
 
-@router.delete("/tags/objects/all")
+@router.delete("/tags/objects/all", dependencies=[Depends(lock_data_operation)])
 def clear_all_object_tags():
+    """
+    Purges all AI-generated object: tags across the entire file index.
+    """
     with SessionLocal() as s:
         file_ids = [r[0] for r in s.query(FileIndex.id).filter(FileIndex.tags.like('%object:%')).all()]
         chunk_size = 1000
         for i in range(0, len(file_ids), chunk_size):
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             chunk = file_ids[i:i + chunk_size]
             files = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
             mappings = []
@@ -87,8 +104,11 @@ def clear_all_object_tags():
                 s.commit()
     return {"status": "success", "message": "All object tags have been cleared."}
 
-@router.delete("/tags/objects/{tag_name}")
+@router.delete("/tags/objects/{tag_name}", dependencies=[Depends(lock_data_operation)])
 def delete_object_tag_globally(tag_name: str):
+    """
+    Deletes a specific tag globally from all files in the archive.
+    """
     tag_to_delete = tag_name
     if not tag_to_delete.startswith("object:"):
         tag_to_delete = f"object:{tag_to_delete}"
@@ -97,6 +117,8 @@ def delete_object_tag_globally(tag_name: str):
         file_ids = [r[0] for r in s.query(FileIndex.id).filter(FileIndex.tags.like(f'%{tag_to_delete}%')).all()]
         chunk_size = 1000
         for i in range(0, len(file_ids), chunk_size):
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             chunk = file_ids[i:i + chunk_size]
             files = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
             mappings = []
@@ -117,27 +139,42 @@ def get_object_tags():
     with SessionLocal() as s:
         unique_tags = set()
         for r in s.query(FileIndex.tags).filter(FileIndex.tags.like('%object:%')).yield_per(1000):
+            if shared_state.APP_SHUTTING_DOWN:
+                break
             if r[0]:
                 for tag in parse_tags(r[0]):
                     if tag.startswith('object:'):
                         unique_tags.add(tag)
         return sorted(list(unique_tags))
 
-@router.get("/system/export-tags")
+@router.get("/system/export-tags", dependencies=[Depends(lock_data_operation)])
 def export_tags():
+    """
+    Exports all manual and object tags and their file paths to JSON.
+    """
     if load_config().get("enable_logging"):
         import logging
         logging.info("Exporting tags data.")
     with SessionLocal() as s:
         files = s.query(FileIndex.path, FileIndex.tags).filter(FileIndex.tags != None, FileIndex.tags != '').yield_per(1000)
-        export_data = [{"path": path, "tags": tags} for path, tags in files]
+        export_data = []
+        for path, tags in files:
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
+            export_data.append({"path": path, "tags": tags})
         return export_data
 
-@router.post("/system/import-tags")
+@router.post("/system/import-tags", dependencies=[Depends(lock_data_operation)])
 def import_tags(payload: list = Body(...)):
+    """
+    Imports tags from JSON backup.
+    Special code: Uses a Smart Path Fallback Matcher so tags survive root folder/drive letter changes.
+    """
     imported_count = 0
     with SessionLocal() as s:
         for item in payload:
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             path = item.get("path")
             new_tags = item.get("tags")
             if not path or not new_tags: continue
@@ -157,8 +194,9 @@ object_scanner_thread = None
 @router.post("/scan-objects")
 def scan_objects():
     global object_scanner_thread
+    wait_for_stopping_scanners()
     with app_state.scanner_lock:
-        if app_state.object_scanner_running or app_state.face_scanner_running or app_state.document_scanner_running or app_state.combined_scanner_running or STATE.get("running"):
+        if app_state.object_scanner_running or app_state.face_scanner_running or app_state.document_scanner_running or app_state.combined_scanner_running or STATE.get("running") or STATE.get("data_operation_running") or STATE.get("hasher_running"):
             raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
         app_state.object_scanner_running = True
         app_state.combined_scanner_stopped = False
@@ -178,6 +216,8 @@ def scan_objects():
 def stop_scan_objects():
     with app_state.scanner_lock:
         STATE["object_scanner_stopped"] = True
+        STATE["stopped"] = True
+        app_state.combined_scanner_stopped = True
         if not app_state.object_scanner_running:
             return {"message": "Object scanner is not running or already stopped."}
             
@@ -187,11 +227,9 @@ def stop_scan_objects():
         
     return {"message": "Stopping object scanner."}
 
-@router.post("/reset-object-scanner-progress")
+@router.post("/reset-object-scanner-progress", dependencies=[Depends(lock_data_operation)])
 def reset_object_scanner_progress():
-    with app_state.scanner_lock:
-        if app_state.document_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.combined_scanner_running or STATE.get("running"):
-            raise HTTPException(status_code=400, detail="Cannot reset progress while a scan is running. Please stop it first.")
+
     try:
         ai_db_path = get_ai_db_path()
         if ai_db_path.exists():

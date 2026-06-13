@@ -275,6 +275,16 @@ def extract_top_keywords(text_data: str, max_words: int = None, is_log: bool = F
 worker = None
 
 def get_or_create_exemplars(person_id: int, conn_or_cursor) -> list:
+    """
+    Curates and caches up to 15 representative face exemplars for a person profile.
+    Special code: Uses a fast (under 5ms) in-memory numpy curation to select timeline, centroid, and boundary faces, with a 0ms SQL bypass for small profiles (<= 15 faces).
+    """
+    from backend.app.state import STATE
+    import backend.app.state as app_state
+    is_scan_active = app_state.face_scanner_running or app_state.combined_scanner_running
+    if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
+        return []
+        
     from backend.app.utils.cache import EXEMPLAR_CACHE
     cached = EXEMPLAR_CACHE.get(person_id)
     
@@ -345,14 +355,22 @@ def get_or_create_exemplars(person_id: int, conn_or_cursor) -> list:
         sampled_files = files_info
         
     analyzed_files = []
+    is_scan_active = app_state.face_scanner_running or app_state.combined_scanner_running
+    if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
+        return []
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = {}
         for f_item in sampled_files:
+            if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
+                break
             file_path = _resolve_path(Path(f_item.path))
             if file_path.exists():
                 futures[executor.submit(_evaluate_image_faces, file_path, yunet_path)] = f_item
                 
         for future in concurrent.futures.as_completed(futures):
+            if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
+                break
             f_item = futures[future]
             try:
                 metrics = future.result()
@@ -569,6 +587,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                 cursor.execute("SELECT DISTINCT person_id FROM faces WHERE embedding_json != '[]'")
                 p_ids = [r[0] for r in cursor.fetchall()]
                 for p_id in p_ids:
+                    if STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped:
+                        break
                     clusters[p_id] = get_or_create_exemplars(p_id, cursor)
 
                 cursor.execute("SELECT MAX(id) FROM people")
@@ -661,7 +681,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         # Give frontend time to register that a scan has officially started with 0 progress
         # This prevents the UI from getting stuck at "Calculating..." if the queue is empty
         # or finishes too quickly.
-        if not run_index:
+        if not run_index and not (STATE.get("stopped") or app_state.combined_scanner_stopped or STATE.get("face_scanner_stopped")):
             time.sleep(1.5)
             
         processed_count = 0

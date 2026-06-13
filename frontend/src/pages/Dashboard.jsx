@@ -30,8 +30,10 @@ export default function Dashboard(props) {
     actionInProgress, combinedOptions, setCombinedOptions,
     indexerAction, stopVerifyDuplicates, verifyDuplicates,
     stopFaceScan, startFaceScan, stopObjectScan, startObjectScan,
-    stopDocumentScan, startDocumentScan
+    stopDocumentScan, startDocumentScan, dataOpProgress
   } = props;
+
+  const isTaskActive = actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation);
 
   return (
     <>
@@ -90,25 +92,25 @@ export default function Dashboard(props) {
         <h3 style={{ margin: '16px 0 10px 0', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Core Database</h3>
 
         <div style={{display:'flex', gap:'16px', marginBottom:'16px', flexWrap:'wrap'}}>
-        <label style={{display:'flex',alignItems:'center',gap:'8px', color: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? 'not-allowed' : 'pointer'}}>
-            <input type='checkbox' disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} checked={combinedOptions.tag} onChange={(e) => { const next = {...combinedOptions, tag: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Classify Objects & Scenes
+        <label style={{display:'flex',alignItems:'center',gap:'8px', color: isTaskActive ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: isTaskActive ? 'not-allowed' : 'pointer'}}>
+            <input type='checkbox' disabled={isTaskActive} checked={combinedOptions.tag} onChange={(e) => { const next = {...combinedOptions, tag: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Classify Objects & Scenes
         </label>
-        <label style={{display:'flex',alignItems:'center',gap:'8px', color: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? 'not-allowed' : 'pointer'}}>
-            <input type='checkbox' disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} checked={combinedOptions.face} onChange={(e) => { const next = {...combinedOptions, face: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Scan for Faces
+        <label style={{display:'flex',alignItems:'center',gap:'8px', color: isTaskActive ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: isTaskActive ? 'not-allowed' : 'pointer'}}>
+            <input type='checkbox' disabled={isTaskActive} checked={combinedOptions.face} onChange={(e) => { const next = {...combinedOptions, face: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Scan for Faces
         </label>
-        <label style={{display:'flex',alignItems:'center',gap:'8px', color: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: (actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? 'not-allowed' : 'pointer'}}>
-            <input type='checkbox' disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} checked={combinedOptions.document} onChange={(e) => { const next = {...combinedOptions, document: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Extract Document Text
+        <label style={{display:'flex',alignItems:'center',gap:'8px', color: isTaskActive ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: isTaskActive ? 'not-allowed' : 'pointer'}}>
+            <input type='checkbox' disabled={isTaskActive} checked={combinedOptions.document} onChange={(e) => { const next = {...combinedOptions, document: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Extract Document Text
         </label>
         </div>
 
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(90px, 1fr))',gap:'8px'}}>
-        <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} onClick={()=>indexerAction('start')}>
+        <ActionButton disabled={isTaskActive} onClick={()=>indexerAction('start')}>
         Start
         </ActionButton>
-        <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} onClick={()=>indexerAction('update')}>
+        <ActionButton disabled={isTaskActive} onClick={()=>indexerAction('update')}>
         Update
         </ActionButton>
-        <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} onClick={()=>indexerAction('reindex')} style={{ color: (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? undefined : '#f59e0b' }}>
+        <ActionButton disabled={isTaskActive} onClick={()=>indexerAction('reindex')} style={{ color: isTaskActive ? undefined : '#f59e0b' }}>
         Re-index
         </ActionButton>
         <ActionButton disabled={actionInProgress || (!indexer.running && !indexer.combined_scanner_running) || indexer.paused || (indexer.running && indexer.stopped) || (indexer.combined_scanner_running && indexer.combined_scanner_stopped)} onClick={()=>indexerAction('pause')}>
@@ -134,7 +136,7 @@ export default function Dashboard(props) {
         <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.hasher_current_file || ''}</div>
         </>
         ) : (
-        <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running} onClick={verifyDuplicates} style={{ width: '100%' }}>
+        <ActionButton disabled={isTaskActive} onClick={verifyDuplicates} style={{ width: '100%' }}>
         Verify Hashes (Duplicates)
         </ActionButton>
         )}
@@ -149,7 +151,7 @@ export default function Dashboard(props) {
         <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.face_scanner_current_file || ''}</div>
         </>
         ) : (
-        <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} onClick={startFaceScan} style={{ width: '100%' }}>
+        <ActionButton disabled={isTaskActive} onClick={startFaceScan} style={{ width: '100%' }}>
         Scan for Faces (People)
         </ActionButton>
         )}
@@ -164,7 +166,7 @@ export default function Dashboard(props) {
         <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.object_scanner_current_file || ''}</div>
         </>
         ) : (
-        <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.document_scanner_running || indexer.hasher_running} onClick={startObjectScan} style={{ width: '100%' }}>
+        <ActionButton disabled={isTaskActive} onClick={startObjectScan} style={{ width: '100%' }}>
         Classify Objects & Scenes
         </ActionButton>
         )}
@@ -179,7 +181,7 @@ export default function Dashboard(props) {
         <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.document_scanner_current_file || ''}</div>
         </>
         ) : (
-        <ActionButton disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} onClick={startDocumentScan} style={{ width: '100%' }} title="Extract content from PDFs and Documents so they appear in search results">
+        <ActionButton disabled={isTaskActive} onClick={startDocumentScan} style={{ width: '100%' }} title="Extract content from PDFs and Documents so they appear in search results">
         Extract Document Text
         </ActionButton>
         )}

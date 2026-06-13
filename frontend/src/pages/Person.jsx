@@ -30,8 +30,10 @@ export default function Person(props) {
     personFiles, viewMode, groupedPersonFiles, toggleCheck, handleItemClick,
     openContainingFolder, openFile, renderThumb, checkFileReadOnly, hasMore,
     loadingMore, showDetails, detailsWidth, selected, personPreviewPhotos,
-    renderMetadata, handleScroll
+    renderMetadata, handleScroll, dataOpProgress
   } = props;
+
+  const isTaskActive = indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || indexer.data_operation_running || actionInProgress || !!dataOpProgress;
 
   return (
     <>
@@ -126,6 +128,7 @@ export default function Person(props) {
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <ActionButton 
                     className="btn btn-secondary" 
+                    disabled={isTaskActive}
                     style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#10b981', borderColor: '#059669' }}
                     onClick={() => autoSuggestThumbnail(currentPerson.id)}
                     title="Automatically analyze photos to pick the clearest and largest face for the cover."
@@ -159,6 +162,7 @@ export default function Person(props) {
                         ) : (
                         <ActionButton 
                             className="btn btn-secondary" 
+                            disabled={isTaskActive}
                             style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#38bdf8', borderColor: '#3b82f6' }}
                             onClick={() => setShowSimilarPanel(true)}
                         >
@@ -181,12 +185,12 @@ export default function Person(props) {
                 <input 
                 type="range" 
                 min="0.35" max="0.85" step="0.01" 
-                    disabled={isFindingSimilar}
+                    disabled={isFindingSimilar || isTaskActive}
                 value={similarityThreshold} 
                 onChange={(e) => setSimilarityThreshold(parseFloat(e.target.value))} 
                 />
                 <span style={{ color: '#38bdf8', fontSize: '14px', minWidth: '40px' }}>{Math.round(similarityThreshold * 100)}%</span>
-                <ActionButton disabled={isFindingSimilar} className="btn btn-primary" style={{ padding: '4px 10px' }} onClick={() => findSimilarUnknowns(currentPerson.id, similarityThreshold)}>
+                <ActionButton disabled={isFindingSimilar || isTaskActive} className="btn btn-primary" style={{ padding: '4px 10px' }} onClick={() => findSimilarUnknowns(currentPerson.id, similarityThreshold)}>
                 {similarUnknowns ? 'Update Search' : 'Start Search'}
                 </ActionButton>
                 <ActionButton className="btn btn-secondary" style={{ padding: '4px 10px' }} onClick={() => { setSimilarUnknowns(null); setSimilarUnknownsPage(1); setShowSimilarPanel(false); setCheckedSimilar(new Set()); if (selected?.is_person) setSelected(null); }}>Close</ActionButton>
@@ -239,8 +243,8 @@ export default function Person(props) {
                 ))}
                 </div>
                 <div style={{ display: 'flex', gap: '10px' }}>
-                <ActionButton disabled={checkedSimilar.size === 0 || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={async () => {
-                    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+                <ActionButton disabled={checkedSimilar.size === 0 || isTaskActive} className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={async () => {
+                    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
                         alert("Please stop all background tasks before merging profiles to prevent database conflicts.");
                         return;
                     }
@@ -261,7 +265,7 @@ export default function Person(props) {
                 }}>
                     Merge {checkedSimilar.size} Selected
                 </ActionButton>
-                <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => {
+                <ActionButton disabled={isTaskActive} className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => {
                     const visibleSimilar = similarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id));
                     if (checkedSimilar.size === visibleSimilar.length && visibleSimilar.length > 0) setCheckedSimilar(new Set());
                     else setCheckedSimilar(new Set(visibleSimilar.map(p => p.id)));
@@ -280,7 +284,7 @@ export default function Person(props) {
         <div style={{ padding: '10px 18px', background: '#1e293b', borderBottom: '1px solid #1f2937', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto', whiteSpace: 'nowrap' }}>{checkedFiles.size} photo(s) selected</span>
             {checkedFiles.size === 1 && (
-            <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', whiteSpace: 'nowrap' }} onClick={() => {
+            <ActionButton disabled={isTaskActive} className="btn btn-secondary" style={{ padding: '6px 12px', whiteSpace: 'nowrap' }} onClick={() => {
                 const fileId = globalFileCache.current.get(Array.from(checkedFiles)[0])?.id;
                 if (fileId) setPersonThumbnail(currentPerson.id, fileId);
             }}>Set as Cover Photo</ActionButton>
@@ -291,7 +295,7 @@ export default function Person(props) {
                 </ActionButton>
             )}
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
-            <ActionButton disabled={actionInProgress} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingPerson ? '#334155' : undefined, whiteSpace: 'nowrap' }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); loadPeople(); }}>Move to Person</ActionButton>
+            <ActionButton disabled={isTaskActive} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingPerson ? '#334155' : undefined, whiteSpace: 'nowrap' }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); loadPeople(); }}>Move to Person</ActionButton>
             {isTaggingPerson && Array.isArray(people) && (
                 <select 
                 onChange={(e) => movePhotosToPerson(e.target.value, Array.from(checkedFiles))} 
@@ -303,7 +307,7 @@ export default function Person(props) {
                 </select>
             )}
             </div>
-            <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', whiteSpace: 'nowrap' }} onClick={() => {
+            <ActionButton disabled={isTaskActive} className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', whiteSpace: 'nowrap' }} onClick={() => {
                 const fileIds = Array.from(checkedFiles).map(path => globalFileCache.current.get(path)?.id).filter(id => id);
                 removePersonPhotosBulk(currentPerson.id, fileIds);
             }}>Remove from Person</ActionButton>

@@ -1,5 +1,5 @@
 import threading
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import text
 
 from backend.app.database import SessionLocal
@@ -7,6 +7,7 @@ import backend.app.state as app_state
 from backend.app.state import STATE
 from backend.app.utils.indexer import _process_unified_scanners
 from backend.app.config import load_config
+from backend.app.utils.validators import check_no_scanners_running, lock_data_operation, wait_for_stopping_scanners
 
 router = APIRouter()
 
@@ -15,8 +16,9 @@ document_scanner_thread = None
 @router.post("/scan-documents")
 def scan_documents():
     global document_scanner_thread
+    wait_for_stopping_scanners()
     with app_state.scanner_lock:
-        if app_state.document_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.combined_scanner_running or STATE.get("running"):
+        if app_state.document_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.combined_scanner_running or STATE.get("running") or STATE.get("data_operation_running") or STATE.get("hasher_running"):
             raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
         app_state.document_scanner_running = True
         app_state.combined_scanner_stopped = False
@@ -36,6 +38,8 @@ def scan_documents():
 def stop_scan_documents():
     with app_state.scanner_lock:
         STATE["document_scanner_stopped"] = True
+        STATE["stopped"] = True
+        app_state.combined_scanner_stopped = True
         if not app_state.document_scanner_running:
             return {"message": "Document text extractor is not running or already stopped."}
             
@@ -45,11 +49,9 @@ def stop_scan_documents():
         
     return {"message": "Stopping document text extractor."}
 
-@router.post("/reset-document-scanner-progress")
+@router.post("/reset-document-scanner-progress", dependencies=[Depends(lock_data_operation)])
 def reset_document_scanner_progress():
-    with app_state.scanner_lock:
-        if app_state.document_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.combined_scanner_running or STATE.get("running"):
-            raise HTTPException(status_code=400, detail="Cannot reset progress while a scan is running. Please stop it first.")
+
     try:
         with SessionLocal() as s:
             s.execute(text("CREATE TABLE IF NOT EXISTS processed_text (file_id INTEGER PRIMARY KEY)"))

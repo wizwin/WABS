@@ -3,9 +3,9 @@ import axios from 'axios';
 import { API } from '../States';
 
 export function useTags({
-  indexer, checkedFiles, setCheckedFiles, globalFileCache, page, filterCategory,
+  indexer, setIndexer, checkedFiles, setCheckedFiles, globalFileCache, page, filterCategory,
   loadFiles, goToSearch, selected, setSelected, loadDashboard,
-  showToastMessage, setActionInProgress, setDataOpProgress
+  showToastMessage, setActionInProgress, setDataOpProgress, actionInProgress, dataOpProgress
 }) {
   const [objectTags, setObjectTags] = useState([]);
   const [isTaggingObject, setIsTaggingObject] = useState(false);
@@ -14,6 +14,7 @@ export function useTags({
   const [tagSearchQuery, setTagSearchQuery] = useState('');
   const abortDataOpRef = useRef(false);
 
+  // Fetches unique object: tags from the database to populate UI lists and dashboard charts.
   async function loadTags() {
     try {
       const tagsRes = await axios.get(`${API}/tags/objects?t=${Date.now()}`);
@@ -26,15 +27,18 @@ export function useTags({
   }
 
   async function addTagsToSelected(tagsStr) {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying tags to prevent database conflicts.");
       return;
     }
     if (!tagsStr) return;
     const tags = tagsStr.split(',').map(t => t.trim().replace(/\s+/g, '_').toLowerCase()).filter(t => t);
     if (tags.length === 0) return;
+    window.wabs_action_in_progress = true;
     const fileIds = Array.from(checkedFiles).map(p => globalFileCache.current.get(p)?.id).filter(id => id);
     const filePaths = Array.from(checkedFiles);
+    setActionInProgress(true);
     try {
       await axios.post(`${API}/tags/add`, { file_ids: fileIds, tags });
   
@@ -81,19 +85,25 @@ export function useTags({
       loadTags();
     } catch(err) {
       alert('Error adding tags: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      window.wabs_action_in_progress = false;
+      setActionInProgress(false);
     }
   }
   
   async function removeTagsFromSelected(tagsStr) {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying tags to prevent database conflicts.");
       return;
     }
     if (!tagsStr) return;
     const tags = tagsStr.split(',').map(t => t.trim().replace(/\s+/g, '_').toLowerCase()).filter(t => t);
     if (tags.length === 0) return;
+    window.wabs_action_in_progress = true;
     const fileIds = Array.from(checkedFiles).map(p => globalFileCache.current.get(p)?.id).filter(id => id);
     const filePaths = Array.from(checkedFiles);
+    setActionInProgress(true);
     try {
       await axios.post(`${API}/tags/remove`, { file_ids: fileIds, tags });
   
@@ -140,16 +150,26 @@ export function useTags({
       loadTags();
     } catch(err) {
       alert('Error removing tags: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      window.wabs_action_in_progress = false;
+      setActionInProgress(false);
     }
   }
   
+  // Deletes a selected tag from every file in the index globally.
   async function deleteTagGlobally(tag) {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying tags to prevent database conflicts.");
       return;
     }
+    window.wabs_action_in_progress = true;
     const tagName = tag.replace('object:', '').replace(/_/g, ' ');
-    if (!window.confirm(`Are you sure you want to remove the tag "${tagName}" from ALL files? This cannot be undone.`)) return;
+    if (!window.confirm(`Are you sure you want to remove the tag "${tagName}" from ALL files? This cannot be undone.`)) {
+      window.wabs_action_in_progress = false;
+      return;
+    }
+    setActionInProgress(true);
     try {
       await axios.delete(`${API}/tags/objects/${encodeURIComponent(tag)}`);
       showToastMessage(`Tag "${tagName}" removed from all files.`);
@@ -157,15 +177,25 @@ export function useTags({
       loadTags();
     } catch(err) {
       alert('Error deleting tag: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      window.wabs_action_in_progress = false;
+      setActionInProgress(false);
     }
   }
   
+  // Purges all automatically detected AI tags from every file and resets scanner progress.
   async function clearAllObjectTags() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying tags to prevent database conflicts.");
       return;
     }
-    if (!window.confirm(`Are you sure you want to remove ALL automatically detected object tags from EVERY file in the database? This action cannot be undone.`)) return;
+    window.wabs_action_in_progress = true;
+    if (!window.confirm(`Are you sure you want to remove ALL automatically detected object tags from EVERY file in the database? This action cannot be undone.`)) {
+      window.wabs_action_in_progress = false;
+      return;
+    }
+    setActionInProgress(true);
     try {
       await axios.delete(`${API}/tags/objects/all`);
       await axios.post(`${API}/reset-object-scanner-progress`);
@@ -174,14 +204,20 @@ export function useTags({
       loadTags();
     } catch(err) {
       alert('Error clearing all tags: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      window.wabs_action_in_progress = false;
+      setActionInProgress(false);
     }
   }
   
+  // Serializes and downloads all custom/manual tags as a JSON backup file.
   async function exportTags() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before exporting tags to ensure data consistency.");
       return;
     }
+    window.wabs_action_in_progress = true;
     setActionInProgress(true);
     setDataOpProgress({ id: 'tags', action: 'export', current: 0, total: 0 });
     showToastMessage('Exporting tags...');
@@ -198,13 +234,16 @@ export function useTags({
     } catch(err) {
       alert('Error exporting tags: ' + (err?.response?.data?.detail || err.message));
     } finally {
+      window.wabs_action_in_progress = false;
       setDataOpProgress(null);
       setActionInProgress(false);
     }
   }
   
+  // Imports tags from JSON with safety confirmations. Uses path remap fallbacks so tags survive migrations.
   function importTags() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before importing tags to prevent database conflicts.");
       return;
     }
@@ -219,6 +258,8 @@ export function useTags({
       if (!file) return;
       const reader = new FileReader();
       reader.onload = async (event) => {
+        if (window.wabs_action_in_progress) return;
+        window.wabs_action_in_progress = true;
         try {
           const payload = JSON.parse(event.target.result);
           if (!Array.isArray(payload)) throw new Error("Invalid JSON format");
@@ -245,6 +286,7 @@ export function useTags({
         } catch (err) {
           alert('Error importing tags: ' + (err?.response?.data?.detail || err.message));
         } finally {
+          window.wabs_action_in_progress = false;
           setDataOpProgress(null);
           setActionInProgress(false);
         }

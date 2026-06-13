@@ -1,18 +1,20 @@
 import React from 'react';
 import SettingsIcon from '@mui/icons-material/Settings';
 import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
+import axios from 'axios';
 
 import { ActionButton } from '../components/ui/ActionButton';
+import { API } from '../States';
 
 export default function Settings(props) {
   const { 
     page, settings, setSettings, saveSettings, settingsTab, setSettingsTab,
-    choosePath, updateUIPreferences, actionInProgress, indexer, cleanupDatabase,
+    choosePath, updateUIPreferences, actionInProgress, indexer, setIndexer, cleanupDatabase,
     dataOpProgress, backupDatabase, exportKnownPeople, importKnownPeople,
     exportTags, importTags, clearCache, showSidebar, toggleSidebar, showTimeline, toggleTimeline,
     showDetails, toggleDetails, aiSearchPrompt, setAiSearchPrompt, generateSearchWithAI,
     generatingSearch, testingAI, testAIConnection, globalPeopleMap, choosePathForConfig,
-    abortPeopleDataOpRef, abortTagsDataOpRef
+    abortPeopleDataOpRef, abortTagsDataOpRef, cancelAiAction
   } = props;
 
   return (
@@ -23,7 +25,7 @@ export default function Settings(props) {
         <div style={{ maxWidth: '900px', margin: '0 auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <h1 style={{ margin: 0 }}>Settings</h1>
-            <ActionButton className="btn btn-primary" style={{ padding: '10px 20px', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={saveSettings}>
+            <ActionButton disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} className="btn btn-primary" style={{ padding: '10px 20px', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={saveSettings} title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to save settings" : ""}>
                 <SettingsIcon fontSize="small" />
                 Save Settings
             </ActionButton>
@@ -122,14 +124,20 @@ export default function Settings(props) {
                     <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Scan for missing files, clear orphaned data, and vacuum databases to reclaim space.</p>
                     </div>
                     <ActionButton 
-                    disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
+                    disabled={(dataOpProgress && dataOpProgress.id === 'cleanup') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} 
                     className="btn btn-secondary" 
-                    onClick={cleanupDatabase}
-                    title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to run cleanup" : ""}
+                    onClick={() => {
+                        if (dataOpProgress && dataOpProgress.id === 'cleanup') {
+                            cancelAiAction();
+                        } else {
+                            cleanupDatabase();
+                        }
+                    }}
+                    title={(dataOpProgress && dataOpProgress.id === 'cleanup') ? "" : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to run cleanup" : ""}
                     style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
                     >
                     {dataOpProgress && dataOpProgress.id === 'cleanup' ? (
-                        <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Cleaning...</>
+                        <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Cancel Cleanup</>
                     ) : 'Run Cleanup'}
                     </ActionButton>
                 </div>
@@ -139,10 +147,10 @@ export default function Settings(props) {
                     <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Create a safe, portable copy of your archive.db, ai_metadata.db, and config.yaml.</p>
                     </div>
                     <ActionButton 
-                    disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
+                    disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} 
                     className="btn btn-secondary" 
                     onClick={backupDatabase}
-                    title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to backup the database" : ""}
+                    title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to backup the database" : ""}
                     style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
                     >
                     {dataOpProgress && dataOpProgress.id === 'backup' ? (
@@ -157,10 +165,10 @@ export default function Settings(props) {
                     </div>
                     <div style={{ display: 'flex', gap: '10px' }}>
                     <ActionButton 
-                        disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
+                        disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} 
                         className="btn btn-secondary" 
                         onClick={exportKnownPeople}
-                        title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to export data" : ""}
+                        title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to export data" : ""}
                         style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
                     >
                         {dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'export' ? (
@@ -168,16 +176,17 @@ export default function Settings(props) {
                         ) : 'Export JSON'}
                     </ActionButton>
                     <ActionButton 
-                        disabled={(actionInProgress && !(dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'import')) || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
+                        disabled={(dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'import') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} 
                         className="btn btn-secondary" 
                         onClick={() => {
                         if (dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'import') {
                             if (abortPeopleDataOpRef) abortPeopleDataOpRef.current = true;
+                            cancelAiAction();
                         } else {
                             importKnownPeople();
                         }
                         }}
-                        title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to import data" : ""}
+                        title={(dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'import') ? "" : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to import data" : ""}
                         style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
                     >
                         {dataOpProgress && dataOpProgress.id === 'people' && dataOpProgress.action === 'import' ? (
@@ -193,10 +202,10 @@ export default function Settings(props) {
                     </div>
                     <div style={{ display: 'flex', gap: '10px' }}>
                     <ActionButton 
-                        disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
+                        disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} 
                         className="btn btn-secondary" 
                         onClick={exportTags}
-                        title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to export data" : ""}
+                        title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to export data" : ""}
                         style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
                     >
                         {dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'export' ? (
@@ -204,16 +213,17 @@ export default function Settings(props) {
                         ) : 'Export JSON'}
                     </ActionButton>
                     <ActionButton 
-                        disabled={(actionInProgress && !(dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import')) || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
+                        disabled={(dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} 
                         className="btn btn-secondary" 
                         onClick={() => {
                         if (dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import') {
                             if (abortTagsDataOpRef) abortTagsDataOpRef.current = true;
+                            cancelAiAction();
                         } else {
                             importTags();
                         }
                         }}
-                        title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to import data" : ""}
+                        title={(dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import') ? "" : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to import data" : ""}
                         style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
                     >
                         {dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import' ? (
@@ -228,10 +238,10 @@ export default function Settings(props) {
                     <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Delete all cached preview images. They will be regenerated automatically as needed.</p>
                     </div>
                     <ActionButton 
-                    disabled={actionInProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running} 
+                    disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} 
                     className="btn btn-secondary" 
                     onClick={clearCache}
-                    title={(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? "Stop all background tasks to clear cache" : ""}
+                    title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to clear cache" : ""}
                     >
                     Clear Cache
                     </ActionButton>
@@ -471,7 +481,7 @@ export default function Settings(props) {
                     ai_api_key:e.target.value
                     })}
                 />
-                <ActionButton disabled={testingAI} className="btn btn-secondary" onClick={testAIConnection} style={{ marginTop: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <ActionButton disabled={testingAI || actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || indexer.data_operation_running} className="btn btn-secondary" onClick={testAIConnection} style={{ marginTop: '16px', display: 'flex', alignItems: 'center', gap: '8px' }} title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || indexer.data_operation_running) ? "Stop all background tasks to test connection" : ""}>
                     {testingAI ? <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Testing Connection...</> : 'Test AI Connection'}
                 </ActionButton>
                 </div>

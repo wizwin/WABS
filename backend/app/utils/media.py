@@ -190,7 +190,8 @@ def generate_document_thumbnail(file_path: Path, cached_thumb: Path, theme: str)
 
 def _evaluate_image_faces(file_path, yunet_path: str):
     import backend.app.state as app_state
-    if app_state.STATE.get("stopped"):
+    is_scan_active = app_state.face_scanner_running or app_state.combined_scanner_running
+    if (is_scan_active and (app_state.STATE.get("stopped") or app_state.STATE.get("face_scanner_stopped") or app_state.STATE.get("combined_scanner_stopped"))) or app_state.STATE.get("cancel_data_operation"):
         return []
         
     import numpy as np

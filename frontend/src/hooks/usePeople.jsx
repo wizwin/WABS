@@ -3,10 +3,10 @@ import axios from 'axios';
 import { API, parseFileDate, dateFormatter } from '../States';
 
 export function usePeople({
-  indexer, settings, page, setPage, selected, setSelected,
+  indexer, setIndexer, settings, page, setPage, selected, setSelected,
   checkedFiles, setCheckedFiles, globalFileCache, filterCategory,
   loadFiles, goToSearch, loadDashboard, showToastMessage,
-  setActionInProgress, setDataOpProgress, setOffset, setStartOffset, setHasMore
+  setActionInProgress, setDataOpProgress, setOffset, setStartOffset, setHasMore, actionInProgress, dataOpProgress
 }) {
   const [people, setPeople] = useState([]);
   const [currentPerson, setCurrentPerson] = useState(null);
@@ -88,6 +88,7 @@ export function usePeople({
     if (Array.isArray(personFiles)) personFiles.forEach(f => globalFileCache.current.set(f.path, f));
   }, [personFiles, globalFileCache]);
 
+  // Fetches named and unknown profiles from the backend database.
   async function loadPeople() {
     try {
       const minPhotos = (settings.min_unknown_photos !== undefined && settings.min_unknown_photos !== '') ? settings.min_unknown_photos : 1;
@@ -127,12 +128,20 @@ export function usePeople({
   }
   
   async function findSimilarUnknowns(personId, threshold = similarityThreshold) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+      alert("Please stop all background tasks before searching for similarities.");
+      return;
+    }
     if (findSimilarAbortController.current) {
       findSimilarAbortController.current.abort();
     }
     const abortCtrl = new AbortController();
     findSimilarAbortController.current = abortCtrl;
     setIsFindingSimilar(true);
+    setActionInProgress(true);
+    window.wabs_action_in_progress = true;
+    let wasCancelled = false;
     try {
       const r = await axios.get(`${API}/people/${personId}/similar-unknowns?threshold=${threshold}`, {
         signal: abortCtrl.signal
@@ -142,59 +151,114 @@ export function usePeople({
       setSimilarUnknownsPage(1);
       setIsFindingSimilar(false);
     } catch(err) {
-      if (!axios.isCancel(err)) {
+      if (axios.isCancel(err)) {
+        wasCancelled = true;
+      } else {
         alert('Error finding similar unknowns: ' + (err?.response?.data?.detail || err.message));
         setSimilarUnknowns(null);
         setIsFindingSimilar(false);
+      }
+    } finally {
+      if (!wasCancelled) {
+        window.wabs_action_in_progress = false;
+        setActionInProgress(false);
       }
     }
   }
   
   function stopFindSimilarUnknowns() {
-    if (findSimilarAbortController.current) {
-      findSimilarAbortController.current.abort();
-    }
-    setIsFindingSimilar(false);
+    cancelAiAction();
   }
   
   const updatePersonNameLocal = (id, newName) => setPeople(prev => prev.map(p => p.id === id ? { ...p, name: newName } : p));
-  const savePersonName = async (id, newName) => { try { await axios.post(`${API}/people/${id}/rename`, { name: newName }); loadPeople(); } catch (err) { console.warn(err); } };
+  const savePersonName = async (id, newName) => { 
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+      alert("Please stop all background tasks before modifying profiles to prevent database conflicts.");
+      loadPeople();
+      return;
+    }
+    setActionInProgress(true);
+    try { await axios.post(`${API}/people/${id}/rename`, { name: newName }); loadPeople(); } catch (err) { alert('Error renaming person: ' + (err?.response?.data?.detail || err.message)); loadPeople(); } finally { setActionInProgress(false); }
+  };
   
   const deletePerson = async (e, id, name) => { 
     e.stopPropagation(); 
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying profiles to prevent database conflicts.");
       return;
     }
     if (name && !name.startsWith('Unknown Person')) {
       if (window.confirm(`Remove name "${name}"? This will move them back to the Unknown People list.`)) { 
+        setActionInProgress(true);
         try { 
           await axios.post(`${API}/people/${id}/rename`, { name: `Unknown Person #${id}` }); 
           loadPeople(); 
-        } catch(err) { console.warn(err); } 
+        } catch(err) { alert(err?.response?.data?.detail || err.message); } finally { setActionInProgress(false); }
       }
     } else {
       if (window.confirm(`Delete "${name}" and ignore their faces?`)) { 
+        setActionInProgress(true);
         try { 
           await axios.delete(`${API}/people/${id}`); 
           loadPeople(); 
-        } catch(err) { console.warn(err); } 
+        } catch(err) { alert(err?.response?.data?.detail || err.message); } finally { setActionInProgress(false); }
       } 
     }
   };
   
-  function cancelAiAction() {
+  // Triggers asynchronous cancellation on the backend and polls status until completely idle.
+  async function cancelAiAction() {
     if (aiActionAbortController.current) {
       aiActionAbortController.current.abort();
       aiActionAbortController.current = null;
     }
+    if (findSimilarAbortController.current) {
+      findSimilarAbortController.current.abort();
+      findSimilarAbortController.current = null;
+    }
+    setIsFindingSimilar(false);
+    setIndexer(prev => ({
+      ...prev,
+      cancel_data_operation: true,
+      data_operation_running: true
+    }));
+    try {
+      await axios.post(`${API}/system/cancel-data-operation`);
+    } catch (err) {
+      console.warn("Failed to post cancel-data-operation", err);
+    }
+    const pollInterval = 100;
+    const maxPollTime = 5000;
+    const maxIterations = maxPollTime / pollInterval;
+    for (let i = 0; i < maxIterations; i++) {
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      try {
+        const r = await axios.get(`${API}/indexer/status?t=${Date.now()}`);
+        const status = r.data;
+        if (status && !status.data_operation_running) {
+          break;
+        }
+      } catch (err) {
+        console.warn("Error polling indexer status during cancellation", err);
+      }
+    }
+    window.wabs_action_in_progress = false;
+    setActionInProgress(false);
+    setDataOpProgress(null);
+    setIndexer(prev => ({
+      ...prev,
+      cancel_data_operation: false,
+      data_operation_running: false
+    }));
   }
   
   async function clusterSelectedUnknowns() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying profiles.");
       return;
     }
+    window.wabs_action_in_progress = true;
     const unknownIds = Array.from(checkedPeople).filter(id => {
       const p = globalPeopleMap.get(id);
       return p && (p.name || '').startsWith('Unknown Person');
@@ -202,16 +266,21 @@ export function usePeople({
     
     if (unknownIds.length === 0) {
       alert("Please select at least one Unknown Person to cluster.");
+      window.wabs_action_in_progress = false;
       return;
     }
     
-    if (!window.confirm(`Are you sure you want to compare ${unknownIds.length} unknown profile(s) against ALL other unknown profiles? Matches above ${Math.round(similarityThreshold * 100)}% will be clustered together.`)) return;
+    if (!window.confirm(`Are you sure you want to compare ${unknownIds.length} unknown profile(s) against ALL other unknown profiles? Matches above ${Math.round(similarityThreshold * 100)}% will be clustered together.`)) {
+      window.wabs_action_in_progress = false;
+      return;
+    }
     
     if (aiActionAbortController.current) aiActionAbortController.current.abort();
     aiActionAbortController.current = new AbortController();
     
     setActionInProgress(true);
     setDataOpProgress({ id: 'clusterSelected', current: 0, total: unknownIds.length });
+    let wasCancelled = false;
     try {
       showToastMessage(`Clustering ${unknownIds.length} unknown profile(s)...`);
       let totalMerged = 0;
@@ -231,6 +300,7 @@ export function usePeople({
       loadPeople();
     } catch (err) {
       if (axios.isCancel(err)) {
+        wasCancelled = true;
         showToastMessage('Clustering cancelled by user.');
         setCheckedPeople(new Set());
         loadPeople();
@@ -238,30 +308,41 @@ export function usePeople({
         alert('Error clustering people: ' + (err?.response?.data?.detail || err.message));
       }
     } finally {
-      setActionInProgress(false);
-      setDataOpProgress(null);
+      if (!wasCancelled) {
+        window.wabs_action_in_progress = false;
+        setActionInProgress(false);
+        setDataOpProgress(null);
+      }
     }
   }
   
+  // Groups all unknown profiles by similarity, sending requests in safe 250-profile batches to avoid timeouts.
   async function clusterAllUnknowns() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying profiles.");
       return;
     }
+    window.wabs_action_in_progress = true;
     const allUnknownIds = filteredUnknownPeople.map(p => p.id);
     
     if (allUnknownIds.length === 0) {
       alert("No Unknown Persons found.");
+      window.wabs_action_in_progress = false;
       return;
     }
     
-    if (!window.confirm(`Are you sure you want to compare ALL ${allUnknownIds.length} unknown profile(s) against each other? This may take several moments. Matches above ${Math.round(similarityThreshold * 100)}% will be clustered together.`)) return;
+    if (!window.confirm(`Are you sure you want to compare ALL ${allUnknownIds.length} unknown profile(s) against each other? This may take several moments. Matches above ${Math.round(similarityThreshold * 100)}% will be clustered together.`)) {
+      window.wabs_action_in_progress = false;
+      return;
+    }
     
     if (aiActionAbortController.current) aiActionAbortController.current.abort();
     aiActionAbortController.current = new AbortController();
     
     setActionInProgress(true);
     setDataOpProgress({ id: 'clusterAll', current: 0, total: allUnknownIds.length });
+    let wasCancelled = false;
     try {
       showToastMessage(`Clustering ${allUnknownIds.length} unknown profile(s)...`);
       let totalMerged = 0;
@@ -281,6 +362,7 @@ export function usePeople({
       loadPeople();
     } catch (err) {
       if (axios.isCancel(err)) {
+        wasCancelled = true;
         showToastMessage('Clustering cancelled by user.');
         setCheckedPeople(new Set());
         loadPeople();
@@ -288,16 +370,21 @@ export function usePeople({
         alert('Error clustering people: ' + (err?.response?.data?.detail || err.message));
       }
     } finally {
-      setActionInProgress(false);
-      setDataOpProgress(null);
+      if (!wasCancelled) {
+        window.wabs_action_in_progress = false;
+        setActionInProgress(false);
+        setDataOpProgress(null);
+      }
     }
   }
   
   async function reclassifySelectedUnknowns() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying profiles.");
       return;
     }
+    window.wabs_action_in_progress = true;
     const unknownIds = Array.from(checkedPeople).filter(id => {
       const p = globalPeopleMap.get(id);
       return p && (p.name || '').startsWith('Unknown Person');
@@ -305,16 +392,21 @@ export function usePeople({
     
     if (unknownIds.length === 0) {
       alert("Please select at least one Unknown Person to reclassify.");
+      window.wabs_action_in_progress = false;
       return;
     }
     
-    if (!window.confirm(`Are you sure you want to re-evaluate ${unknownIds.length} unknown profile(s)? This will break them apart and re-cluster their faces using your current Similarity Threshold (${Math.round(similarityThreshold * 100)}%).`)) return;
+    if (!window.confirm(`Are you sure you want to re-evaluate ${unknownIds.length} unknown profile(s)? This will break them apart and re-cluster their faces using your current Similarity Threshold (${Math.round(similarityThreshold * 100)}%).`)) {
+      window.wabs_action_in_progress = false;
+      return;
+    }
     
     if (aiActionAbortController.current) aiActionAbortController.current.abort();
     aiActionAbortController.current = new AbortController();
     
     setActionInProgress(true);
     setDataOpProgress({ id: 'reclassifySelected', current: 0, total: unknownIds.length });
+    let wasCancelled = false;
     try {
       showToastMessage(`Reclassifying ${unknownIds.length} unknown profile(s)...`);
       let totalReclassified = 0;
@@ -334,6 +426,7 @@ export function usePeople({
       loadPeople();
     } catch (err) {
       if (axios.isCancel(err)) {
+        wasCancelled = true;
         showToastMessage('Reclassification cancelled by user.');
         setCheckedPeople(new Set());
         loadPeople();
@@ -341,30 +434,41 @@ export function usePeople({
         alert('Error reclassifying people: ' + (err?.response?.data?.detail || err.message));
       }
     } finally {
-      setActionInProgress(false);
-      setDataOpProgress(null);
+      if (!wasCancelled) {
+        window.wabs_action_in_progress = false;
+        setActionInProgress(false);
+        setDataOpProgress(null);
+      }
     }
   }
   
+  // Deconstructs and re-evaluates all unknown profiles against all other profiles in 250-profile chunks.
   async function reclassifyAllUnknowns() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying profiles.");
       return;
     }
+    window.wabs_action_in_progress = true;
     const allUnknownIds = filteredUnknownPeople.map(p => p.id);
     
     if (allUnknownIds.length === 0) {
       alert("No Unknown Persons found.");
+      window.wabs_action_in_progress = false;
       return;
     }
     
-    if (!window.confirm(`Are you sure you want to re-evaluate ALL ${allUnknownIds.length} unknown profile(s)? This will break them apart and re-cluster all their faces using your current Similarity Threshold (${Math.round(similarityThreshold * 100)}%). This may take a few moments.`)) return;
+    if (!window.confirm(`Are you sure you want to re-evaluate ALL ${allUnknownIds.length} unknown profile(s)? This will break them apart and re-cluster all their faces using your current Similarity Threshold (${Math.round(similarityThreshold * 100)}%). This may take a few moments.`)) {
+      window.wabs_action_in_progress = false;
+      return;
+    }
     
     if (aiActionAbortController.current) aiActionAbortController.current.abort();
     aiActionAbortController.current = new AbortController();
     
     setActionInProgress(true);
     setDataOpProgress({ id: 'reclassifyAll', current: 0, total: allUnknownIds.length });
+    let wasCancelled = false;
     try {
       showToastMessage(`Reclassifying ${allUnknownIds.length} unknown profile(s)...`);
       let totalReclassified = 0;
@@ -384,6 +488,7 @@ export function usePeople({
       loadPeople();
     } catch (err) {
       if (axios.isCancel(err)) {
+        wasCancelled = true;
         showToastMessage('Reclassification cancelled by user.');
         setCheckedPeople(new Set());
         loadPeople();
@@ -391,13 +496,21 @@ export function usePeople({
         alert('Error reclassifying people: ' + (err?.response?.data?.detail || err.message));
       }
     } finally {
-      setActionInProgress(false);
-      setDataOpProgress(null);
+      if (!wasCancelled) {
+        window.wabs_action_in_progress = false;
+        setActionInProgress(false);
+        setDataOpProgress(null);
+      }
     }
   }
   
   async function executeMerge(primaryId) {
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+      alert("Please stop all background tasks before modifying profiles to prevent database conflicts.");
+      return;
+    }
     const ids = [primaryId, ...Array.from(checkedPeople).filter(id => id !== primaryId)];
+    setActionInProgress(true);
     try {
       await axios.post(`${API}/people/merge`, { person_ids: ids });
       showToastMessage('People merged successfully.');
@@ -406,11 +519,13 @@ export function usePeople({
       loadPeople();
     } catch (err) {
       alert('Error merging people: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      setActionInProgress(false);
     }
   }
   
   function mergeSelectedPeople() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before merging profiles to prevent database conflicts.");
       return;
     }
@@ -434,6 +549,11 @@ export function usePeople({
   }
   
   async function setPersonThumbnail(personId, fileId) {
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+      alert("Please stop all background tasks before modifying profiles to prevent database conflicts.");
+      return;
+    }
+    setActionInProgress(true);
     try {
       await axios.post(`${API}/people/${personId}/set-thumbnail`, { file_id: fileId });
       showToastMessage('Cover photo updated successfully.');
@@ -442,14 +562,17 @@ export function usePeople({
       loadPeople();
     } catch(err) {
       alert('Error setting thumbnail: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      setActionInProgress(false);
     }
   }
   
   async function autoSuggestThumbnail(personId) {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying profiles.");
       return;
     }
+    setActionInProgress(true);
     try {
       showToastMessage('Analyzing photos for best cover...');
       const res = await axios.post(`${API}/people/${personId}/suggest-thumbnail`);
@@ -463,11 +586,13 @@ export function usePeople({
       }
     } catch(err) {
       alert('Error suggesting thumbnail: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      setActionInProgress(false);
     }
   }
   
   async function removePersonPhotosBulk(personId, fileIds) {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying profiles to prevent database conflicts.");
       return;
     }
@@ -509,7 +634,7 @@ export function usePeople({
   }
   
   async function assignPhotosToPerson(personId, filePaths) {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying profiles to prevent database conflicts.");
       return;
     }
@@ -569,7 +694,7 @@ export function usePeople({
   }
   
   async function movePhotosToPerson(targetPersonId, filePaths) {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before modifying profiles to prevent database conflicts.");
       return;
     }
@@ -619,19 +744,26 @@ export function usePeople({
     }
   }
   
+  // Deletes low-quality Unknown profiles containing fewer than the configured photo threshold.
   async function purgeSmallUnknowns() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks (Indexing, Face/Object Scanning, Text Extraction, Hash Verification) before running the purge routine.");
       return;
     }
+    window.wabs_action_in_progress = true;
     const thresholdToUse = purgeThreshold === '' ? 3 : purgeThreshold;
-    if (!window.confirm(`Are you sure you want to permanently delete all Unknown Person profiles that have fewer than ${thresholdToUse} photos? This will also trigger a database cleanup and cannot be undone.`)) return;
+    if (!window.confirm(`Are you sure you want to permanently delete all Unknown Person profiles that have fewer than ${thresholdToUse} photos? This will also trigger a database cleanup and cannot be undone.`)) {
+      window.wabs_action_in_progress = false;
+      return;
+    }
     
     if (aiActionAbortController.current) aiActionAbortController.current.abort();
     aiActionAbortController.current = new AbortController();
     
     setActionInProgress(true);
     setDataOpProgress({ id: 'purge' });
+    let wasCancelled = false;
     try {
       showToastMessage(`Purging unknown profiles with < ${thresholdToUse} photos...`);
       const r = await axios.post(`${API}/system/purge-unknowns`, { threshold: thresholdToUse }, { signal: aiActionAbortController.current.signal });
@@ -640,6 +772,7 @@ export function usePeople({
       if (page === 'people') await loadPeople();
     } catch (err) {
       if (axios.isCancel(err)) {
+        wasCancelled = true;
         showToastMessage('Purge cancelled by user.');
         loadDashboard();
         if (page === 'people') loadPeople();
@@ -647,16 +780,22 @@ export function usePeople({
         alert('Error purging profiles: ' + (err?.response?.data?.detail || err.message));
       }
     } finally {
-      setActionInProgress(false);
-      setDataOpProgress(null);
+      if (!wasCancelled) {
+        window.wabs_action_in_progress = false;
+        setActionInProgress(false);
+        setDataOpProgress(null);
+      }
     }
   }
   
+  // Exports face database, serializing embeddings as compact Base64. Uses native Blob downloads to prevent browser freezing.
   async function exportKnownPeople() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before exporting known people to ensure data consistency.");
       return;
     }
+    window.wabs_action_in_progress = true;
     setActionInProgress(true);
     setDataOpProgress({ id: 'people', action: 'export', current: 0, total: 0 });
     showToastMessage('Exporting known people...');
@@ -675,13 +814,15 @@ export function usePeople({
     } catch(err) {
       alert('Error exporting people: ' + (err?.response?.data?.detail || err.message));
     } finally {
+      window.wabs_action_in_progress = false;
       setDataOpProgress(null);
       setActionInProgress(false);
     }
   }
   
   function importKnownPeople() {
-    if (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
       alert("Please stop all background tasks before importing known people to prevent database conflicts.");
       return;
     }
@@ -696,6 +837,8 @@ export function usePeople({
       if (!file) return;
       const reader = new FileReader();
       reader.onload = async (event) => {
+        if (window.wabs_action_in_progress) return;
+        window.wabs_action_in_progress = true;
         try {
           const payload = JSON.parse(event.target.result);
           if (!Array.isArray(payload)) throw new Error("Invalid JSON format");
@@ -724,6 +867,7 @@ export function usePeople({
         } catch (err) {
           alert('Error importing people: ' + (err?.response?.data?.detail || err.message));
         } finally {
+          window.wabs_action_in_progress = false;
           setDataOpProgress(null);
           setActionInProgress(false);
         }

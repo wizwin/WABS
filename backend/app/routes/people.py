@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import concurrent.futures
 
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Depends
 from fastapi.responses import FileResponse, StreamingResponse
 
 try:
@@ -23,6 +23,7 @@ from backend.app.utils.indexer import _process_unified_scanners, get_or_create_e
 from backend.app.utils.cache import EXEMPLAR_CACHE
 from backend.app.utils.paths import get_bundled_model_path, get_ai_db_path
 import backend.app.shared_state as shared_state
+from backend.app.utils.validators import check_no_scanners_running, lock_data_operation, wait_for_stopping_scanners
 
 router = APIRouter()
 
@@ -47,7 +48,7 @@ def get_people(min_unknown_photos: int = 1):
             conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT p.id, p.name, f.file_id, COUNT(f.id) as face_count
+                SELECT p.id, p.name, f.file_id, COUNT(f.id) as face_count, p.thumbnail_file_id
                 FROM people p
                 JOIN faces f ON p.id = f.person_id
                 GROUP BY p.id
@@ -57,20 +58,24 @@ def get_people(min_unknown_photos: int = 1):
             
             results = []
             for row in cursor.fetchall():
-                person_id, name, sample_file_id, count = row
+                person_id, name, sample_file_id, count, thumb_file_id = row
+                v_param = f"{thumb_file_id or sample_file_id}_{count}"
                 results.append({
                     "id": person_id, 
                     "name": name, 
                     "face_count": count, 
-                    "thumbnail": f"/people/{person_id}/thumbnail"
+                    "thumbnail": f"/people/{person_id}/thumbnail?v={v_param}"
                 })
             return results
     except Exception as e:
         print(f"Error in /people API: {e}")
         return []
 
-@router.get("/people/{person_id}/similar-unknowns")
+@router.get("/people/{person_id}/similar-unknowns", dependencies=[Depends(lock_data_operation)])
 def get_similar_unknowns(person_id: int, threshold: float = 0.55):
+    """
+    Finds unknown profiles similar to a named person using cosine similarity of face exemplars.
+    """
     cfg = load_config()
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
@@ -87,13 +92,14 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.55):
                 raise HTTPException(status_code=500, detail=f"Database locked or unavailable: {e}")
             raise HTTPException(status_code=404, detail="AI database tables not initialized.")
         if not known_embeddings:
-            raise HTTPException(status_code=404, detail="Known person faces not found.")
+            EXEMPLAR_CACHE.pop(person_id, None)
+            raise HTTPException(status_code=404, detail="No faces found for this person. They may have been merged or deleted by an active background task, or only contain manually tagged photos.")
 
         # Fetch all unknown persons and their embeddings
         cursor.execute("""
             SELECT p.id, p.name, f.embedding_json, 
                    (SELECT COUNT(id) FROM faces WHERE person_id = p.id) as photo_count,
-                   f.file_id
+                   f.file_id, p.thumbnail_file_id
             FROM people p
             JOIN faces f ON p.id = f.person_id
             WHERE p.name LIKE 'Unknown Person%' AND f.embedding_json != '[]'
@@ -109,7 +115,9 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.55):
             has_numpy = False
         
         similar_profiles = {}
-        for unk_person_id, unk_name, unk_embedding_json, photo_count, file_id in cursor:
+        for unk_person_id, unk_name, unk_embedding_json, photo_count, file_id, thumb_file_id in cursor:
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             if not unk_embedding_json:
                 continue
             
@@ -132,14 +140,17 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.55):
                             
             if max_sim >= threshold:
                 if unk_person_id not in similar_profiles or max_sim > similar_profiles[unk_person_id]["similarity"]:
+                    v_param = f"{thumb_file_id or file_id}_{photo_count}"
                     similar_profiles[unk_person_id] = {
                         "id": unk_person_id, "name": unk_name, "similarity": round(float(max_sim), 3),
-                        "face_count": photo_count, "thumbnail": f"/people/{unk_person_id}/thumbnail?v={file_id}_{photo_count}"
+                        "face_count": photo_count, "thumbnail": f"/people/{unk_person_id}/thumbnail?v={v_param}"
                     }
         results = list(similar_profiles.values())
         
         with SessionLocal() as s:
             for match in results:
+                if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                    raise HTTPException(status_code=400, detail="Operation cancelled")
                 # Get a sample of file IDs for this unknown person
                 cursor.execute("SELECT file_id FROM faces WHERE person_id = ? LIMIT 10", (match["id"],))
                 file_ids = [r[0] for r in cursor.fetchall()]
@@ -350,6 +361,8 @@ def get_person_photos(person_id: int, offset: int = 0, limit: int = 50):
             yield "["
             first = True
             for i in range(0, len(file_ids), 900):
+                if shared_state.APP_SHUTTING_DOWN:
+                    break
                 chunk = file_ids[i:i + 900]
                 photos = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json).filter(FileIndex.id.in_(chunk)).all()
                 photo_dict = {p.id: _build_item(p, cache_flag) for p in photos}
@@ -362,14 +375,15 @@ def get_person_photos(person_id: int, offset: int = 0, limit: int = 50):
 
     return StreamingResponse(generate(), media_type="application/json")
 
-@router.post("/people/{person_id}/set-thumbnail")
+@router.post("/people/{person_id}/set-thumbnail", dependencies=[Depends(lock_data_operation)])
 def set_person_thumbnail(person_id: int, payload: dict = Body(...)):
+
     file_id = payload.get("file_id")
     if not file_id:
         raise HTTPException(status_code=400, detail="file_id is required")
 
     # Invalidate cache for this person
-    EXEMPLAR_CACHE.pop(person_id)
+    EXEMPLAR_CACHE.pop(person_id, None)
 
     cfg = load_config()
     ai_db_path = get_ai_db_path()
@@ -392,8 +406,12 @@ def set_person_thumbnail(person_id: int, payload: dict = Body(...)):
             
     return {"success": True}
 
-@router.post("/people/{person_id}/suggest-thumbnail")
+@router.post("/people/{person_id}/suggest-thumbnail", dependencies=[Depends(lock_data_operation)])
 def auto_suggest_thumbnail(person_id: int):
+    """
+    Auto-picks the best cover photo using face sizes and Laplacian sharpness metrics.
+    Special code: Uses a randomized selection from top 5 covers (>=50% of max score) to prevent sticky coverage locks.
+    """
     if cv2 is None:
         raise HTTPException(status_code=500, detail="OpenCV not installed")
         
@@ -440,6 +458,9 @@ def auto_suggest_thumbnail(person_id: int):
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(_evaluate_image_faces, fp, yunet_path): fid for fid, fp in file_items if fp.exists()}
         for future in concurrent.futures.as_completed(futures):
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                for f in futures: f.cancel()
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             fid = futures[future]
             try:
                 metrics = future.result()
@@ -489,14 +510,15 @@ def auto_suggest_thumbnail(person_id: int):
         
     return {"success": True, "new_thumbnail_id": selected_file_id, "score": selected_score}
 
-@router.post("/people/{person_id}/remove-photo")
+@router.post("/people/{person_id}/remove-photo", dependencies=[Depends(lock_data_operation)])
 def remove_person_photo(person_id: int, payload: dict = Body(...)):
+
     file_id = payload.get("file_id")
     if not file_id:
         raise HTTPException(status_code=400, detail="file_id is required")
 
     # Invalidate cache for this person
-    EXEMPLAR_CACHE.pop(person_id)
+    EXEMPLAR_CACHE.pop(person_id, None)
 
     cfg = load_config()
     ai_db_path = get_ai_db_path()
@@ -543,8 +565,9 @@ def remove_person_photo(person_id: int, payload: dict = Body(...)):
     log_operation(f"Manually untagged person '{person_name}' (ID {person_id}) from file ID {file_id}", user_logs_enabled=cfg.get("enable_logging"))
     return {"success": True, "removed": deleted_count}
 
-@router.post("/people/{person_id}/add-photo")
+@router.post("/people/{person_id}/add-photo", dependencies=[Depends(lock_data_operation)])
 def add_person_photo(person_id: int, payload: dict = Body(...)):
+
     file_id = payload.get("file_id")
     if not file_id:
         raise HTTPException(status_code=400, detail="file_id is required")
@@ -584,8 +607,11 @@ def add_person_photo(person_id: int, payload: dict = Body(...)):
     log_operation(f"Manually tagged person '{person_name}' (ID {person_id}) on file ID {file_id}", user_logs_enabled=cfg.get("enable_logging"))
     return {"success": True}
 
-@router.post("/people/{person_id}/rename")
+@router.post("/people/{person_id}/rename", dependencies=[Depends(lock_data_operation)])
 def rename_person(person_id: int, payload: dict = Body(...)):
+    """
+    Renames a profile in the AI DB and dynamically updates associated tags in the file index.
+    """
     new_name = payload.get("name", "Unknown Person").strip()
     if not new_name:
         new_name = "Unknown Person"
@@ -600,7 +626,9 @@ def rename_person(person_id: int, payload: dict = Body(...)):
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM people WHERE id = ?", (person_id,))
         old_name_row = cursor.fetchone()
-        old_name = old_name_row[0] if old_name_row else "Unknown Person"
+        if not old_name_row:
+            raise HTTPException(status_code=404, detail="Person not found (may have been merged or deleted by a background task).")
+        old_name = old_name_row[0]
         
         cursor.execute("SELECT DISTINCT file_id FROM faces WHERE person_id = ?", (person_id,))
         file_ids = [r[0] for r in cursor.fetchall()]
@@ -612,7 +640,7 @@ def rename_person(person_id: int, payload: dict = Body(...)):
         if existing_person:
             target_id = existing_person[0]
             # Invalidate both caches if a merge happens
-            EXEMPLAR_CACHE.pop(target_id)
+            EXEMPLAR_CACHE.pop(target_id, None)
             # Auto-Merge: Reassign all faces to the existing person, then delete the duplicate
             cursor.execute("UPDATE OR IGNORE faces SET person_id = ? WHERE person_id = ?", (target_id, person_id))
             cursor.execute("DELETE FROM faces WHERE person_id = ?", (person_id,))
@@ -621,12 +649,14 @@ def rename_person(person_id: int, payload: dict = Body(...)):
             # Standard Rename
             cursor.execute("UPDATE people SET name = ? WHERE id = ?", (new_name, person_id))
             
-        EXEMPLAR_CACHE.pop(person_id)
+        EXEMPLAR_CACHE.pop(person_id, None)
         conn.commit()
         
     if file_ids:
         with SessionLocal() as s:
             for i in range(0, len(file_ids), 900):
+                if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                    raise HTTPException(status_code=400, detail="Operation cancelled")
                 chunk = file_ids[i:i + 900]
                 files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
                 mappings = []
@@ -646,14 +676,17 @@ def rename_person(person_id: int, payload: dict = Body(...)):
             
     return {"success": True, "name": new_name}
 
-@router.delete("/people/{person_id}")
+@router.delete("/people/{person_id}", dependencies=[Depends(lock_data_operation)])
 def delete_person(person_id: int):
+    """
+    Deletes a person profile, clears their face embeddings, and purges their tags from all files.
+    """
     cfg = load_config()
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
          
-    EXEMPLAR_CACHE.pop(person_id)
+    EXEMPLAR_CACHE.pop(person_id, None)
 
     with sqlite3.connect(ai_db_path, timeout=15) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
@@ -674,6 +707,8 @@ def delete_person(person_id: int):
     if file_ids and old_name and not old_name.startswith("Unknown Person"):
         with SessionLocal() as s:
             for i in range(0, len(file_ids), 900):
+                if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                    raise HTTPException(status_code=400, detail="Operation cancelled")
                 chunk = file_ids[i:i + 900]
                 files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
                 mappings = []
@@ -690,8 +725,11 @@ def delete_person(person_id: int):
             
     return {"success": True, "deleted_id": person_id}
 
-@router.post("/people/merge")
+@router.post("/people/merge", dependencies=[Depends(lock_data_operation)])
 def merge_people(payload: dict = Body(...)):
+    """
+    Merges multiple profiles into a single primary profile, updating all corresponding face IDs.
+    """
     person_ids = payload.get("person_ids", [])
     if not person_ids or len(person_ids) < 2:
         raise HTTPException(status_code=400, detail="At least two person IDs are required for merging.")
@@ -720,12 +758,14 @@ def merge_people(payload: dict = Body(...)):
         ids_to_merge = [p[0] for p in people_rows if p[0] != primary_id]
         
         for old_id in ids_to_merge:
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             cursor.execute("UPDATE OR IGNORE faces SET person_id = ? WHERE person_id = ?", (primary_id, old_id))
             cursor.execute("DELETE FROM faces WHERE person_id = ?", (old_id,))
             cursor.execute("DELETE FROM people WHERE id = ?", (old_id,))
-            EXEMPLAR_CACHE.pop(old_id)
+            EXEMPLAR_CACHE.pop(old_id, None)
             
-        EXEMPLAR_CACHE.pop(primary_id)
+        EXEMPLAR_CACHE.pop(primary_id, None)
         conn.commit()
         
     if cfg.get("enable_logging"):
@@ -734,8 +774,12 @@ def merge_people(payload: dict = Body(...)):
         
     return {"success": True, "merged_into": primary_id}
 
-@router.post("/people/cluster-unknowns")
+@router.post("/people/cluster-unknowns", dependencies=[Depends(lock_data_operation)])
 def cluster_unknowns(payload: dict = Body(...)):
+    """
+    Automatically groups and merges similar unknown profiles.
+    Special code: Uses a MAX_EMBS_PER_PERSON=15 cap to prevent massive OOM memory spikes during matrix multiplication.
+    """
     person_ids = payload.get("person_ids", [])
     threshold = payload.get("threshold", 0.55)
     if not person_ids:
@@ -776,6 +820,8 @@ def cluster_unknowns(payload: dict = Body(...)):
         MAX_EMBS_PER_PERSON = 15
         
         for pid, pname, emb_json in all_rows:
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             if pid not in person_embs:
                 person_embs[pid] = []
             if len(person_embs[pid]) < MAX_EMBS_PER_PERSON:
@@ -795,6 +841,10 @@ def cluster_unknowns(payload: dict = Body(...)):
         for pid in sorted_pids:
             canonical_embs.extend(person_embs[pid])
             canonical_pids.extend([pid] * len(person_embs[pid]))
+            
+        # Sanity check to prevent Numpy AxisError if the operation is cancelled instantly and no embeddings are gathered
+        if not canonical_embs:
+            return {"merged_count": 0, "results": []}
             
         # Cast to float32 to instantly halve the memory requirements of the matrix
         k_matrix = np.array(canonical_embs, dtype=np.float32)
@@ -825,8 +875,8 @@ def cluster_unknowns(payload: dict = Body(...)):
             batches.append(current_batch_pids)
             
         for batch_pids in batches:
-            if shared_state.APP_SHUTTING_DOWN:
-                break
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             valid_batch_pids = [pid for pid in batch_pids if pid not in merged_away]
             if not valid_batch_pids:
                 continue
@@ -835,6 +885,10 @@ def cluster_unknowns(payload: dict = Body(...)):
             for pid in valid_batch_pids:
                 batch_embs.extend(person_embs[pid])
                 
+            # Skip empty batches to prevent numpy matrix dimension errors on instant cancellation
+            if not batch_embs:
+                continue
+
             unk_matrix = np.array(batch_embs, dtype=np.float32)
             unk_norms = np.linalg.norm(unk_matrix, axis=1, keepdims=True)
             unk_matrix_norm = unk_matrix / np.where(unk_norms == 0, 1, unk_norms)
@@ -848,6 +902,9 @@ def cluster_unknowns(payload: dict = Body(...)):
                     continue
                     
                 num_embs = len(person_embs[pid])
+                if num_embs == 0:
+                    continue
+                    
                 pid_similarities = similarities[:, col_offset:col_offset+num_embs]
                 col_offset += num_embs
                 
@@ -872,8 +929,8 @@ def cluster_unknowns(payload: dict = Body(...)):
                     cursor.execute("UPDATE OR IGNORE faces SET person_id = ? WHERE person_id = ?", (best_match_id, pid))
                     cursor.execute("DELETE FROM faces WHERE person_id = ?", (pid,))
                     cursor.execute("DELETE FROM people WHERE id = ?", (pid,))
-                    EXEMPLAR_CACHE.pop(pid)
-                    EXEMPLAR_CACHE.pop(best_match_id)
+                    EXEMPLAR_CACHE.pop(pid, None)
+                    EXEMPLAR_CACHE.pop(best_match_id, None)
                     merged_away.add(pid)
                     merged_count += 1
                     results.append({
@@ -889,8 +946,12 @@ def cluster_unknowns(payload: dict = Body(...)):
         
     return {"merged_count": merged_count, "results": results}
 
-@router.post("/people/reclassify")
+@router.post("/people/reclassify", dependencies=[Depends(lock_data_operation)])
 def reclassify_people(payload: dict = Body(...)):
+    """
+    Re-evaluates every single face from the target unknown profiles against all named profiles and other unknowns.
+    Useful for breaking apart incorrectly merged profiles or adjusting to a new similarity threshold.
+    """
     person_ids = payload.get("person_ids", [])
     threshold = payload.get("threshold", 0.55)
     
@@ -913,6 +974,8 @@ def reclassify_people(payload: dict = Body(...)):
         # 1. Fetch all embeddings for the target unknown profiles in safe chunks
         faces_to_reclassify = []
         for i in range(0, len(person_ids), 900):
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             chunk = person_ids[i:i+900]
             placeholders = ",".join("?" * len(chunk))
             cursor.execute(f"""
@@ -935,17 +998,23 @@ def reclassify_people(payload: dict = Body(...)):
         target_ids_set = set(person_ids)
         clusters = {}
         for pid in all_pids:
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             if pid in target_ids_set:
                 continue
             curated_embs = get_or_create_exemplars(pid, cursor)
             if curated_embs:
                 clusters[pid] = curated_embs
+            else:
+                EXEMPLAR_CACHE.pop(pid, None)
             
         # 3. Delete the old targeted profiles and their faces
         for pid in target_person_ids:
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             cursor.execute("DELETE FROM faces WHERE person_id = ?", (pid,))
             cursor.execute("DELETE FROM people WHERE id = ?", (pid,))
-            EXEMPLAR_CACHE.pop(pid)
+            EXEMPLAR_CACHE.pop(pid, None)
             old_thumb = thumb_dir / f"person_{pid}.jpg"
             if old_thumb.exists():
                 try: old_thumb.unlink()
@@ -961,6 +1030,8 @@ def reclassify_people(payload: dict = Body(...)):
         cluster_embs = []
         cluster_ids_list = []
         for pid, embs in clusters.items():
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             cluster_ids_list.extend([pid] * len(embs))
             cluster_embs.extend(embs)
             
@@ -980,9 +1051,12 @@ def reclassify_people(payload: dict = Body(...)):
         named_people_map = {r[0]: r[1] for r in cursor.fetchall()}
         
         for face_id, file_id, emb_json, old_pid in faces_to_reclassify:
-            if shared_state.APP_SHUTTING_DOWN:
-                break
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
             embedding = json.loads(emb_json)
+            # Sanity check against corrupted or empty JSON embeddings to prevent matrix math crashes
+            if not embedding:
+                continue
             emb_np = np.array(embedding, dtype=np.float32)
             emb_norm = np.linalg.norm(emb_np)
             emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
@@ -1032,11 +1106,15 @@ def reclassify_people(payload: dict = Body(...)):
         
         # Pop affected person IDs' cached exemplars
         for pid in affected_person_ids:
-            EXEMPLAR_CACHE.pop(pid)
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
+            EXEMPLAR_CACHE.pop(pid, None)
         
     if files_to_tag:
         with SessionLocal() as s:
             for name, f_ids in files_to_tag.items():
+                if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                    raise HTTPException(status_code=400, detail="Operation cancelled")
                 f_ids_list = list(f_ids)
                 for i in range(0, len(f_ids_list), 900):
                     chunk = f_ids_list[i:i + 900]
@@ -1064,15 +1142,16 @@ def scan_faces():
     if cv2 is None:
         raise HTTPException(status_code=500, detail="OpenCV is required for face recognition.")
     global face_scanner_thread
+    wait_for_stopping_scanners()
     with app_state.scanner_lock:
-        if app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running or app_state.combined_scanner_running or STATE.get("running"):
+        if app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running or app_state.combined_scanner_running or STATE.get("running") or STATE.get("data_operation_running") or STATE.get("hasher_running"):
             raise HTTPException(status_code=400, detail="Another scanning process is already running. Please stop it before starting a new one.")
         app_state.face_scanner_running = True
         app_state.combined_scanner_stopped = False
         STATE["stopped"] = False
         STATE["face_scanner_stopped"] = False
         STATE["paused"] = False
-        face_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": True, "run_object": False}, daemon=True)
+        face_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": True, "run_object": False, "run_document": False}, daemon=True)
         face_scanner_thread.start()
         
     if load_config().get("enable_logging"):
@@ -1085,6 +1164,8 @@ def scan_faces():
 def stop_scan_faces():
     with app_state.scanner_lock:
         STATE["face_scanner_stopped"] = True
+        STATE["stopped"] = True
+        app_state.combined_scanner_stopped = True
         if not app_state.face_scanner_running:
             return {"message": "Face scanner is not running or already stopped."}
             
@@ -1094,11 +1175,9 @@ def stop_scan_faces():
         
     return {"message": "Stopping face scanner."}
 
-@router.post("/reset-face-scanner-progress")
+@router.post("/reset-face-scanner-progress", dependencies=[Depends(lock_data_operation)])
 def reset_face_scanner_progress():
-    with app_state.scanner_lock:
-        if app_state.document_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.combined_scanner_running or STATE.get("running"):
-            raise HTTPException(status_code=400, detail="Cannot reset progress while a scan is running. Please stop it first.")
+
     try:
         ai_db_path = get_ai_db_path()
         if ai_db_path.exists():
