@@ -273,6 +273,7 @@ def extract_top_keywords(text_data: str, max_words: int = None, is_log: bool = F
 worker = None
 
 def _process_unified_scanners(run_index: bool = False, run_face: bool = False, run_object: bool = False, run_document: bool = False):
+    enable_logging = False
 
     """
     Main routine for processing files through AI scanners and text extraction.
@@ -299,7 +300,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         STATE["document_scanner_total"] = 0
         STATE["document_scanner_current"] = 0
 
-    print(f"[DEBUG-SCANNER] _process_unified_scanners called. run_face={run_face}, run_document={run_document}")
+
 
     try:
         import numpy as np
@@ -311,6 +312,14 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         ai_db_path = get_ai_db_path()
 
         log_operation("Started unified scanners.", user_logs_enabled=enable_logging)
+        if enable_logging:
+            import logging
+            if run_face:
+                logging.info("Face scanner process started.")
+            if run_object:
+                logging.info("Object scanner process started.")
+            if run_document:
+                logging.info("Document text extraction process started.")
 
         # --- Object Setup ---
         net, classes, object_threshold = None, None, 0.15
@@ -515,6 +524,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     file_cache = preloaded_cache
                 
                 for idx, file_str in enumerate(files_to_process):
+                    if idx % 100 == 0:
+                        enable_logging = load_config().get("enable_logging", False)
                     if run_document and STATE.get("document_scanner_stopped") and app_state.document_scanner_running:
                         app_state.document_scanner_running = False
                         STATE["document_scanner_running"] = False
@@ -1032,6 +1043,16 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             app_state.document_scanner_stopped = False
             app_state.combined_scanner_stopped = False
 
+        if enable_logging:
+            import logging
+            status_val = STATE.get("status", "Completed")
+            if run_face:
+                logging.info(f"Face scanner process ended. Status: {status_val}, processed {STATE.get('face_scanner_current', 0)} files.")
+            if run_object:
+                logging.info(f"Object scanner process ended. Status: {status_val}, processed {STATE.get('object_scanner_current', 0)} files.")
+            if run_document:
+                logging.info(f"Document text extraction process ended. Status: {status_val}, processed {STATE.get('document_scanner_current', 0)} files.")
+
 def classify(ext):
     ext = ext.lower()
     if ext in [".jpg",".jpeg",".png",".webp",".gif",".bmp",".tiff",".raw",".svg",".ico",".xcf"]:
@@ -1345,7 +1366,9 @@ def background_ai_categorize(cfg):
         if not items:
             return
             
-        for item in items:
+        for idx, item in enumerate(items):
+            if idx % 100 == 0:
+                cfg = load_config()
             if STATE.get("stopped"):
                 break
             suggested = llm_classify(json.loads(item.metadata_json or "{}"), item.extension or "", cfg)
@@ -1396,7 +1419,9 @@ def background_lazy_hasher():
 
         updates = 0
         mappings = []
-        for item_id, path, metadata_json in files:
+        for idx, (item_id, path, metadata_json) in enumerate(files):
+            if idx % 100 == 0:
+                enable_logging = load_config().get("enable_logging", False)
             while STATE.get("paused"):
                 time.sleep(0.5)
                 if STATE.get("hasher_stopped") or STATE.get("stopped"):
@@ -1437,6 +1462,9 @@ def background_lazy_hasher():
         STATE["hasher_current_file"] = ""
         STATE["duplicates_status_changed_at"] = time.time()
         session.close()
+        if enable_logging:
+            import logging
+            logging.info(f"Duplicate verification completed. Processed {STATE.get('hasher_current', 0)} files.")
 
 def run():
     """
@@ -1611,6 +1639,8 @@ def run():
                     break
 
                 real_idx = start_offset + idx
+                if idx % 100 == 0:
+                    enable_logging = load_config().get("enable_logging", False)
                 STATE["current"] = real_idx + 1
                 STATE["current_file"] = str(file)
                 STATE["status"] = "Indexing"
@@ -1698,6 +1728,9 @@ def run():
         elif not STATE["status"].startswith("Invalid backup path") and not STATE["status"].startswith("Error"):
             STATE["status"] = "Completed"
         STATE["indexed"] = STATE.get("current", 0)
+        if enable_logging:
+            import logging
+            logging.info(f"Indexer run finished. Status: {STATE['status']}, processed {STATE['current']} files.")
 
 def start_indexing():
     global worker

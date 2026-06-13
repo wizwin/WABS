@@ -32,11 +32,17 @@ router = APIRouter()
 
 @router.post("/verify-duplicates")
 def verify_duplicates():
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Duplicate verification started.")
     threading.Thread(target=background_lazy_hasher, daemon=True).start()
     return {"status": "started"}
 
 @router.post("/stop-verify-duplicates")
 def stop_verify_duplicates():
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Duplicate verification stopped.")
     STATE["hasher_stopped"] = True
     return {"status": "stopping"}
 

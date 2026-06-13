@@ -760,6 +760,9 @@ def merge_people(payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail="At least two person IDs are required for merging.")
     
     cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Started merging {len(person_ids)} profiles.")
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
@@ -802,6 +805,9 @@ def cluster_unknowns(payload: dict = Body(...)):
         return {"merged_count": 0, "results": []}
         
     cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info("Started clustering unknown profiles.")
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
@@ -950,6 +956,9 @@ def reclassify_people(payload: dict = Body(...)):
         return {"reclassified_count": 0}
         
     cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Started reclassifying {len(person_ids)} unknown profiles.")
     ai_db_path = get_ai_db_path()
     thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
     if not ai_db_path.exists():
@@ -1122,6 +1131,11 @@ def scan_faces():
         STATE["paused"] = False
         face_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": True, "run_object": False})
         face_scanner_thread.start()
+        
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Face scanning and clustering started in the background.")
+        
     return {"message": "Face scanning and clustering started in the background."}
 
 @router.post("/stop-scan-faces")
@@ -1130,6 +1144,11 @@ def stop_scan_faces():
         STATE["face_scanner_stopped"] = True
         if not app_state.face_scanner_running:
             return {"message": "Face scanner is not running or already stopped."}
+            
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Stopping face scanner.")
+        
     return {"message": "Stopping face scanner."}
 
 @router.post("/reset-face-scanner-progress")
@@ -1145,6 +1164,11 @@ def reset_face_scanner_progress():
                 conn.execute("CREATE TABLE IF NOT EXISTS processed_files (file_id INTEGER PRIMARY KEY)")
                 conn.execute("DELETE FROM processed_files")
                 conn.commit()
+                
+        if load_config().get("enable_logging"):
+            import logging
+            logging.info("Face scanner progress has been reset.")
+            
         return {"message": "Face scanner progress has been reset."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not reset face scanner progress: {e}")

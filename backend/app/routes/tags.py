@@ -159,6 +159,11 @@ def scan_objects():
         STATE["paused"] = False
         object_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": True, "run_document": False})
         object_scanner_thread.start()
+        
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Object scanning started in the background.")
+        
     return {"message": "Object scanning started in the background."}
 
 @router.post("/stop-scan-objects")
@@ -167,6 +172,11 @@ def stop_scan_objects():
         STATE["object_scanner_stopped"] = True
         if not app_state.object_scanner_running:
             return {"message": "Object scanner is not running or already stopped."}
+            
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Stopping object scanner.")
+        
     return {"message": "Stopping object scanner."}
 
 @router.post("/reset-object-scanner-progress")
@@ -182,6 +192,11 @@ def reset_object_scanner_progress():
                 conn.execute("CREATE TABLE IF NOT EXISTS processed_objects (file_id INTEGER PRIMARY KEY)")
                 conn.execute("DELETE FROM processed_objects")
                 conn.commit()
+                
+        if load_config().get("enable_logging"):
+            import logging
+            logging.info("Object scanner progress has been reset.")
+            
         return {"message": "Object scanner progress has been reset."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not reset object scanner progress: {e}")

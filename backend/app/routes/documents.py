@@ -6,6 +6,7 @@ from backend.app.database import SessionLocal
 import backend.app.state as app_state
 from backend.app.state import STATE
 from backend.app.utils.indexer import _process_unified_scanners
+from backend.app.config import load_config
 
 router = APIRouter()
 
@@ -24,6 +25,11 @@ def scan_documents():
         STATE["paused"] = False
         document_scanner_thread = threading.Thread(target=_process_unified_scanners, kwargs={"run_index": False, "run_face": False, "run_object": False, "run_document": True})
         document_scanner_thread.start()
+        
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Document text extraction started in the background.")
+        
     return {"message": "Document text extraction started in the background."}
 
 @router.post("/stop-scan-documents")
@@ -32,6 +38,11 @@ def stop_scan_documents():
         STATE["document_scanner_stopped"] = True
         if not app_state.document_scanner_running:
             return {"message": "Document text extractor is not running or already stopped."}
+            
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info("Stopping document text extractor.")
+        
     return {"message": "Stopping document text extractor."}
 
 @router.post("/reset-document-scanner-progress")
@@ -46,6 +57,11 @@ def reset_document_scanner_progress():
             s.execute(text("DELETE FROM processed_text"))
             s.execute(text("DELETE FROM file_text_fts"))
             s.commit()
+            
+        if load_config().get("enable_logging"):
+            import logging
+            logging.info("Document scanner progress has been reset.")
+            
         return {"message": "Document scanner progress has been reset."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not reset document scanner progress: {e}")
