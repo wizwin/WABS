@@ -730,7 +730,7 @@ function renderValue(value){
     showSearchHelp, setShowSearchHelp, toastMessage, setToastMessage, showToast, setShowToast,
     suggestionsData, setSuggestionsData, focusedSuggestionIndex, setFocusedSuggestionIndex,
     combinedOptions, setCombinedOptions, settingsTab, setSettingsTab, testingAI, setTestingAI, aiSearchPrompt, setAiSearchPrompt,
-    generatingSearch, setGeneratingSearch, isFindingSimilar, setIsFindingSimilar, actionInProgress, setActionInProgress, dataOpProgress, setDataOpProgress,
+    generatingSearch, setGeneratingSearch, actionInProgress, setActionInProgress, dataOpProgress, setDataOpProgress,
     dbFilename, setDbFilename, saveSettings, choosePath, choosePathForConfig, testAIConnection, generateSearchWithAI, clearCache, loadDashboard,
     updateUIPreferences, togglePinPerson,
     fullTimelineData, setFullTimelineData, timelineUpdateTick, setTimelineUpdateTick, applySuggestion, getOfflinePlaceholder, renderThumb, renderMetadata, renderValue,
