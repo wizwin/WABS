@@ -49,7 +49,7 @@ export default function About(props) {
             <div style={{background:'#f59e0b1a', padding:'10px', borderRadius:'10px', color:'#f59e0b', display:'flex'}}><AnalyticsIcon /></div>
             <div>
             <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Acknowledgements</h3>
-            <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px', fontStyle: 'italic'}}>AI Assisted Development by ChatGPT, GitHub Copilot, and Google Gemini (Pro)</p>
+            <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px', fontStyle: 'italic'}}>AI Assisted Development by ChatGPT, GitHub Copilot, Google Gemini (Pro), and Antigravity (DeepMind)</p>
             </div>
         </div>
 

@@ -46,6 +46,7 @@ DEFAULT = {
     "show_timeline": True,
     "sidebar_width": 237,
     "smart_searches": [],
+    "document_scan_depth": "low",
     "text_extraction_limit": 300,
     "theme": "dark",
     "thumbnail_path": "./cache/thumbnails",

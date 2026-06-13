@@ -158,6 +158,7 @@ def settings():
         "face_clustering_sensitivity": "medium",
         "object_sensitivity": "medium",
         "min_unknown_photos": 1,
+        "document_scan_depth": "low",
         "text_extraction_limit": 300,
         "run_face_scan": False,
         "run_object_scan": False,
@@ -491,6 +492,9 @@ def export_people():
     if not ai_db_path.exists():
         return []
          
+    import struct
+    import base64
+
     with sqlite3.connect(ai_db_path, timeout=15) as conn:
         cursor = conn.cursor()
         try:
@@ -512,11 +516,120 @@ def export_people():
                 for fid, emb_json in cursor.fetchall():
                     f_item = s.get(FileIndex, fid)
                     if f_item:
-                        faces.append({"path": f_item.path, "embedding": emb_json})
+                        emb_b64 = ""
+                        if emb_json:
+                            try:
+                                floats = json.loads(emb_json)
+                                if floats:
+                                    packed = struct.pack(f"{len(floats)}f", *floats)
+                                    emb_b64 = base64.b64encode(packed).decode("ascii")
+                            except Exception:
+                                pass
+                        faces.append({"path": f_item.path, "embedding": emb_b64})
                 if faces:
                     export_data.append({"name": name, "thumbnail_path": thumb_path, "faces": faces})
     return export_data
 
 @router.post("/system/import-people")
 def import_people(payload: list = Body(...)):
-    return {"success": True, "imported_people": 0, "imported_faces": 0}
+    if load_config().get("enable_logging"):
+        import logging
+        logging.info(f"Importing {len(payload)} people profiles.")
+    
+    ai_db_path = get_ai_db_path()
+    if not ai_db_path.exists():
+        raise HTTPException(status_code=500, detail="AI Database not initialized.")
+        
+    import struct
+    import base64
+
+    imported_people_count = 0
+    imported_faces_count = 0
+    path_cache = {}
+
+    try:
+        with sqlite3.connect(ai_db_path, timeout=15) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            cursor = conn.cursor()
+            
+            with SessionLocal() as session:
+                for person_data in payload:
+                    name = person_data.get("name")
+                    if not name:
+                        continue
+                    
+                    cursor.execute("INSERT OR IGNORE INTO people (name) VALUES (?)", (name,))
+                    cursor.execute("SELECT id FROM people WHERE name = ?", (name,))
+                    row = cursor.fetchone()
+                    if not row:
+                        continue
+                    person_id = row[0]
+                    
+                    EXEMPLAR_CACHE.pop(person_id)
+                    
+                    faces = person_data.get("faces", [])
+                    for face in faces:
+                        path = face.get("path")
+                        embedding_data = face.get("embedding")
+                        if not path:
+                            continue
+                            
+                        if path not in path_cache:
+                            file_item = session.query(FileIndex).filter(FileIndex.path == path).first()
+                            path_cache[path] = file_item
+                        
+                        file_item = path_cache[path]
+                        if not file_item:
+                            continue
+                        file_id = file_item.id
+                            
+                        if isinstance(embedding_data, str) and embedding_data:
+                            try:
+                                decoded = base64.b64decode(embedding_data)
+                                num_floats = len(decoded) // 4
+                                unpacked = struct.unpack(f"{num_floats}f", decoded)
+                                embedding_json = json.dumps(list(unpacked))
+                            except Exception:
+                                embedding_json = "[]"
+                        else:
+                            embedding_json = "[]"
+                            
+                        cursor.execute(
+                            "INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
+                            (person_id, file_id, embedding_json)
+                        )
+                        if cursor.rowcount > 0:
+                            imported_faces_count += 1
+                            
+                        if name and not name.startswith("Unknown Person"):
+                            current_tags = set((file_item.tags or "").split())
+                            new_tag = f"person:{name}"
+                            if new_tag not in current_tags:
+                                current_tags.add(new_tag)
+                                file_item.tags = " ".join(sorted(current_tags))
+                    
+                    thumb_path = person_data.get("thumbnail_path")
+                    if thumb_path:
+                        if thumb_path not in path_cache:
+                            thumb_file = session.query(FileIndex).filter(FileIndex.path == thumb_path).first()
+                            path_cache[thumb_path] = thumb_file
+                        
+                        thumb_item = path_cache[thumb_path]
+                        if thumb_item:
+                            cursor.execute("UPDATE people SET thumbnail_file_id = ? WHERE id = ?", (thumb_item.id, person_id))
+                            
+                    imported_people_count += 1
+                
+                session.commit()
+            conn.commit()
+    except Exception as e:
+        if load_config().get("enable_logging"):
+            import logging
+            logging.error(f"Error importing people profiles: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+        
+    return {
+        "success": True,
+        "imported_people": imported_people_count,
+        "imported_faces": imported_faces_count
+    }

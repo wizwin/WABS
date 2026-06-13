@@ -177,6 +177,18 @@ def search_suggestions(q: str = "", limit: int = 5):
     words = q.split()
     last_word = words[-1]
     
+    if "*" in last_word or ":" in last_word:
+        return {"type": "none", "suggestions": [], "last_word": last_word}
+        
+    # Strip leading search operators (+ or -) for spelling check
+    prefix = ""
+    if last_word.startswith("+") or last_word.startswith("-"):
+        prefix = last_word[0]
+        last_word = last_word[1:]
+        
+    if not last_word:
+        return {"type": "none", "suggestions": [], "last_word": ""}
+        
     with SessionLocal() as s:
         results = s.execute(
             text("SELECT term FROM files_fts_vocab WHERE term LIKE :prefix ORDER BY doc DESC LIMIT :limit"),
@@ -184,7 +196,8 @@ def search_suggestions(q: str = "", limit: int = 5):
         ).scalars().all()
         
         if results:
-            return {"type": "autocomplete", "suggestions": results, "last_word": last_word}
+            suggestions = [f"{prefix}{r}" for r in results]
+            return {"type": "autocomplete", "suggestions": suggestions, "last_word": last_word}
             
         if len(last_word) >= 3:
             all_terms = s.execute(
@@ -203,6 +216,7 @@ def search_suggestions(q: str = "", limit: int = 5):
                 valid_matches.append(m)
                 
             if valid_matches:
-                return {"type": "did_you_mean", "suggestions": valid_matches, "last_word": last_word}
+                suggestions = [f"{prefix}{m}" for m in valid_matches]
+                return {"type": "did_you_mean", "suggestions": suggestions, "last_word": last_word}
                 
     return {"type": "none", "suggestions": [], "last_word": last_word}

@@ -157,18 +157,19 @@ EXIF_DATE_PATTERN = re.compile(r"(\d{4}):(\d{2}):(\d{2})")
 # Matches encrypted file extensions like .crypt12
 CRYPT_EXT_PATTERN = re.compile(r"^\.crypt\d{2,}$")
 
-def extract_top_keywords(text_data: str, max_words: int = None, is_log: bool = False) -> str:
+def extract_top_keywords(text_data: str, max_words: int = None, is_log: bool = False, extra_entities: list = None) -> str:
     if max_words is None:
         max_words = int(load_config().get("text_extraction_limit", 300))
 
-    def is_meaningful(token: str) -> bool:
-        if len(token) > 50: 
+    def is_meaningful(token: str, is_high_priority: bool = False) -> bool:
+        max_len = 150 if is_high_priority else 50
+        if len(token) > max_len: 
             return False
         t_lower = token.lower()
         if t_lower in STOP_WORDS: 
             return False
             
-        if CONS_PATTERN.search(t_lower): 
+        if not is_high_priority and CONS_PATTERN.search(t_lower): 
             return False
             
         parts = [p for p in SPLIT_PATTERN.split(token) if p]
@@ -190,10 +191,10 @@ def extract_top_keywords(text_data: str, max_words: int = None, is_log: bool = F
         if len(parts) == 1 and len(token.strip('. \n\r\t')) <= 2:
             return False
             
-        is_special = '@' in token or '://' in token
+        is_special = is_high_priority or '@' in token or '://' in token
         for part in parts:
             # Exclude minified random hashes containing digits inside letters (e.g., tD2ar, ddj0n)
-            if len(part) > 4 and SURROUNDED_DIGIT_PATTERN.search(part):
+            if not is_special and len(part) > 4 and SURROUNDED_DIGIT_PATTERN.search(part):
                 return False
                 
         return True
@@ -202,20 +203,69 @@ def extract_top_keywords(text_data: str, max_words: int = None, is_log: bool = F
     high_priority_entities = HIGH_PRIORITY_ENTITIES_PATTERN.findall(text_data)
     if not is_log:
         high_priority_entities.extend(LOG_EXCLUDED_PATTERN.findall(text_data))
+    if extra_entities:
+        high_priority_entities.extend(extra_entities)
 
-    all_counts = Counter()
+    raw_counts = Counter()
     for ent in code_entities:
         if is_meaningful(ent):
-            all_counts[ent] += 1
+            raw_counts[ent] += 1
             
     for ent in high_priority_entities:
-        if is_meaningful(ent):
-            all_counts[ent] += 1000  # Artificially boost to prioritize over high-frequency normal words
+        if is_meaningful(ent, is_high_priority=True):
+            raw_counts[ent] += 1
 
     words = WORD_PATTERN.findall(text_data.lower())
     for w in words:
         if is_meaningful(w):
-            all_counts[w] += 1
+            raw_counts[w] += 1
+
+    # Apply Boosting and Capping logic
+    all_counts = Counter()
+    
+    high_priority_set = set(high_priority_entities)
+    unique_high_priority = [ent for ent in raw_counts if ent in high_priority_set]
+    unique_high_priority.sort(key=lambda x: raw_counts[x], reverse=True)
+    
+    strong_id_count = 0
+    strong_id_limit = 200
+    
+    other_id_count = 0
+    other_id_limit = 50
+    
+    proper_noun_count = 0
+    proper_noun_limit = 100
+    
+    ignored_entities = set()
+    
+    for ent in unique_high_priority:
+        # Check if it has no spaces (single-token unique identifier)
+        if not any(c.isspace() for c in ent):
+            # Is it a strong identifier (email / URL)?
+            if '@' in ent or '://' in ent or ent.startswith('www.'):
+                if strong_id_count < strong_id_limit:
+                    all_counts[ent] = raw_counts[ent] + 100000
+                    strong_id_count += 1
+                else:
+                    ignored_entities.add(ent)
+            else:
+                if other_id_count < other_id_limit:
+                    all_counts[ent] = raw_counts[ent] + 1000
+                    other_id_count += 1
+                else:
+                    ignored_entities.add(ent)
+        else:
+            if proper_noun_count < proper_noun_limit:
+                all_counts[ent] = raw_counts[ent] + 1000
+                proper_noun_count += 1
+            else:
+                ignored_entities.add(ent)
+                
+    # Add regular words and other code entities (excluding ignored high-priority entities)
+    for w, count in raw_counts.items():
+        if w not in high_priority_set:
+            if w not in ignored_entities:
+                all_counts[w] = count
 
     top_items = [item for item, _ in all_counts.most_common(max_words)]
     return " ".join(top_items)
@@ -633,43 +683,105 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     if needs_text:
                         try:
                             extracted_text = ""
+                            extra_entities = []
                             ext = file.suffix.lower()
+                            
+                            # Get configuration scan depth
+                            depth = load_config().get("document_scan_depth", "low")
+                            if depth == "high":
+                                pdf_limit, docx_limit, pptx_limit, xlsx_sheet_limit, xlsx_row_limit, text_limit = 999999, 999999, 999999, 999, 999999, 10000000
+                            elif depth == "medium":
+                                pdf_limit, docx_limit, pptx_limit, xlsx_sheet_limit, xlsx_row_limit, text_limit = 150, 1500, 100, 5, 500, 200000
+                            else: # low
+                                pdf_limit, docx_limit, pptx_limit, xlsx_sheet_limit, xlsx_row_limit, text_limit = 15, 500, 50, 3, 200, 50000
+
                             if ext == '.pdf' and fitz is not None:
                                 with fitz.open(str(file)) as doc:
-                                    for page_num in range(min(15, len(doc))):
-                                        extracted_text += doc[page_num].get_text() + " "
+                                    for page_num in range(len(doc)):
+                                        if len(extra_entities) > 1000:
+                                            break
+                                        page_text = doc[page_num].get_text()
+                                        if page_num < pdf_limit:
+                                            extracted_text += page_text + " "
+                                        else:
+                                            ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(page_text)
+                                            ents.extend(LOG_EXCLUDED_PATTERN.findall(page_text))
+                                            for ent in ents:
+                                                if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
+                                                    extra_entities.append(ent)
                             elif ext == '.docx' and docx is not None:
                                 word_doc = docx.Document(str(file))
-                                # Extract up to 500 paragraphs to keep the database size reasonable
-                                for p in word_doc.paragraphs[:500]:
-                                    if p.text.strip():
-                                        extracted_text += p.text + " "
+                                for i, p in enumerate(word_doc.paragraphs):
+                                    if len(extra_entities) > 1000:
+                                        break
+                                    p_text = p.text
+                                    if not p_text.strip():
+                                        continue
+                                    if i < docx_limit:
+                                        extracted_text += p_text + " "
+                                    else:
+                                        ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(p_text)
+                                        ents.extend(LOG_EXCLUDED_PATTERN.findall(p_text))
+                                        for ent in ents:
+                                            if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
+                                                extra_entities.append(ent)
                             elif ext == '.pptx' and pptx is not None:
                                 ppt_doc = pptx.Presentation(str(file))
-                                # Extract text from up to the first 50 slides to keep database size reasonable
-                                for slide in ppt_doc.slides[:50]:
+                                for i, slide in enumerate(ppt_doc.slides):
+                                    if len(extra_entities) > 1000:
+                                        break
+                                    slide_text = ""
                                     for shape in slide.shapes:
                                         if hasattr(shape, "text") and shape.text.strip():
-                                            extracted_text += shape.text.strip() + " "
+                                            slide_text += shape.text.strip() + " "
+                                    if i < pptx_limit:
+                                        extracted_text += slide_text + " "
+                                    else:
+                                        ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(slide_text)
+                                        ents.extend(LOG_EXCLUDED_PATTERN.findall(slide_text))
+                                        for ent in ents:
+                                            if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
+                                                extra_entities.append(ent)
                             elif ext == '.xlsx' and openpyxl is not None:
                                 wb = openpyxl.load_workbook(str(file), data_only=True, read_only=True)
-                                # Extract text from up to the first 3 sheets to keep database size reasonable
-                                for sheetname in wb.sheetnames[:3]:
+                                for s_idx, sheetname in enumerate(wb.sheetnames):
+                                    if len(extra_entities) > 1000:
+                                        break
                                     sheet = wb[sheetname]
-                                    for i, row in enumerate(sheet.iter_rows(values_only=True)):
-                                        if i > 200:
+                                    for r_idx, row in enumerate(sheet.iter_rows(values_only=True)):
+                                        if len(extra_entities) > 1000:
                                             break
                                         row_text = " ".join([str(cell).strip() for cell in row if cell is not None and str(cell).strip()])
-                                        if row_text:
+                                        if not row_text:
+                                            continue
+                                        if s_idx < xlsx_sheet_limit and r_idx < xlsx_row_limit:
                                             extracted_text += row_text + " "
+                                        else:
+                                            ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(row_text)
+                                            ents.extend(LOG_EXCLUDED_PATTERN.findall(row_text))
+                                            for ent in ents:
+                                                if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
+                                                    extra_entities.append(ent)
                                 wb.close()
                             elif ext in PLAIN_TEXT_EXTENSIONS:
                                 with open(str(file), 'r', encoding='utf-8', errors='ignore') as f:
-                                    extracted_text = f.read(50000)
+                                    extracted_text = f.read(text_limit)
+                                    chunk_size = 128 * 1024  # Read in 128KB chunks
+                                    while True:
+                                        if len(extra_entities) > 1000:
+                                            break
+                                        chunk = f.read(chunk_size)
+                                        if not chunk:
+                                            break
+                                        ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(chunk)
+                                        ents.extend(LOG_EXCLUDED_PATTERN.findall(chunk))
+                                        for ent in ents:
+                                            if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
+                                                extra_entities.append(ent)
                             
                             extracted_text = extracted_text.strip()
-                            if extracted_text:
-                                optimized_text = extract_top_keywords(extracted_text, is_log=(ext in ['.log']))
+                            if extracted_text or extra_entities:
+                                optimized_text = extract_top_keywords(extracted_text, is_log=(ext in ['.log']), extra_entities=extra_entities)
                                 log_operation(f"Extracted text: { optimized_text }", user_logs_enabled=enable_logging, is_verbose=True)
                                 optimized_text = optimized_text.replace('\x00', ' ')
                                 try:

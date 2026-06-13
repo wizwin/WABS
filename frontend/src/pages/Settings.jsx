@@ -538,7 +538,19 @@ export default function Settings(props) {
                     setSettings({...settings, text_extraction_limit: val});
                     }}
                 />
-                <p style={{ margin: '0 0 0 0', fontSize: '12px', color: '#f59e0b' }}>Tip: Increasing this limit can bloat the database size. (Max: 10,000 words)</p>
+                <p style={{ margin: '0 0 16px 0', fontSize: '12px', color: '#f59e0b' }}>Tip: Increasing this limit can bloat the database size. (Max: 10,000 words)</p>
+
+                <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Document Scanning Depth</p>
+                <select
+                    className='setting'
+                    style={{ marginBottom: '16px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none' }}
+                    value={settings.document_scan_depth || 'low'}
+                    onChange={(e)=>setSettings({...settings, document_scan_depth: e.target.value})}
+                >
+                    <option value='low'>Low (Fast &amp; Lightweight - Recommended)</option>
+                    <option value='medium'>Medium (Balanced scanning depth)</option>
+                    <option value='high'>High (Deep &amp; Thorough - May take longer)</option>
+                </select>
                 </div>
 
                 <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>

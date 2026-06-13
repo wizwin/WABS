@@ -1,4 +1,6 @@
 import re
+from sqlalchemy import or_, func, Integer
+from backend.app.database import FileIndex
 
 def _parse_regex_pattern(query):
     if len(query) < 3 or not query.startswith("/"):
