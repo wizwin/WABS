@@ -1055,7 +1055,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
 
 def classify(ext):
     ext = ext.lower()
-    if ext in [".jpg",".jpeg",".png",".webp",".gif",".bmp",".tiff",".raw",".svg",".ico",".xcf"]:
+    if ext in [".jpg",".jpeg",".png",".webp",".gif",".bmp",".tiff",".raw",".svg",".ico",".xcf", ".dng"]:
         return "photo"
     if ext in [".mp4",".mkv",".avi",".mov",".wmv",".flv",".webm",".m4v",".mpg",".mpeg"]:
         return "video"

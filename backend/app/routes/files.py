@@ -121,7 +121,7 @@ def preview(item_id:int, theme: str = "dark"):
         cache_enabled = cfg.get("enable_photo_thumbnail_cache")
         if cache_enabled is None:
             cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
-        if str(cache_enabled).lower() in ("true", "1", "yes"):
+        if str(cache_enabled).lower() in ("true", "1", "yes") or (file_path and file_path.suffix.lower() == ".dng"):
             cached_thumb = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "photos" / f"{item_id}.jpg"
             if cached_thumb.exists():
                 return FileResponse(str(cached_thumb), media_type="image/jpeg")
@@ -137,7 +137,8 @@ def preview(item_id:int, theme: str = "dark"):
             if cache_enabled is None:
                 cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
             
-            if str(cache_enabled).lower() in ("true", "1", "yes"):
+            is_dng = file_path.suffix.lower() == ".dng"
+            if str(cache_enabled).lower() in ("true", "1", "yes") or is_dng:
                 try:
                     limit_val = cfg.get("photo_thumbnail_size_limit_mb")
                     if limit_val is None:
@@ -145,7 +146,7 @@ def preview(item_id:int, theme: str = "dark"):
                     size_limit_mb = float(limit_val)
                     size_limit_bytes = size_limit_mb * 1024 * 1024
                     
-                    if file_path.stat().st_size > size_limit_bytes:
+                    if file_path.stat().st_size > size_limit_bytes or is_dng:
                         thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "photos"
                         thumb_dir.mkdir(parents=True, exist_ok=True)
                         cached_thumb = thumb_dir / f"{item_id}.jpg"
@@ -158,10 +159,11 @@ def preview(item_id:int, theme: str = "dark"):
                         if success and cached_thumb.exists():
                             return FileResponse(str(cached_thumb), media_type="image/jpeg")
                 except Exception as e:
-                    print(f"Large photo thumbnail error: {e}")
+                    print(f"Large photo/DNG thumbnail error: {e}")
 
-            media_type, _ = mimetypes.guess_type(str(file_path))
-            return FileResponse(str(file_path), media_type=media_type or "application/octet-stream")
+            if not is_dng:
+                media_type, _ = mimetypes.guess_type(str(file_path))
+                return FileResponse(str(file_path), media_type=media_type or "application/octet-stream")
         elif file_category == "video":
             thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
             thumb_dir.mkdir(parents=True, exist_ok=True)
