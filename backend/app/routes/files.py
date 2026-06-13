@@ -66,7 +66,7 @@ def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", so
                 elif category == "searchable_documents":
                     q = q.filter(text("files.id IN (SELECT file_id FROM processed_text)"))
                 elif category == "untagged":
-                    q = q.filter(FileIndex.category == 'photo', (FileIndex.tags.is_(None) | (FileIndex.tags == '')))
+                    q = q.filter(FileIndex.category == 'photo', (FileIndex.tags.is_(None) | (~FileIndex.tags.like('%object:%') & ~FileIndex.tags.like('%person:%'))))
                 else:
                     q = q.filter(FileIndex.category == category)
                     

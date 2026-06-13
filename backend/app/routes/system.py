@@ -59,7 +59,7 @@ def stats():
         try:
             untagged_count = s.query(func.count(FileIndex.id)).filter(
                 FileIndex.category == 'photo',
-                (FileIndex.tags.is_(None) | (FileIndex.tags == ''))
+                (FileIndex.tags.is_(None) | (~FileIndex.tags.like('%object:%') & ~FileIndex.tags.like('%person:%')))
             ).scalar() or 0
             stats_dict["untagged_media"] = int(untagged_count)
         except Exception:
