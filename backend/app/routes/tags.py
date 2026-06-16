@@ -11,7 +11,7 @@ from backend.app.state import STATE
 from backend.app.utils.indexer import _process_unified_scanners
 from backend.app.utils.paths import get_ai_db_path
 from backend.app.config import load_config
-from backend.app.utils.utils import parse_tags
+from backend.app.utils.utils import parse_tags, find_file_by_path_smart
 from backend.app.utils.log_utils import log_operation
 from backend.app.utils.validators import check_no_scanners_running, lock_data_operation, wait_for_stopping_scanners
 import backend.app.shared_state as shared_state
@@ -178,7 +178,7 @@ def import_tags(payload: list = Body(...)):
             path = item.get("path")
             new_tags = item.get("tags")
             if not path or not new_tags: continue
-            file_record = s.query(FileIndex).filter(FileIndex.path == path).first()
+            file_record = find_file_by_path_smart(s, path)
             if file_record:
                 current_tags = parse_tags(file_record.tags)
                 imported_tags = parse_tags(new_tags)

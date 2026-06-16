@@ -15,7 +15,7 @@ from backend.app.database import SessionLocal, FileIndex
 from backend.app.config import load_config, save_config
 from backend.app.utils.paths import get_ai_db_path
 from backend.app.utils.cache import EXEMPLAR_CACHE
-from backend.app.utils.utils import _resolve_path, parse_tags
+from backend.app.utils.utils import _resolve_path, parse_tags, find_file_by_path_smart
 import backend.app.shared_state as shared_state
 from backend.app.utils.validators import check_no_scanners_running, lock_data_operation
 from backend.app.state import STATE
@@ -719,7 +719,7 @@ def import_people(payload: list = Body(...)):
                             continue
                             
                         if path not in path_cache:
-                            file_item = session.query(FileIndex).filter(FileIndex.path == path).first()
+                            file_item = find_file_by_path_smart(session, path)
                             path_cache[path] = file_item
                         
                         file_item = path_cache[path]

@@ -151,7 +151,7 @@ export function usePeople({
       setSimilarUnknownsPage(1);
       setIsFindingSimilar(false);
     } catch(err) {
-      if (axios.isCancel(err)) {
+      if (axios.isCancel(err) || err?.response?.data?.detail === 'Operation cancelled' || abortCtrl.signal.aborted) {
         wasCancelled = true;
       } else {
         alert('Error finding similar unknowns: ' + (err?.response?.data?.detail || err.message));
@@ -276,7 +276,8 @@ export function usePeople({
     }
     
     if (aiActionAbortController.current) aiActionAbortController.current.abort();
-    aiActionAbortController.current = new AbortController();
+    const abortCtrl = new AbortController();
+    aiActionAbortController.current = abortCtrl;
     
     setActionInProgress(true);
     setDataOpProgress({ id: 'clusterSelected', current: 0, total: unknownIds.length });
@@ -286,20 +287,26 @@ export function usePeople({
       let totalMerged = 0;
       const chunkSize = 250;
       for (let i = 0; i < unknownIds.length; i += chunkSize) {
+        if (abortCtrl.signal.aborted) {
+          throw new axios.Cancel('Clustering cancelled by user.');
+        }
         setDataOpProgress({ id: 'clusterSelected', current: i, total: unknownIds.length });
         const chunk = unknownIds.slice(i, i + chunkSize);
         const r = await axios.post(`${API}/people/cluster-unknowns`, 
           { person_ids: chunk, threshold: similarityThreshold },
-          { signal: aiActionAbortController.current.signal }
+          { signal: abortCtrl.signal }
         );
         totalMerged += r.data.merged_count;
+      }
+      if (abortCtrl.signal.aborted) {
+        throw new axios.Cancel('Clustering cancelled by user.');
       }
       setDataOpProgress({ id: 'clusterSelected', current: unknownIds.length, total: unknownIds.length });
       showToastMessage(`Successfully clustered ${totalMerged} profile(s).`);
       setCheckedPeople(new Set());
       loadPeople();
     } catch (err) {
-      if (axios.isCancel(err)) {
+      if (axios.isCancel(err) || err?.response?.data?.detail === 'Operation cancelled' || abortCtrl.signal.aborted) {
         wasCancelled = true;
         showToastMessage('Clustering cancelled by user.');
         setCheckedPeople(new Set());
@@ -338,7 +345,8 @@ export function usePeople({
     }
     
     if (aiActionAbortController.current) aiActionAbortController.current.abort();
-    aiActionAbortController.current = new AbortController();
+    const abortCtrl = new AbortController();
+    aiActionAbortController.current = abortCtrl;
     
     setActionInProgress(true);
     setDataOpProgress({ id: 'clusterAll', current: 0, total: allUnknownIds.length });
@@ -348,20 +356,26 @@ export function usePeople({
       let totalMerged = 0;
       const chunkSize = 250;
       for (let i = 0; i < allUnknownIds.length; i += chunkSize) {
+        if (abortCtrl.signal.aborted) {
+          throw new axios.Cancel('Clustering cancelled by user.');
+        }
         setDataOpProgress({ id: 'clusterAll', current: i, total: allUnknownIds.length });
         const chunk = allUnknownIds.slice(i, i + chunkSize);
         const r = await axios.post(`${API}/people/cluster-unknowns`, 
           { person_ids: chunk, threshold: similarityThreshold },
-          { signal: aiActionAbortController.current.signal }
+          { signal: abortCtrl.signal }
         );
         totalMerged += r.data.merged_count;
+      }
+      if (abortCtrl.signal.aborted) {
+        throw new axios.Cancel('Clustering cancelled by user.');
       }
       setDataOpProgress({ id: 'clusterAll', current: allUnknownIds.length, total: allUnknownIds.length });
       showToastMessage(`Successfully clustered ${totalMerged} profile(s).`);
       setCheckedPeople(new Set());
       loadPeople();
     } catch (err) {
-      if (axios.isCancel(err)) {
+      if (axios.isCancel(err) || err?.response?.data?.detail === 'Operation cancelled' || abortCtrl.signal.aborted) {
         wasCancelled = true;
         showToastMessage('Clustering cancelled by user.');
         setCheckedPeople(new Set());
@@ -402,7 +416,8 @@ export function usePeople({
     }
     
     if (aiActionAbortController.current) aiActionAbortController.current.abort();
-    aiActionAbortController.current = new AbortController();
+    const abortCtrl = new AbortController();
+    aiActionAbortController.current = abortCtrl;
     
     setActionInProgress(true);
     setDataOpProgress({ id: 'reclassifySelected', current: 0, total: unknownIds.length });
@@ -412,20 +427,26 @@ export function usePeople({
       let totalReclassified = 0;
       const chunkSize = 250;
       for (let i = 0; i < unknownIds.length; i += chunkSize) {
+        if (abortCtrl.signal.aborted) {
+          throw new axios.Cancel('Reclassification cancelled by user.');
+        }
         setDataOpProgress({ id: 'reclassifySelected', current: i, total: unknownIds.length });
         const chunk = unknownIds.slice(i, i + chunkSize);
         const r = await axios.post(`${API}/people/reclassify`, 
           { person_ids: chunk, threshold: similarityThreshold },
-          { signal: aiActionAbortController.current.signal }
+          { signal: abortCtrl.signal }
         );
         totalReclassified += r.data.reclassified_count;
+      }
+      if (abortCtrl.signal.aborted) {
+        throw new axios.Cancel('Reclassification cancelled by user.');
       }
       setDataOpProgress({ id: 'reclassifySelected', current: unknownIds.length, total: unknownIds.length });
       showToastMessage(`Successfully reclassified faces.`);
       setCheckedPeople(new Set());
       loadPeople();
     } catch (err) {
-      if (axios.isCancel(err)) {
+      if (axios.isCancel(err) || err?.response?.data?.detail === 'Operation cancelled' || abortCtrl.signal.aborted) {
         wasCancelled = true;
         showToastMessage('Reclassification cancelled by user.');
         setCheckedPeople(new Set());
@@ -464,7 +485,8 @@ export function usePeople({
     }
     
     if (aiActionAbortController.current) aiActionAbortController.current.abort();
-    aiActionAbortController.current = new AbortController();
+    const abortCtrl = new AbortController();
+    aiActionAbortController.current = abortCtrl;
     
     setActionInProgress(true);
     setDataOpProgress({ id: 'reclassifyAll', current: 0, total: allUnknownIds.length });
@@ -474,20 +496,26 @@ export function usePeople({
       let totalReclassified = 0;
       const chunkSize = 250;
       for (let i = 0; i < allUnknownIds.length; i += chunkSize) {
+        if (abortCtrl.signal.aborted) {
+          throw new axios.Cancel('Reclassification cancelled by user.');
+        }
         setDataOpProgress({ id: 'reclassifyAll', current: i, total: allUnknownIds.length });
         const chunk = allUnknownIds.slice(i, i + chunkSize);
         const r = await axios.post(`${API}/people/reclassify`, 
           { person_ids: chunk, threshold: similarityThreshold },
-          { signal: aiActionAbortController.current.signal }
+          { signal: abortCtrl.signal }
         );
         totalReclassified += r.data.reclassified_count;
+      }
+      if (abortCtrl.signal.aborted) {
+        throw new axios.Cancel('Reclassification cancelled by user.');
       }
       setDataOpProgress({ id: 'reclassifyAll', current: allUnknownIds.length, total: allUnknownIds.length });
       showToastMessage(`Successfully reclassified faces.`);
       setCheckedPeople(new Set());
       loadPeople();
     } catch (err) {
-      if (axios.isCancel(err)) {
+      if (axios.isCancel(err) || err?.response?.data?.detail === 'Operation cancelled' || abortCtrl.signal.aborted) {
         wasCancelled = true;
         showToastMessage('Reclassification cancelled by user.');
         setCheckedPeople(new Set());
@@ -759,23 +787,24 @@ export function usePeople({
     }
     
     if (aiActionAbortController.current) aiActionAbortController.current.abort();
-    aiActionAbortController.current = new AbortController();
+    const abortCtrl = new AbortController();
+    aiActionAbortController.current = abortCtrl;
     
     setActionInProgress(true);
     setDataOpProgress({ id: 'purge' });
     let wasCancelled = false;
     try {
       showToastMessage(`Purging unknown profiles with < ${thresholdToUse} photos...`);
-      const r = await axios.post(`${API}/system/purge-unknowns`, { threshold: thresholdToUse }, { signal: aiActionAbortController.current.signal });
+      const r = await axios.post(`${API}/system/purge-unknowns`, { threshold: thresholdToUse }, { signal: abortCtrl.signal });
       showToastMessage(`Purged ${r.data.purged_profiles} small unknown profiles successfully.`);
       await loadDashboard();
       if (page === 'people') await loadPeople();
     } catch (err) {
-      if (axios.isCancel(err)) {
+      if (axios.isCancel(err) || err?.response?.data?.detail === 'Operation cancelled' || abortCtrl.signal.aborted) {
         wasCancelled = true;
         showToastMessage('Purge cancelled by user.');
-        loadDashboard();
-        if (page === 'people') loadPeople();
+        await loadDashboard();
+        if (page === 'people') await loadPeople();
       } else {
         alert('Error purging profiles: ' + (err?.response?.data?.detail || err.message));
       }
@@ -1037,6 +1066,7 @@ export function usePeople({
     sortedSimilarUnknowns, visibleSimilar, namedPeopleBase, filteredNamedPeople, filteredUnknownPeople,
     globalPeopleMap, hasUnknownSelected, sortedNamedPeopleForUI, sortedUnknownPeopleForUI, sortedNamedPeopleDropdown,
     groupedPersonFiles,
-    abortPeopleDataOpRef: abortDataOpRef
+    abortPeopleDataOpRef: abortDataOpRef,
+    aiActionAbortController
   };
 }

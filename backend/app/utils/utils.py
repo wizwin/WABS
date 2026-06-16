@@ -57,4 +57,48 @@ def parse_tags(tags_str: str) -> set[str]:
         return set()
     if ',' not in tags_str:
         return {t.strip() for t in tags_str.split() if t.strip()}
-    return {t.strip() for t in tags_str.split(',') if t.strip()}
+    return {t.strip() for t in tags_str.split(',') if t.strip()}
+
+def find_file_by_path_smart(session, path_str: str):
+    """
+    Finds a file record in the database by path, with a smart fallback to filename
+    and sub-path suffix matching to handle changes in drive letters or root directories.
+    """
+    from backend.app.database import FileIndex
+    
+    # 1. Direct path lookup
+    item = session.query(FileIndex).filter(FileIndex.path == path_str).first()
+    if item:
+        return item
+
+    # 2. Extract filename and lookup matches
+    filename = Path(path_str).name
+    candidates = session.query(FileIndex).filter(FileIndex.filename == filename).all()
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # 3. Resolve multiple matching filenames via suffix path zipping
+    norm_path = path_str.replace('\\', '/').lower()
+    path_parts = [p for p in norm_path.split('/') if p]
+
+    best_candidate = None
+    max_match_len = -1
+
+    for cand in candidates:
+        cand_norm = cand.path.replace('\\', '/').lower()
+        cand_parts = [p for p in cand_norm.split('/') if p]
+
+        match_len = 0
+        for p1, p2 in zip(reversed(path_parts), reversed(cand_parts)):
+            if p1 == p2:
+                match_len += 1
+            else:
+                break
+
+        if match_len > max_match_len:
+            max_match_len = match_len
+            best_candidate = cand
+
+    return best_candidate

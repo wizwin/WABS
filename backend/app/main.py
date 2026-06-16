@@ -23,10 +23,6 @@ try:
     if opencv_threads > 0:
         os.environ["OPENBLAS_NUM_THREADS"] = str(opencv_threads)
         os.environ["OPENCV_NUM_THREADS"] = str(opencv_threads)
-
-    import cv2
-    if opencv_threads > 0:
-        cv2.setNumThreads(opencv_threads)
 except Exception:
     pass
 

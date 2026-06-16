@@ -6,10 +6,12 @@ import concurrent.futures
 from fastapi import APIRouter, HTTPException, Body, Depends
 from fastapi.responses import FileResponse, StreamingResponse
 
-try:
-    import cv2
-except ImportError:
-    cv2 = None
+def _get_cv2():
+    try:
+        import cv2
+        return cv2
+    except ImportError:
+        return None
 
 from backend.app.routes.files import preview, _build_item
 from backend.app.config import load_config
@@ -166,6 +168,7 @@ def get_similar_unknowns(person_id: int, threshold: float = 0.55):
 
 @router.get("/people/{person_id}/thumbnail")
 def get_person_thumbnail(person_id: int, theme: str = "dark"):
+    cv2 = _get_cv2()
     if cv2 is None:
         raise HTTPException(status_code=500, detail="OpenCV not installed")
         
@@ -412,6 +415,7 @@ def auto_suggest_thumbnail(person_id: int):
     Auto-picks the best cover photo using face sizes and Laplacian sharpness metrics.
     Special code: Uses a randomized selection from top 5 covers (>=50% of max score) to prevent sticky coverage locks.
     """
+    cv2 = _get_cv2()
     if cv2 is None:
         raise HTTPException(status_code=500, detail="OpenCV not installed")
         
@@ -1139,6 +1143,7 @@ def reclassify_people(payload: dict = Body(...)):
 @router.post("/scan-faces")
 def scan_faces():
     import threading
+    cv2 = _get_cv2()
     if cv2 is None:
         raise HTTPException(status_code=500, detail="OpenCV is required for face recognition.")
     global face_scanner_thread

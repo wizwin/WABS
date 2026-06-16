@@ -13,10 +13,12 @@ from threading import Thread
 from pathlib import Path
 import logging
 
-try:
-    import cv2
-except ImportError:
-    cv2 = None
+def _get_cv2():
+    try:
+        import cv2
+        return cv2
+    except ImportError:
+        return None
 
 # State Management
 import backend.app.state as app_state
@@ -36,40 +38,54 @@ except ImportError:
     Image = None
     ExifTags = None
 
-try:
-    import fitz
-except ImportError:
-    fitz = None
+def _get_fitz():
+    try:
+        import fitz
+        return fitz
+    except ImportError:
+        return None
 
-try:
-    import mutagen
-except ImportError:
-    mutagen = None
+def _get_mutagen():
+    try:
+        import mutagen
+        return mutagen
+    except ImportError:
+        return None
 
-try:
-    import pefile
-except ImportError:
-    pefile = None
+def _get_pefile():
+    try:
+        import pefile
+        return pefile
+    except ImportError:
+        return None
 
-try:
-    import filetype
-except ImportError:
-    filetype = None
+def _get_filetype():
+    try:
+        import filetype
+        return filetype
+    except ImportError:
+        return None
 
-try:
-    import openpyxl
-except ImportError:
-    openpyxl = None
+def _get_openpyxl():
+    try:
+        import openpyxl
+        return openpyxl
+    except ImportError:
+        return None
 
-try:
-    import docx
-except ImportError:
-    docx = None
+def _get_docx():
+    try:
+        import docx
+        return docx
+    except ImportError:
+        return None
 
-try:
-    import pptx
-except ImportError:
-    pptx = None
+def _get_pptx():
+    try:
+        import pptx
+        return pptx
+    except ImportError:
+        return None
 
 STOP_WORDS = frozenset({
     "the", "and", "to", "of", "a", "in", "is", "that", "for", "it", "with", "as", "was", "on", 
@@ -574,6 +590,12 @@ def get_ocr_engine():
 
 
 def _process_unified_scanners(run_index: bool = False, run_face: bool = False, run_object: bool = False, run_document: bool = False):
+    cv2 = _get_cv2()
+    fitz = _get_fitz()
+    docx = _get_docx()
+    pptx = _get_pptx()
+    openpyxl = _get_openpyxl()
+    filetype = _get_filetype()
     enable_logging = False
 
     """
@@ -1500,14 +1522,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             # The 'stopped' flags are intentionally NOT reset here.
             # They are reset at the beginning of the next run to avoid race conditions
             # where the frontend misses the 'stopped=True' signal from a manual stop.
-            
-            STATE["face_scanner_stopped"] = False
-            STATE["object_scanner_stopped"] = False
-            STATE["document_scanner_stopped"] = False
-            app_state.face_scanner_stopped = False
-            app_state.object_scanner_stopped = False
-            app_state.document_scanner_stopped = False
-            app_state.combined_scanner_stopped = False
+
 
         if enable_logging:
             import logging
@@ -1578,6 +1593,10 @@ def _normalize_metadata_value(value):
     return str(value)
 
 def extract_metadata_for_file(path, category):
+    cv2 = _get_cv2()
+    fitz = _get_fitz()
+    mutagen = _get_mutagen()
+    pefile = _get_pefile()
     metadata = {"file_type": category}
     tags = []
 

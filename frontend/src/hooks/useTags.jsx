@@ -223,13 +223,15 @@ export function useTags({
     showToastMessage('Exporting tags...');
     try {
       const r = await axios.get(`${API}/system/export-tags`);
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(r.data, null, 2));
+      const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
       const dlAnchorElem = document.createElement('a');
-      dlAnchorElem.setAttribute("href", dataStr);
+      dlAnchorElem.setAttribute("href", url);
       dlAnchorElem.setAttribute("download", `wabs_tags_${new Date().toISOString().split('T')[0]}.json`);
       document.body.appendChild(dlAnchorElem);
       dlAnchorElem.click();
       dlAnchorElem.remove();
+      URL.revokeObjectURL(url);
       showToastMessage('Tags exported successfully.');
     } catch(err) {
       alert('Error exporting tags: ' + (err?.response?.data?.detail || err.message));

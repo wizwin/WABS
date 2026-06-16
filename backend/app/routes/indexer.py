@@ -2,10 +2,12 @@ import threading
 import sqlite3
 import shutil
 from pathlib import Path
-try:
-    import cv2
-except ImportError:
-    cv2 = None
+def _get_cv2():
+    try:
+        import cv2
+        return cv2
+    except ImportError:
+        return None
 
 # FastAPI & Router
 from fastapi import APIRouter, Body, HTTPException
@@ -86,6 +88,7 @@ def indexer_start(req: IndexRequest = None):
     if req is None:
         req = IndexRequest()
 
+    cv2 = _get_cv2()
     if cv2 is None and (req.tag or req.face or req.document):
         raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
     wait_for_stopping_scanners()
@@ -155,6 +158,7 @@ def indexer_update(req: IndexRequest = None):
     if req is None:
         req = IndexRequest()
 
+    cv2 = _get_cv2()
     if cv2 is None and (req.tag or req.face or req.document):
         raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
     wait_for_stopping_scanners()
@@ -181,6 +185,7 @@ def indexer_reindex(req: IndexRequest = None):
     if req is None:
         req = IndexRequest()
 
+    cv2 = _get_cv2()
     if cv2 is None and (req.tag or req.face or req.document):
         raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
     wait_for_stopping_scanners()

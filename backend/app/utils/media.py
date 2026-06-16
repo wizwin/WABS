@@ -2,25 +2,15 @@ import traceback
 from pathlib import Path
 from fastapi.responses import FileResponse, Response
 
-try:
-    import cv2
-except ImportError:
-    cv2 = None
 
-try:
-    import fitz
-except ImportError:
-    fitz = None
-
-try:
-    import docx
-except ImportError:
-    docx = None
 
 def get_cv2_dnn_backends():
-    has_cuda = False
     try:
         import cv2
+    except ImportError:
+        return 0, 0
+    has_cuda = False
+    try:
         if cv2 is not None and hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0:
             has_cuda = True
     except Exception:
@@ -31,6 +21,10 @@ def get_cv2_dnn_backends():
 
 def generate_photo_thumbnail(file_path: Path, cached_thumb: Path) -> bool:
     success = False
+    try:
+        import cv2
+    except ImportError:
+        cv2 = None
     if cv2 is not None:
         try:
             import numpy as np
@@ -70,6 +64,10 @@ def generate_photo_thumbnail(file_path: Path, cached_thumb: Path) -> bool:
 
 
 def generate_video_thumbnail(file_path: Path, cached_thumb: Path) -> bool:
+    try:
+        import cv2
+    except ImportError:
+        cv2 = None
     if cv2 is not None:
         try:
             hw_params = []
@@ -113,6 +111,10 @@ def generate_video_thumbnail(file_path: Path, cached_thumb: Path) -> bool:
 
 def generate_document_thumbnail(file_path: Path, cached_thumb: Path, theme: str) -> Response | None:
     if file_path.suffix.lower() == ".pdf":
+        try:
+            import fitz
+        except ImportError:
+            fitz = None
         if fitz is not None:
             try:
                 doc = fitz.open(str(file_path))
@@ -140,30 +142,35 @@ def generate_document_thumbnail(file_path: Path, cached_thumb: Path, theme: str)
             except Exception as e:
                 print(f"ERROR: PDF thumbnail error for {file_path}: {e}")
                 traceback.print_exc()
-    elif file_path.suffix.lower() == ".docx" and docx is not None:
+    elif file_path.suffix.lower() == ".docx":
         try:
-            doc = docx.Document(str(file_path))
-            lines = []
-            for p in doc.paragraphs:
-                if p.text.strip():
-                    lines.append(p.text.strip())
-                if len(lines) >= 11:
-                    break
-            
-            text_fill = '#0f172a' if theme == 'light' else '#cbd5e1'
-            svg_lines = ""
-            y = 28
-            for line in lines:
-                clean_line = "".join(c for c in line[:50] if c.isprintable() or c == '\t').replace('\t', '    ')
-                safe_line = clean_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                svg_lines += f"<text x='16' y='{y}' fill='{text_fill}' font-family='monospace' font-size='13'>{safe_line}</text>\n"
-                y += 24
+            import docx
+        except ImportError:
+            docx = None
+        if docx is not None:
+            try:
+                doc = docx.Document(str(file_path))
+                lines = []
+                for p in doc.paragraphs:
+                    if p.text.strip():
+                        lines.append(p.text.strip())
+                    if len(lines) >= 11:
+                        break
                 
-            bg_fill = '#f8fafc' if theme == 'light' else '#0f172a'
-            text_svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300' viewBox='0 0 400 300'>\n  <rect width='400' height='300' fill='{bg_fill}'/>\n{svg_lines}</svg>"
-            return Response(content=text_svg, media_type='image/svg+xml')
-        except Exception as e:
-            print(f"ERROR: DOCX thumbnail error for {file_path}: {e}")
+                text_fill = '#0f172a' if theme == 'light' else '#cbd5e1'
+                svg_lines = ""
+                y = 28
+                for line in lines:
+                    clean_line = "".join(c for c in line[:50] if c.isprintable() or c == '\t').replace('\t', '    ')
+                    safe_line = clean_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    svg_lines += f"<text x='16' y='{y}' fill='{text_fill}' font-family='monospace' font-size='13'>{safe_line}</text>\n"
+                    y += 24
+                    
+                bg_fill = '#f8fafc' if theme == 'light' else '#0f172a'
+                text_svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300' viewBox='0 0 400 300'>\n  <rect width='400' height='300' fill='{bg_fill}'/>\n{svg_lines}</svg>"
+                return Response(content=text_svg, media_type='image/svg+xml')
+            except Exception as e:
+                print(f"ERROR: DOCX thumbnail error for {file_path}: {e}")
     else:
         text_extensions = [".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".py", ".js", ".html", ".htm", ".css", ".c", ".cpp", ".h", ".java", ".cs", ".go", ".rs", ".rb", ".php", ".sh", ".bat", ".sql"]
         if file_path.suffix.lower() in text_extensions:

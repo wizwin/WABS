@@ -102,12 +102,19 @@ export function useSystemOps({
       window.wabs_action_in_progress = false;
       return;
     }
+    
+    const abortCtrl = new AbortController();
+    if (peopleState?.aiActionAbortController) {
+      if (peopleState.aiActionAbortController.current) peopleState.aiActionAbortController.current.abort();
+      peopleState.aiActionAbortController.current = abortCtrl;
+    }
+
     setActionInProgress(true);
     setDataOpProgress({ id: 'cleanup' });
     let wasCancelled = false;
     try {
       showToastMessage('Database cleanup & optimization in progress...');
-      const r = await axios.post(`${API}/system/cleanup`);
+      const r = await axios.post(`${API}/system/cleanup`, {}, { signal: abortCtrl.signal });
       showToastMessage(`Cleanup complete. Removed ${r.data.removed_files} missing files.`);
       await loadDashboard(); 
       if (r.data.removed_files > 0) {
@@ -118,7 +125,7 @@ export function useSystemOps({
         else if (page === 'search') await explorer.goToSearch(explorer.filterCategory);
       }
     } catch (err) {
-      if (err?.response?.data?.detail === 'Operation cancelled' || indexer.cancel_data_operation) {
+      if (axios.isCancel(err) || err?.response?.data?.detail === 'Operation cancelled' || abortCtrl.signal.aborted) {
         wasCancelled = true;
         showToastMessage('Cleanup cancelled by user.');
         await loadDashboard();
