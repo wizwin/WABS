@@ -448,13 +448,146 @@ def get_or_create_exemplars(person_id: int, conn_or_cursor) -> list:
     return known_embeddings
 
 
+_ocr_engine = None
+_ocr_lock = threading.Lock()
+
+def reset_ocr_engine():
+    global _ocr_engine
+    with _ocr_lock:
+        _ocr_engine = None
+
+def get_ocr_engine():
+    global _ocr_engine
+    with _ocr_lock:
+        if _ocr_engine is None:
+            try:
+                from rapidocr_onnxruntime import RapidOCR
+                import onnxruntime as ort
+                from rapidocr_onnxruntime.utils import UpdateParameters
+            except ImportError as e:
+                logging.error(f"Failed to import rapidocr_onnxruntime or onnxruntime: {e}")
+                return None
+
+            import os
+            from backend.app.utils.paths import get_bundled_model_path
+            from backend.app.config import load_config
+            det_path = get_bundled_model_path("paddleOCR_det.onnx")
+            rec_path = get_bundled_model_path("paddleOCR_rec.onnx")
+            dict_path = get_bundled_model_path("paddleOCR_dict.txt")
+            
+            if not Path(det_path).exists() or not Path(rec_path).exists() or not Path(dict_path).exists():
+                logging.error(f"OCR model files not found in backend folder. det_path: {det_path}, rec_path: {rec_path}, dict_path: {dict_path}")
+                return None
+            
+            # Load settings
+            cfg = load_config()
+            cpu_threads = int(cfg.get("ocr_cpu_threads", 4))
+            limit_side_len = int(cfg.get("ocr_det_limit_side_len", 736))
+            limit_type = str(cfg.get("ocr_det_limit_type", "min"))
+            
+            # Apply dynamic environment variables as a backup
+            if cpu_threads > 0:
+                os.environ["OMP_NUM_THREADS"] = str(cpu_threads)
+                os.environ["MKL_NUM_THREADS"] = str(cpu_threads)
+            
+            # Apply dynamic monkeypatch to restrict ONNX Runtime threads
+            try:
+                original_init = ort.InferenceSession.__init__
+                def patched_init(self, *args, **kwargs):
+                    sess_opt = kwargs.get('sess_options')
+                    if sess_opt is None:
+                        if len(args) > 1 and isinstance(args[1], ort.SessionOptions):
+                            sess_opt = args[1]
+                        else:
+                            sess_opt = ort.SessionOptions()
+                            if len(args) > 1:
+                                args_list = list(args)
+                                args_list[1] = sess_opt
+                                args = tuple(args_list)
+                            else:
+                                kwargs['sess_options'] = sess_opt
+                    if sess_opt is not None:
+                        try:
+                            # Disable active spinning in ONNX thread pools to prevent CPU spikes when idle
+                            sess_opt.add_session_config_entry("session.intra_op.allow_spinning", "0")
+                            sess_opt.add_session_config_entry("session.inter_op.allow_spinning", "0")
+                        except Exception:
+                            pass
+                        if cpu_threads > 0:
+                            sess_opt.intra_op_num_threads = cpu_threads
+                            sess_opt.inter_op_num_threads = 1
+                    return original_init(self, *args, **kwargs)
+                ort.InferenceSession.__init__ = patched_init
+            except Exception as patch_ex:
+                logging.warning(f"Could not monkeypatch onnxruntime InferenceSession.__init__: {patch_ex}")
+            
+            # Apply monkeypatch to fix RapidOCR's UpdateParameters so we can pass custom keys_path and other settings
+            try:
+                orig_update_rec = UpdateParameters.update_rec_params
+                def patched_update_rec_params(self, config, rec_dict):
+                    if rec_dict:
+                        # Normalize rec_keys_path to keys_path
+                        if 'rec_keys_path' in rec_dict:
+                            rec_dict['keys_path'] = rec_dict.pop('rec_keys_path')
+                        # Ensure all keys starting with rec_ have their prefix removed
+                        new_rec_dict = {}
+                        for k, v in rec_dict.items():
+                            if k.startswith('rec_'):
+                                new_rec_dict[k.split('rec_')[1]] = v
+                            else:
+                                new_rec_dict[k] = v
+                        rec_dict = new_rec_dict
+                    return orig_update_rec(self, config, rec_dict)
+                UpdateParameters.update_rec_params = patched_update_rec_params
+            except Exception as patch_ex:
+                logging.warning(f"Could not monkeypatch rapidocr_onnxruntime UpdateParameters: {patch_ex}")
+
+            # Check for available GPU providers in ONNX Runtime
+            try:
+                available = ort.get_available_providers()
+            except Exception:
+                available = []
+            gpu_providers = ["CUDAExecutionProvider", "DmlExecutionProvider", "ROCMExecutionProvider", "TensorrtExecutionProvider"]
+            has_gpu = any(p in available for p in gpu_providers)
+            
+            custom_params = {
+                "det_model_path": det_path,
+                "rec_model_path": rec_path,
+                "rec_keys_path": dict_path,
+                "use_angle_cls": False,
+                "det_limit_side_len": limit_side_len,
+                "det_limit_type": limit_type
+            }
+            if has_gpu:
+                custom_params["det_use_cuda"] = True
+                custom_params["rec_use_cuda"] = True
+                logging.info(f"RapidOCR initialized with GPU support (Available: {available})")
+            else:
+                logging.info(f"RapidOCR initialized on CPU with {cpu_threads} threads (Available: {available})")
+                
+            try:
+                _ocr_engine = RapidOCR(**custom_params)
+            except Exception as ex:
+                logging.error(f"Failed to instantiate RapidOCR: {ex}")
+                _ocr_engine = None
+        return _ocr_engine
+
+
 def _process_unified_scanners(run_index: bool = False, run_face: bool = False, run_object: bool = False, run_document: bool = False):
     enable_logging = False
 
     """
     Main routine for processing files through AI scanners and text extraction.
     """
-    
+    try:
+        from backend.app.config import load_config
+        cfg = load_config()
+        opencv_threads = int(cfg.get("opencv_cpu_threads", 4))
+        if cv2 is not None and opencv_threads > 0:
+            cv2.setNumThreads(opencv_threads)
+    except Exception:
+        pass
+        
     if run_face:
         app_state.face_scanner_running = True
         STATE["face_scanner_running"] = True
@@ -643,6 +776,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     categories.append('photo')
                 if run_document:
                     categories.extend(['document', 'ebook', 'code', 'other'])
+                    if cfg.get("ocr_enabled", False) and 'photo' not in categories:
+                        categories.append('photo')
                 if categories:
                     q = q.filter(FileIndex.category.in_(categories))
                 for p in q.yield_per(5000):
@@ -857,15 +992,20 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     doc_stopped = STATE.get("document_scanner_stopped", False)
                     face_stopped = STATE.get("face_scanner_stopped", False)
                     
-                    needs_text = run_document and not doc_stopped and db_item_id not in text_processed_ids and category in ['document', 'ebook', 'code', 'other']
+                    needs_text = run_document and not doc_stopped and db_item_id not in text_processed_ids and (
+                        category in ['document', 'ebook', 'code', 'other'] or (category == 'photo' and cfg.get("ocr_enabled", False))
+                    )
                     needs_face = run_face and not face_stopped and db_item_id not in face_processed_ids and category == 'photo'
                     needs_object = run_object and not obj_stopped and db_item_id not in object_processed_ids and category == 'photo'
                     
                     if not needs_face and not needs_object and not needs_text:
                         continue
                         
+                    img = None
+                    decode_scale = 1.0
+                    
                     # Fetch full SQLAlchemy object ONLY if we need to modify tags or it wasn't fetched yet
-                    if not db_item and needs_object:
+                    if not db_item and (needs_object or (needs_text and category == 'photo')):
                         db_item = session.get(FileIndex, db_item_id)
                         
                     filename_lower = cached_info["filename"].lower() if cached_info["filename"] else ""
@@ -878,147 +1018,9 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             session.commit()
                         continue
 
-                    # --- FTS Text Extraction (PDFs, TXT, MD, etc.) ---
-                    if needs_text:
+                    # --- 3. OPTIMIZATION: Read image ONCE from disk for ML models & OCR ---
+                    if (needs_face or needs_object or (needs_text and category == 'photo')) and img is None:
                         try:
-                            extracted_text = ""
-                            extra_entities = []
-                            ext = file.suffix.lower()
-                            
-                            # Get configuration scan depth
-                            depth = load_config().get("document_scan_depth", "low")
-                            if depth == "high":
-                                pdf_limit, docx_limit, pptx_limit, xlsx_sheet_limit, xlsx_row_limit, text_limit = 999999, 999999, 999999, 999, 999999, 10000000
-                            elif depth == "medium":
-                                pdf_limit, docx_limit, pptx_limit, xlsx_sheet_limit, xlsx_row_limit, text_limit = 150, 1500, 100, 5, 500, 200000
-                            else: # low
-                                pdf_limit, docx_limit, pptx_limit, xlsx_sheet_limit, xlsx_row_limit, text_limit = 15, 500, 50, 3, 200, 50000
-
-                            if ext == '.pdf' and fitz is not None:
-                                with fitz.open(str(file)) as doc:
-                                    for page_num in range(len(doc)):
-                                        if len(extra_entities) > 1000:
-                                            break
-                                        page_text = doc[page_num].get_text()
-                                        if page_num < pdf_limit:
-                                            extracted_text += page_text + " "
-                                        else:
-                                            ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(page_text)
-                                            ents.extend(LOG_EXCLUDED_PATTERN.findall(page_text))
-                                            for ent in ents:
-                                                if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
-                                                    extra_entities.append(ent)
-                            elif ext == '.docx' and docx is not None:
-                                word_doc = docx.Document(str(file))
-                                for i, p in enumerate(word_doc.paragraphs):
-                                    if len(extra_entities) > 1000:
-                                        break
-                                    p_text = p.text
-                                    if not p_text.strip():
-                                        continue
-                                    if i < docx_limit:
-                                        extracted_text += p_text + " "
-                                    else:
-                                        ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(p_text)
-                                        ents.extend(LOG_EXCLUDED_PATTERN.findall(p_text))
-                                        for ent in ents:
-                                            if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
-                                                extra_entities.append(ent)
-                            elif ext == '.pptx' and pptx is not None:
-                                ppt_doc = pptx.Presentation(str(file))
-                                for i, slide in enumerate(ppt_doc.slides):
-                                    if len(extra_entities) > 1000:
-                                        break
-                                    slide_text = ""
-                                    for shape in slide.shapes:
-                                        if hasattr(shape, "text") and shape.text.strip():
-                                            slide_text += shape.text.strip() + " "
-                                    if i < pptx_limit:
-                                        extracted_text += slide_text + " "
-                                    else:
-                                        ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(slide_text)
-                                        ents.extend(LOG_EXCLUDED_PATTERN.findall(slide_text))
-                                        for ent in ents:
-                                            if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
-                                                extra_entities.append(ent)
-                            elif ext == '.xlsx' and openpyxl is not None:
-                                wb = openpyxl.load_workbook(str(file), data_only=True, read_only=True)
-                                for s_idx, sheetname in enumerate(wb.sheetnames):
-                                    if len(extra_entities) > 1000:
-                                        break
-                                    sheet = wb[sheetname]
-                                    for r_idx, row in enumerate(sheet.iter_rows(values_only=True)):
-                                        if len(extra_entities) > 1000:
-                                            break
-                                        row_text = " ".join([str(cell).strip() for cell in row if cell is not None and str(cell).strip()])
-                                        if not row_text:
-                                            continue
-                                        if s_idx < xlsx_sheet_limit and r_idx < xlsx_row_limit:
-                                            extracted_text += row_text + " "
-                                        else:
-                                            ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(row_text)
-                                            ents.extend(LOG_EXCLUDED_PATTERN.findall(row_text))
-                                            for ent in ents:
-                                                if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
-                                                    extra_entities.append(ent)
-                                wb.close()
-                            elif ext in PLAIN_TEXT_EXTENSIONS:
-                                with open(str(file), 'r', encoding='utf-8', errors='ignore') as f:
-                                    extracted_text = f.read(text_limit)
-                                    chunk_size = 128 * 1024  # Read in 128KB chunks
-                                    while True:
-                                        if len(extra_entities) > 1000:
-                                            break
-                                        chunk = f.read(chunk_size)
-                                        if not chunk:
-                                            break
-                                        ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(chunk)
-                                        ents.extend(LOG_EXCLUDED_PATTERN.findall(chunk))
-                                        for ent in ents:
-                                            if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
-                                                extra_entities.append(ent)
-                            
-                            extracted_text = extracted_text.strip()
-                            if extracted_text or extra_entities:
-                                optimized_text = extract_top_keywords(extracted_text, is_log=(ext in ['.log']), extra_entities=extra_entities)
-                                log_operation(f"Extracted text: { optimized_text }", user_logs_enabled=enable_logging, is_verbose=True)
-                                optimized_text = optimized_text.replace('\x00', ' ')
-                                try:
-                                    with session.begin_nested():
-                                        session.execute(text("INSERT INTO file_text_fts (file_id, content) VALUES (:f, :c)"), {"f": db_item_id, "c": optimized_text})
-                                except Exception as fts_e:
-                                    print(f"FTS index error on {file.name}: {fts_e}")
-                                log_operation(f"Extracted and indexed text for file: {file.name}", user_logs_enabled=enable_logging, is_verbose=True)
-                        except Exception:
-                            pass 
-                        finally:
-                            try:
-                                with session.begin_nested():
-                                    session.execute(text("INSERT OR IGNORE INTO processed_text (file_id) VALUES (:f)"), {"f": db_item_id})
-                            except Exception:
-                                pass
-                            text_processed_ids.add(db_item_id)
-
-                    if not needs_face and not needs_object:
-                        processed_count += 1
-                        if processed_count % 500 == 0: session.commit(); conn.commit()
-                        continue
-
-                    # --- OPTIMIZATION: Read file ONCE from disk for both ML models ---
-                    img = None
-                    decode_scale = 1.0
-                    try:
-                        if category == 'document' and file.suffix.lower() == '.pdf' and fitz is not None:
-                            doc = fitz.open(str(file))
-                            page = doc.load_page(0)
-                            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                            img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n) # type: ignore
-                            if pix.n == 4:
-                                img = cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGR)
-                            else:
-                                img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-                            doc.close()
-                        else:
                             # Read dimensions first using PIL to optimize image decoding
                             from PIL import Image, ImageOps
                             width, height = 0, 0
@@ -1029,16 +1031,24 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                 pass
                             
                             img_array = np.fromfile(str(file), np.uint8)
+                            ocr_enabled = cfg.get("ocr_enabled", False)
                             
                             # If JPEG and very large, use scale-on-decode flags
                             if width > 0 and height > 0 and file.suffix.lower() in ('.jpg', '.jpeg'):
                                 max_dim = max(width, height)
-                                if max_dim >= 3200:
-                                    img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_4)
-                                    decode_scale = 0.25
-                                elif max_dim >= 1600:
-                                    img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_2)
-                                    decode_scale = 0.5
+                                if ocr_enabled:
+                                    # OCR needs higher resolution, only downscale by 1/2 if image is extremely large (>= 4000px)
+                                    if max_dim >= 4000:
+                                        img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_2)
+                                        decode_scale = 0.5
+                                else:
+                                    # OCR disabled: aggressive downscaling for face and object classification only
+                                    if max_dim >= 3200:
+                                        img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_4)
+                                        decode_scale = 0.25
+                                    elif max_dim >= 1600:
+                                        img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_2)
+                                        decode_scale = 0.5
                             
                             if img is None:
                                 img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
@@ -1052,24 +1062,33 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                         img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
                                         decode_scale = 1.0
                                 except Exception:
-                                    pass # Final failure will be caught by `if img is None` below
-                    except Exception as e:
-                        print(f"Error reading image {file.name}: {e}")
-                        continue
+                                    pass
+                                    
+                            # Early downscaling strategy when OCR is enabled
+                            if img is not None and ocr_enabled:
+                                h, w = img.shape[:2]
+                                if max(h, w) > 2000:
+                                    scale = 2000.0 / max(h, w)
+                                    new_w, new_h = int(w * scale), int(h * scale)
+                                    img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                                    decode_scale *= scale
+                        except Exception as e:
+                            print(f"Error reading image {file.name}: {e}")
 
-                    if img is None:
-                        if needs_face: cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item_id,))
-                        if needs_object: cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item_id,))
-                        if needs_text: session.execute(text("INSERT OR IGNORE INTO processed_text (file_id) VALUES (:f)"), {"f": db_item_id})
-                        processed_count += 1
-                        if processed_count % 500 == 0:
-                            conn.commit()
-                            session.commit()
-                        continue
-                        
-                    # --- Run Object Classifier ---
-                    if needs_object and net is not None:
+                        if img is None:
+                            if needs_face: cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item_id,))
+                            if needs_object: cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item_id,))
+                            if needs_text: session.execute(text("INSERT OR IGNORE INTO processed_text (file_id) VALUES (:f)"), {"f": db_item_id})
+                            processed_count += 1
+                            if processed_count % 500 == 0:
+                                conn.commit()
+                                session.commit()
+                            continue
+
+                    # --- 4. Run Object Classifier ---
+                    if needs_object and net is not None and img is not None:
                         try:
+                            log_operation(f"Starting object classification for file: {file.name}", is_verbose=True)
                             o_img = cv2.resize(img, (224, 224))
                             o_img = cv2.cvtColor(o_img, cv2.COLOR_BGR2RGB)
                             o_img = o_img.astype(np.float32) / 255.0
@@ -1085,6 +1104,9 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             probs = exp_preds / np.sum(exp_preds)
                             
                             classIds = np.argsort(probs)[-5:][::-1]
+                            raw_preds = [(classes[cid].split(',')[0].strip(), float(probs[cid])) for cid in classIds]
+                            log_operation(f"Object classifier top-5 predictions for {file.name}: {raw_preds}", is_verbose=True)
+                            
                             new_tags = []
                             for classId in classIds:
                                 if probs[classId] > object_threshold:
@@ -1097,20 +1119,21 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     current_tags_set.add(tag)
                                 db_item.tags = ",".join(sorted(current_tags_set))
                                 log_operation(f"Classified objects {new_tags} for file: {file.name}", user_logs_enabled=enable_logging, is_verbose=True)
+                            else:
+                                log_operation(f"No objects detected above threshold {object_threshold} for file: {file.name}", is_verbose=True)
                         except Exception as e:
                             print(f"ERROR: Failed to classify {file.name}: {e}")
                             
                         cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item_id,))
                         object_processed_ids.add(db_item_id)
 
-                    # --- Run Face Detector ---
-                    if needs_face and detector is not None:
+                    # --- 5. Run Face Detector ---
+                    if needs_face and detector is not None and img is not None:
                         try:
+                            log_operation(f"Starting face detection for file: {file.name}", is_verbose=True)
                             dec_h, dec_w, _ = img.shape
                             face_sensitivity = cfg.get("face_sensitivity", "medium")
                             
-                            # Helper to run detection at a given target dimension
-                            # returns faces with coordinates in dec_img (img) space
                             def run_detection_pass(target_dim):
                                 scale = 1.0
                                 if max(dec_h, dec_w) > target_dim:
@@ -1159,8 +1182,13 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                 if faces is None:
                                     faces = run_detection_pass(320)
 
+                            num_detected = len(faces) if faces is not None else 0
+                            log_operation(f"Face detector found {num_detected} face(s) in {file.name}", is_verbose=True)
+
                             if faces is not None:
-                                for face in faces:
+                                for face_idx, face in enumerate(faces):
+                                    if shared_state.APP_SHUTTING_DOWN or STATE.get("face_scanner_stopped") or app_state.combined_scanner_stopped or STATE.get("stopped"):
+                                        break
                                     face_align = recognizer.alignCrop(img, face)
                                     face_feature = recognizer.feature(face_align)
                                     embedding = face_feature[0].tolist()
@@ -1177,9 +1205,11 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                             max_idx = np.argmax(similarities)
                                             max_sim = similarities[max_idx]
                                             
+                                            best_sim = float(max_sim)
+                                            best_match_id_candidate = cluster_ids_list[max_idx]
+                                            log_operation(f"Comparing face #{face_idx} in {file.name} against {len(clusters)} clusters: best similarity {best_sim:.4f} with person_id {best_match_id_candidate}", is_verbose=True)
                                             if max_sim > cluster_threshold:
-                                                best_sim = float(max_sim)
-                                                best_match_id = cluster_ids_list[max_idx]
+                                                best_match_id = best_match_id_candidate
 
                                     if best_match_id is None:
                                         while True:
@@ -1188,6 +1218,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                             if cursor.rowcount > 0:
                                                 best_match_id = cursor.lastrowid
                                                 break
+                                        log_operation(f"Face #{face_idx} in {file.name}: similarity below threshold ({best_sim:.4f} vs threshold {cluster_threshold}). Mapped to new person_id: {best_match_id}", is_verbose=True)
                                         clusters[best_match_id] = [embedding]
                                         
                                         emb_np = np.array(embedding, dtype=np.float32)
@@ -1200,6 +1231,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                             cluster_matrix_norm = np.vstack([cluster_matrix_norm, emb_np_norm])
                                             cluster_ids_list.append(best_match_id)
                                     else:
+                                        log_operation(f"Face #{face_idx} in {file.name}: Matched existing person_id: {best_match_id} (sim: {best_sim:.4f})", is_verbose=True)
                                         if len(clusters[best_match_id]) < 15:
                                             clusters[best_match_id].append(embedding)
                                             
@@ -1216,6 +1248,209 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             
                         cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item_id,))
                         face_processed_ids.add(db_item_id)
+
+                    # --- 6. FTS Text Extraction (PDFs, TXT, MD, photos, etc.) ---
+                    if needs_text:
+                        try:
+                            extracted_text = ""
+                            extra_entities = []
+                            ext = file.suffix.lower()
+                            
+                            # Get configuration scan depth
+                            depth = load_config().get("document_scan_depth", "low")
+                            if depth == "high":
+                                pdf_limit, docx_limit, pptx_limit, xlsx_sheet_limit, xlsx_row_limit, text_limit = 999999, 999999, 999999, 999, 999999, 10000000
+                            elif depth == "medium":
+                                pdf_limit, docx_limit, pptx_limit, xlsx_sheet_limit, xlsx_row_limit, text_limit = 150, 1500, 100, 5, 500, 200000
+                            else: # low
+                                pdf_limit, docx_limit, pptx_limit, xlsx_sheet_limit, xlsx_row_limit, text_limit = 15, 500, 50, 3, 200, 50000
+
+                            if category == 'photo':
+                                ocr_enabled = cfg.get("ocr_enabled", False)
+                                ocr_only_no_ai_tags = cfg.get("ocr_only_no_ai_tags", True)
+                                skip_ocr = False
+                                
+                                log_operation(f"Evaluating OCR necessity for photo: {file.name} (ocr_enabled={ocr_enabled}, ocr_only_no_ai_tags={ocr_only_no_ai_tags})", is_verbose=True)
+                                if ocr_only_no_ai_tags:
+                                    cursor.execute("SELECT 1 FROM faces WHERE file_id = ?", (db_item_id,))
+                                    has_face = cursor.fetchone() is not None
+                                    has_object = False
+                                    if db_item and db_item.tags:
+                                        if "object:" in db_item.tags:
+                                            has_object = True
+                                    if has_face or has_object:
+                                        skip_ocr = True
+                                        log_operation(f"Skipping OCR for photo {file.name} because image already has faces/objects", is_verbose=True)
+                                
+                                if ocr_enabled and not skip_ocr and img is not None:
+                                    log_operation(f"Running OCR engine on photo: {file.name}", is_verbose=True)
+                                    ocr_engine = get_ocr_engine()
+                                    if ocr_engine is not None:
+                                        ocr_results, _ = ocr_engine(img)
+                                        if ocr_results:
+                                            extracted_text = " ".join([res[1] for res in ocr_results if res and len(res) > 1])
+                                            log_operation(f"OCR extracted {len(extracted_text)} characters from photo {file.name}: '{extracted_text[:100]}...'", is_verbose=True)
+                                        else:
+                                            log_operation(f"OCR engine returned no text for photo: {file.name}", is_verbose=True)
+                            elif ext == '.pdf' and fitz is not None:
+                                with fitz.open(str(file)) as doc:
+                                    ocr_enabled = cfg.get("ocr_enabled", False)
+                                    ocr_max_pages = int(cfg.get("ocr_max_pages", 3))
+                                    log_operation(f"Parsing PDF document {file.name} (pages: {len(doc)}, ocr_enabled={ocr_enabled})", is_verbose=True)
+                                    for page_num in range(len(doc)):
+                                        if shared_state.APP_SHUTTING_DOWN or STATE.get("document_scanner_stopped") or app_state.combined_scanner_stopped or STATE.get("stopped"):
+                                            break
+                                        if len(extra_entities) > 1000:
+                                            break
+                                        page = doc[page_num]
+                                        page_text = page.get_text()
+                                        
+                                        if ocr_enabled and len(page_text.strip()) < 15 and page_num < ocr_max_pages:
+                                            try:
+                                                log_operation(f"PDF page {page_num} of {file.name} has low text ({len(page_text.strip())} chars). Triggering OCR...", is_verbose=True)
+                                                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                                                img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+                                                if pix.n == 4:
+                                                    page_img = cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGR)
+                                                else:
+                                                    page_img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                                                
+                                                if page_num == 0:
+                                                    img = page_img # Cache for face/object reuse
+                                                    
+                                                ocr_engine = get_ocr_engine()
+                                                if ocr_engine is not None:
+                                                    ocr_results, _ = ocr_engine(page_img)
+                                                    if ocr_results:
+                                                        ocr_page_text = " ".join([res[1] for res in ocr_results if res and len(res) > 1])
+                                                        if ocr_page_text.strip():
+                                                            page_text = ocr_page_text
+                                                            log_operation(f"OCR extracted text for PDF page {page_num} of {file.name}: {len(page_text)} chars", is_verbose=True)
+                                            except Exception as ocr_err:
+                                                if enable_logging:
+                                                    logging.error(f"OCR failed on page {page_num} of {file.name}: {ocr_err}")
+                                                    
+                                        if page_num < pdf_limit:
+                                            extracted_text += page_text + " "
+                                        else:
+                                            ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(page_text)
+                                            ents.extend(LOG_EXCLUDED_PATTERN.findall(page_text))
+                                            for ent in ents:
+                                                if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
+                                                    extra_entities.append(ent)
+                                    log_operation(f"Completed parsing PDF {file.name}. Total extracted text len: {len(extracted_text)} chars", is_verbose=True)
+                            elif ext == '.docx' and docx is not None:
+                                log_operation(f"Parsing DOCX document {file.name}", is_verbose=True)
+                                word_doc = docx.Document(str(file))
+                                for i, p in enumerate(word_doc.paragraphs):
+                                    if shared_state.APP_SHUTTING_DOWN or STATE.get("document_scanner_stopped") or app_state.combined_scanner_stopped or STATE.get("stopped"):
+                                        break
+                                    if len(extra_entities) > 1000:
+                                        break
+                                    p_text = p.text
+                                    if not p_text.strip():
+                                        continue
+                                    if i < docx_limit:
+                                        extracted_text += p_text + " "
+                                    else:
+                                        ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(p_text)
+                                        ents.extend(LOG_EXCLUDED_PATTERN.findall(p_text))
+                                        for ent in ents:
+                                            if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
+                                                extra_entities.append(ent)
+                                log_operation(f"Completed parsing DOCX {file.name}. Total extracted text len: {len(extracted_text)} chars", is_verbose=True)
+                            elif ext == '.pptx' and pptx is not None:
+                                log_operation(f"Parsing PPTX document {file.name}", is_verbose=True)
+                                ppt_doc = pptx.Presentation(str(file))
+                                for i, slide in enumerate(ppt_doc.slides):
+                                    if shared_state.APP_SHUTTING_DOWN or STATE.get("document_scanner_stopped") or app_state.combined_scanner_stopped or STATE.get("stopped"):
+                                        break
+                                    if len(extra_entities) > 1000:
+                                        break
+                                    slide_text = ""
+                                    for shape in slide.shapes:
+                                        if hasattr(shape, "text") and shape.text.strip():
+                                            slide_text += shape.text.strip() + " "
+                                    if i < pptx_limit:
+                                        extracted_text += slide_text + " "
+                                    else:
+                                        ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(slide_text)
+                                        ents.extend(LOG_EXCLUDED_PATTERN.findall(slide_text))
+                                        for ent in ents:
+                                            if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
+                                                extra_entities.append(ent)
+                                log_operation(f"Completed parsing PPTX {file.name}. Total extracted text len: {len(extracted_text)} chars", is_verbose=True)
+                            elif ext == '.xlsx' and openpyxl is not None:
+                                log_operation(f"Parsing XLSX document {file.name}", is_verbose=True)
+                                wb = openpyxl.load_workbook(str(file), data_only=True, read_only=True)
+                                for s_idx, sheetname in enumerate(wb.sheetnames):
+                                    if shared_state.APP_SHUTTING_DOWN or STATE.get("document_scanner_stopped") or app_state.combined_scanner_stopped or STATE.get("stopped"):
+                                        break
+                                    if len(extra_entities) > 1000:
+                                        break
+                                    sheet = wb[sheetname]
+                                    for r_idx, row in enumerate(sheet.iter_rows(values_only=True)):
+                                        if shared_state.APP_SHUTTING_DOWN or STATE.get("document_scanner_stopped") or app_state.combined_scanner_stopped or STATE.get("stopped"):
+                                            break
+                                        if len(extra_entities) > 1000:
+                                            break
+                                        row_text = " ".join([str(cell).strip() for cell in row if cell is not None and str(cell).strip()])
+                                        if not row_text:
+                                            continue
+                                        if s_idx < xlsx_sheet_limit and r_idx < xlsx_row_limit:
+                                            extracted_text += row_text + " "
+                                        else:
+                                            ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(row_text)
+                                            ents.extend(LOG_EXCLUDED_PATTERN.findall(row_text))
+                                            for ent in ents:
+                                                if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
+                                                    extra_entities.append(ent)
+                                wb.close()
+                                log_operation(f"Completed parsing XLSX {file.name}. Total extracted text len: {len(extracted_text)} chars", is_verbose=True)
+                            elif ext in PLAIN_TEXT_EXTENSIONS:
+                                log_operation(f"Parsing plain text document {file.name}", is_verbose=True)
+                                with open(str(file), 'r', encoding='utf-8', errors='ignore') as f:
+                                    extracted_text = f.read(text_limit)
+                                    chunk_size = 128 * 1024  # Read in 128KB chunks
+                                    while True:
+                                        if shared_state.APP_SHUTTING_DOWN or STATE.get("document_scanner_stopped") or app_state.combined_scanner_stopped or STATE.get("stopped"):
+                                            break
+                                        if len(extra_entities) > 1000:
+                                            break
+                                        chunk = f.read(chunk_size)
+                                        if not chunk:
+                                            break
+                                        ents = HIGH_PRIORITY_ENTITIES_PATTERN.findall(chunk)
+                                        ents.extend(LOG_EXCLUDED_PATTERN.findall(chunk))
+                                        for ent in ents:
+                                            if '@' in ent or '://' in ent or ent.startswith('www.') or ent.startswith('#'):
+                                                extra_entities.append(ent)
+                                log_operation(f"Completed parsing plain text {file.name}. Total extracted text len: {len(extracted_text)} chars", is_verbose=True)
+                            
+                            extracted_text = extracted_text.strip()
+                            if extracted_text or extra_entities:
+                                limit = int(load_config().get("text_extraction_limit", 300))
+                                log_operation(f"Optimizing extracted text for {file.name} (limit={limit}, text_len={len(extracted_text)} chars)", is_verbose=True)
+                                if len(extracted_text.split()) > limit:
+                                    optimized_text = extract_top_keywords(extracted_text, max_words=limit, is_log=(ext in ['.log']), extra_entities=extra_entities)
+                                else:
+                                    optimized_text = extract_top_keywords(extracted_text, is_log=(ext in ['.log']), extra_entities=extra_entities)
+                                optimized_text = optimized_text.replace('\x00', ' ')
+                                log_operation(f"FTS index insertion for {file.name}. Content: '{optimized_text[:100]}...'", is_verbose=True)
+                                try:
+                                    with session.begin_nested():
+                                        session.execute(text("INSERT INTO file_text_fts (file_id, content) VALUES (:f, :c)"), {"f": db_item_id, "c": optimized_text})
+                                except Exception as fts_e:
+                                    print(f"FTS index error on {file.name}: {fts_e}")
+                        except Exception as e:
+                            print(f"FTS extraction error on {file.name}: {e}")
+                        finally:
+                            try:
+                                with session.begin_nested():
+                                    session.execute(text("INSERT OR IGNORE INTO processed_text (file_id) VALUES (:f)"), {"f": db_item_id})
+                            except Exception:
+                                pass
+                            text_processed_ids.add(db_item_id)
 
                     processed_count += 1
                     if processed_count % 500 == 0:
@@ -1674,11 +1909,13 @@ def background_lazy_hasher():
                 meta = json.loads(metadata_json or "{}")
                 file_path = Path(path)
                 if file_path.exists() and file_path.is_file():
+                    log_operation(f"Lazy hasher: calculating SHA-256 for {file_path.name} (size: {file_path.stat().st_size} bytes)", is_verbose=True)
                     hasher = hashlib.sha256()
                     with open(file_path, 'rb') as f:
                         for chunk in iter(lambda: f.read(4096 * 1024), b""):
                             hasher.update(chunk)
                     meta["sha256"] = hasher.hexdigest()
+                    log_operation(f"Lazy hasher: SHA-256 for {file_path.name} is {meta['sha256']}", is_verbose=True)
                     mappings.append({"id": item_id, "metadata_json": json.dumps(meta)})
                     updates += 1
                     
@@ -1700,6 +1937,7 @@ def background_lazy_hasher():
         STATE["hasher_running"] = False
         STATE["hasher_current_file"] = ""
         STATE["duplicates_status_changed_at"] = time.time()
+        STATE["hasher_stopped"] = False
         session.close()
         if enable_logging:
             import logging

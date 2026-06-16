@@ -561,6 +561,132 @@ export default function Settings(props) {
                     <option value='medium'>Medium (Balanced scanning depth)</option>
                     <option value='high'>High (Deep &amp; Thorough - May take longer)</option>
                 </select>
+
+                <div style={{ height: '1px', background: '#334155', margin: '16px 0' }}></div>
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', color: '#f8fafc', fontSize: '14px', cursor: 'pointer' }}>
+                    <input
+                        type='checkbox'
+                        checked={settings.ocr_enabled || false}
+                        onChange={(e)=>setSettings({
+                            ...settings,
+                            ocr_enabled: e.target.checked
+                        })}
+                    />
+                    Enable OCR (Optical Character Recognition)
+                </label>
+
+                {settings.ocr_enabled && (
+                    <>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', color: '#f8fafc', fontSize: '14px', cursor: 'pointer', marginLeft: '20px' }}>
+                            <input
+                                type='checkbox'
+                                checked={settings.ocr_only_no_ai_tags !== undefined ? settings.ocr_only_no_ai_tags : true}
+                                onChange={(e)=>setSettings({
+                                    ...settings,
+                                    ocr_only_no_ai_tags: e.target.checked
+                                })}
+                            />
+                            Only run OCR on photos without faces/objects
+                        </label>
+
+                        <div style={{ marginLeft: '20px', marginBottom: '0' }}>
+                            <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>OCR Maximum Pages per Document</p>
+                            <input
+                                type='number'
+                                min='1'
+                                max='100'
+                                className='setting'
+                                style={{ marginBottom: '8px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none', boxSizing: 'border-box' }}
+                                value={settings.ocr_max_pages !== undefined ? settings.ocr_max_pages : 3}
+                                onChange={(e)=>setSettings({
+                                    ...settings,
+                                    ocr_max_pages: e.target.value === '' ? '' : parseInt(e.target.value)
+                                })}
+                            />
+                            <p style={{ margin: '0', fontSize: '12px', color: '#94a3b8' }}>Limits text recognition on multi-page image-only PDFs.</p>
+                        </div>
+                    </>
+                )}
+                </div>
+
+                <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+                <h3 style={{ margin: '0 0 16px 0' }}>Advanced Performance Tuning (Optional)</h3>
+                <div style={{ display: 'grid', gap: '16px' }}>
+                    <div>
+                        <p style={{ margin: '0 0 6px 0', fontSize: '14px', color: '#94a3b8' }}>AI &amp; Media CPU Threads</p>
+                        <input
+                            type='number'
+                            min='0'
+                            max='32'
+                            className='setting'
+                            style={{ marginBottom: '4px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none', boxSizing: 'border-box' }}
+                            value={settings.opencv_cpu_threads !== undefined ? settings.opencv_cpu_threads : 4}
+                            onChange={(e)=>setSettings({
+                                ...settings,
+                                opencv_cpu_threads: e.target.value === '' ? '' : parseInt(e.target.value)
+                            })}
+                        />
+                        <p style={{ margin: '0', fontSize: '12px', color: '#94a3b8' }}>Limits the CPU cores used by Face &amp; Object detection and video frame extraction to prevent WABS from running too hot. (Default: 4, 0 for unlimited)</p>
+                    </div>
+
+                    {settings.ocr_enabled && (
+                        <>
+                            <div style={{ height: '1px', background: '#334155', margin: '8px 0' }}></div>
+
+                            <div>
+                                <p style={{ margin: '0 0 6px 0', fontSize: '14px', color: '#94a3b8' }}>OCR CPU Threads</p>
+                                <input
+                                    type='number'
+                                    min='0'
+                                    max='32'
+                                    className='setting'
+                                    style={{ marginBottom: '4px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none', boxSizing: 'border-box' }}
+                                    value={settings.ocr_cpu_threads !== undefined ? settings.ocr_cpu_threads : 4}
+                                    onChange={(e)=>setSettings({
+                                        ...settings,
+                                        ocr_cpu_threads: e.target.value === '' ? '' : parseInt(e.target.value)
+                                    })}
+                                />
+                                <p style={{ margin: '0', fontSize: '12px', color: '#94a3b8' }}>Limits the CPU cores used by text recognition. Set to 2 or 4 to keep your computer responsive during scanning. (Default: 4, 0 for unlimited)</p>
+                            </div>
+
+                            <div>
+                                <p style={{ margin: '0 0 6px 0', fontSize: '14px', color: '#94a3b8' }}>OCR Image Scan Limit (in pixels)</p>
+                                <input
+                                    type='number'
+                                    min='32'
+                                    max='4096'
+                                    className='setting'
+                                    style={{ marginBottom: '4px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none', boxSizing: 'border-box' }}
+                                    value={settings.ocr_det_limit_side_len !== undefined ? settings.ocr_det_limit_side_len : 736}
+                                    onChange={(e)=>setSettings({
+                                        ...settings,
+                                        ocr_det_limit_side_len: e.target.value === '' ? '' : parseInt(e.target.value)
+                                    })}
+                                />
+                                <p style={{ margin: '0', fontSize: '12px', color: '#94a3b8' }}>Resizes large photos during the text-locating stage. Smaller values run faster, while larger values detect smaller text. (Default: 736)</p>
+                            </div>
+
+                            <div>
+                                <p style={{ margin: '0 0 6px 0', fontSize: '14px', color: '#94a3b8' }}>OCR Downscaling Mode</p>
+                                <select
+                                    className='setting'
+                                    style={{ marginBottom: '4px', width: '100%', padding: '10px', background: '#0f172a', border: '1px solid #334155', color: '#f8fafc', borderRadius: '8px', outline: 'none', boxSizing: 'border-box' }}
+                                    value={settings.ocr_det_limit_type || 'min'}
+                                    onChange={(e)=>setSettings({
+                                        ...settings,
+                                        ocr_det_limit_type: e.target.value
+                                    })}
+                                >
+                                    <option value='min'>Minimum Side (Keeps resolution high for accuracy)</option>
+                                    <option value='max'>Maximum Side (Downscales aggressively for maximum scanning speed)</option>
+                                </select>
+                                <p style={{ margin: '0', fontSize: '12px', color: '#94a3b8' }}>Choosing 'Maximum Side' is highly recommended for very fast scanning of large camera photos.</p>
+                            </div>
+                        </>
+                    )}
+                </div>
                 </div>
 
                 <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>

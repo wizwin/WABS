@@ -50,8 +50,9 @@ def stop_verify_duplicates():
         logging.info("Duplicate verification stopped.")
     with app_state.scanner_lock:
         STATE["hasher_stopped"] = True
-        STATE["stopped"] = True
-        app_state.combined_scanner_stopped = True
+        if not app_state.combined_scanner_running:
+            STATE["stopped"] = True
+            app_state.combined_scanner_stopped = True
     return {"status": "stopping"}
 
 @router.post("/indexer/set-options")

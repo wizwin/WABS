@@ -1,7 +1,35 @@
 from pathlib import Path
 import sys
+import os
 import traceback
 import time
+
+# Prevent thread spinning and busy-waiting in background thread pools (OpenMP, OpenBLAS)
+os.environ["OMP_WAIT_POLICY"] = "passive"
+os.environ["OPENBLAS_MAIN_FREE"] = "1"
+os.environ["OPENBLAS_THREAD_TIMEOUT"] = "10"
+
+# Configure CPU threading limits globally before importing other libraries
+try:
+    from backend.app.config import load_config
+    cfg = load_config()
+    ocr_threads = cfg.get("ocr_cpu_threads", 4)
+    opencv_threads = cfg.get("opencv_cpu_threads", 4)
+
+    if ocr_threads > 0:
+        os.environ["OMP_NUM_THREADS"] = str(ocr_threads)
+        os.environ["MKL_NUM_THREADS"] = str(ocr_threads)
+
+    if opencv_threads > 0:
+        os.environ["OPENBLAS_NUM_THREADS"] = str(opencv_threads)
+        os.environ["OPENCV_NUM_THREADS"] = str(opencv_threads)
+
+    import cv2
+    if opencv_threads > 0:
+        cv2.setNumThreads(opencv_threads)
+except Exception:
+    pass
+
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware

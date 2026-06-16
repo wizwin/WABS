@@ -1,5 +1,21 @@
 # WABS Changelog
 
+## v1.0.0
+
+### 🚀 Major New Features & Enhancements
+*   **Offline OCR (Optical Character Recognition) Integration:** Integrated **RapidOCR** with local PaddleOCR models (`paddleOCR_det.onnx`, `paddleOCR_rec.onnx`, `paddleOCR_dict.txt`) to extract English text from photos and scanned/image-only PDF pages. Extracted text is indexed into the Full-Text Search (FTS5) engine, making them instantly searchable.
+*   **GPU Acceleration for OCR:** Added automatic detection of GPU execution providers in ONNX Runtime (such as CUDA, DirectML, and ROCm). If a GPU is present, WABS configures the OCR engine to use it for hardware-accelerated text recognition, falling back dynamically to CPU otherwise.
+*   **Smart Photo Filtering setting (`ocr_only_no_ai_tags`):** Added a new filter setting (default: `True`) that skips OCR on photos that already have detected faces or objects. This focuses text recognition resources specifically on receipts, invoices, screenshots, and scanned documents, while bypassing scenic/family photos to optimize processing speed and database size.
+*   **Single-Decode Image Reuse:** Optimised the scanner pipeline to load and decode images exactly once, reusing the same OpenCV image object across face detection, object classification, and OCR text extraction.
+*   **Advanced Performance & Threading Control:** Added new settings in the **Advanced Performance Tuning** section under Settings to restrict OCR CPU thread count (`ocr_cpu_threads`) and OpenCV/DNN (Face/Object/Media) thread count (`opencv_cpu_threads`) dynamically at startup, avoiding 100% CPU spikes and keeping your computer responsive.
+*   **Early-Downscaling Image Pipeline:** Introduces early resizing of huge images to 2000px max side when OCR is enabled. Subsequent Face and Object detection algorithms resize from this pre-downscaled image, avoiding high memory footprint and CPU processing spikes on massive camera photos.
+*   **Unified UI Controls:** Renamed "Extract Document Text" to "Extract Text" across the dashboard and tags page, adapting the button and progress components to process both documents and photos when OCR is enabled.
+*   **Third-Party Acknowledgments:** Updated the About page and documentation to attribute proper credits and license details to PaddleOCR and RapidOCR.
+
+### 🐞 Bug Fixes & Refinements
+*   **RapidOCR Model Loading Fix:** Patched RapidOCR parameter mapping so that custom model paths in the `backend/` directory are loaded correctly instead of falling back to default site-package paths.
+*   **GPU Module Enablement Fix:** Corrected ONNX Runtime execution provider configuration inside the OCR session to properly activate GPU acceleration for both detection and recognition modules when GPU is present.
+
 ## v1.0.0-beta.8
 
 ### 🚀 Major Refactoring & New Features

@@ -173,6 +173,13 @@ def settings():
         "min_unknown_photos": 1,
         "document_scan_depth": "low",
         "text_extraction_limit": 300,
+        "ocr_enabled": False,
+        "ocr_max_pages": 3,
+        "ocr_only_no_ai_tags": True,
+        "ocr_cpu_threads": 4,
+        "opencv_cpu_threads": 4,
+        "ocr_det_limit_side_len": 736,
+        "ocr_det_limit_type": "min",
         "run_face_scan": False,
         "run_object_scan": False,
         "backup_configs": [],
@@ -194,9 +201,25 @@ def save(data:dict):
 
     save_config(data)
     shared_state.LOGGING_ENABLED = data.get("enable_logging", False)
+    
+    # Apply thread limits dynamically
+    try:
+        from backend.app.utils.indexer import reset_ocr_engine
+        reset_ocr_engine()
+    except Exception:
+        pass
+        
+    try:
+        import cv2
+        opencv_threads = int(data.get("opencv_cpu_threads", 4))
+        if opencv_threads > 0:
+            cv2.setNumThreads(opencv_threads)
+    except Exception:
+        pass
+
     if load_config().get("enable_logging"):
         import logging
-        logging.info("Configuration file updated.")
+        logging.info("Configuration file updated. Dynamic thread limits applied and OCR engine cache reset.")
     return {"saved":True}
 
 @router.post("/system/test-ai")
@@ -334,6 +357,27 @@ def shutdown(request: Request):
             os.kill(os.getpid(), signal.SIGTERM)
         threading.Thread(target=dev_shutdown).start()
         return {"shutdown": True, "message": "Server shutdown signal sent..."}
+
+@router.get("/system/debug-threads")
+def debug_threads():
+    import sys
+    import threading
+    import traceback
+    
+    threads_info = {}
+    for thread_id, frame in sys._current_frames().items():
+        thread_name = "Unknown"
+        for t in threading.enumerate():
+            if t.ident == thread_id:
+                thread_name = t.name
+                break
+        
+        stack = traceback.format_stack(frame)
+        threads_info[str(thread_id)] = {
+            "name": thread_name,
+            "stack": stack
+        }
+    return threads_info
 
 @router.post("/system/free-memory")
 def free_memory():

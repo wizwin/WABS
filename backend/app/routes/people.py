@@ -1163,11 +1163,12 @@ def scan_faces():
 @router.post("/stop-scan-faces")
 def stop_scan_faces():
     with app_state.scanner_lock:
-        STATE["face_scanner_stopped"] = True
-        STATE["stopped"] = True
-        app_state.combined_scanner_stopped = True
         if not app_state.face_scanner_running:
             return {"message": "Face scanner is not running or already stopped."}
+        STATE["face_scanner_stopped"] = True
+        if not app_state.combined_scanner_running:
+            STATE["stopped"] = True
+            app_state.combined_scanner_stopped = True
             
     if load_config().get("enable_logging"):
         import logging

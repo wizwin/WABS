@@ -28,7 +28,7 @@ export default function About(props) {
             <div style={{background:'#8b5cf61a', padding:'10px', borderRadius:'10px', color:'#8b5cf6', display:'flex'}}><InfoIcon /></div>
             <div>
             <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Version Info</h3>
-            <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0-beta.8</strong></p>
+            <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0</strong></p>
             </div>
         </div>
 
@@ -64,6 +64,7 @@ export default function About(props) {
                 <li><b>Face Detection:</b> YuNet (OpenCV Zoo)</li>
                 <li><b>Face Recognition:</b> SFace (OpenCV Zoo)</li>
                 <li><b>Object Classification:</b> MobileNetV2 (ONNX Model Zoo)</li>
+                <li><b>OCR (Text Recognition):</b> RapidOCR & PaddleOCR (ONNX)</li>
                 <li><b>Core Tech:</b> Python, FastAPI, SQLite (FTS5), OpenCV, PyMuPDF, React, Vite, Material UI</li>
             </ul>
             </div>

@@ -42,6 +42,7 @@ const [toastMessage, setToastMessage] = useState('');
 const [showToast, setShowToast] = useState(false);
 const [toastAction, setToastAction] = useState(null);
 const toastTimeoutRef = useRef(null);
+const wasRunningRef = useRef(false);
 const [suggestionsData, setSuggestionsData] = useState({ type: 'none', suggestions: [], lastWord: '' });
 const suggestionTimeout = useRef(null);
 const searchContainerRef = useRef(null);
@@ -360,17 +361,11 @@ async function loadDashboard(){
    axios.get(`${API}/indexer/status?t=${timestamp}`)
  ])
  setStats(prev => ({...prev, ...statsRes.data}))
-  const indexerData = indexerRes.data;
-  if (indexerData) {
-    if (indexerData.cancel_data_operation) indexerData.data_operation_running = false;
-    if (indexerData.stopped) indexerData.running = false;
-    if (indexerData.combined_scanner_stopped) indexerData.combined_scanner_running = false;
-    if (indexerData.face_scanner_stopped) indexerData.face_scanner_running = false;
-    if (indexerData.object_scanner_stopped) indexerData.object_scanner_running = false;
-    if (indexerData.document_scanner_stopped) indexerData.document_scanner_running = false;
-    if (indexerData.hasher_stopped) indexerData.hasher_running = false;
-  }
-  setIndexer(indexerData)
+   const indexerData = indexerRes.data;
+   if (indexerData) {
+     if (indexerData.cancel_data_operation) indexerData.data_operation_running = false;
+   }
+   setIndexer(indexerData)
 }
 
 async function handleShutdown() {
@@ -633,13 +628,17 @@ useEffect(() => {
   };
 
   if ((indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.combined_scanner_running || indexer.data_operation_running) && !indexer.paused) {
+    wasRunningRef.current = true;
     timeoutId = setTimeout(poll, 1000);
   } else {
     // Perform one final fetch when scanners stop to ensure all UI counters are fully up to date
-    loadDashboard();
-    if (page === 'people') peopleState.loadPeople();
-    tagsState.loadTags();
-    setTimelineUpdateTick(prev => prev + 1);
+    if (wasRunningRef.current) {
+      wasRunningRef.current = false;
+      loadDashboard();
+      if (page === 'people') peopleState.loadPeople();
+      tagsState.loadTags();
+      setTimelineUpdateTick(prev => prev + 1);
+    }
   }
   return () => { isMounted = false; clearTimeout(timeoutId); };
 }, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, indexer.document_scanner_running, indexer.combined_scanner_running, indexer.data_operation_running, indexer.paused, page]);

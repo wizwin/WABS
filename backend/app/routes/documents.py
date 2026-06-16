@@ -37,11 +37,12 @@ def scan_documents():
 @router.post("/stop-scan-documents")
 def stop_scan_documents():
     with app_state.scanner_lock:
-        STATE["document_scanner_stopped"] = True
-        STATE["stopped"] = True
-        app_state.combined_scanner_stopped = True
         if not app_state.document_scanner_running:
             return {"message": "Document text extractor is not running or already stopped."}
+        STATE["document_scanner_stopped"] = True
+        if not app_state.combined_scanner_running:
+            STATE["stopped"] = True
+            app_state.combined_scanner_stopped = True
             
     if load_config().get("enable_logging"):
         import logging

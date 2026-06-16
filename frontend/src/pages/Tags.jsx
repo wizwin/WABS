@@ -149,8 +149,8 @@ export default function Tags(props) {
             <CloseIcon fontSize="small" /> {indexer.document_scanner_stopped ? 'Stopping...' : 'Stop Extraction'}
             </ActionButton>
         ) : (
-            <ActionButton disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startDocumentScan} title="Extract content from PDFs and Documents so they appear in search results">
-            <PlayCircleIcon fontSize="small" /> Extract Document Text
+            <ActionButton disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} className="btn btn-primary" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }} onClick={startDocumentScan} title="Extract content from PDFs, documents, and photos so they appear in search results">
+            <PlayCircleIcon fontSize="small" /> Extract Text
             </ActionButton>
         )}
         </div>

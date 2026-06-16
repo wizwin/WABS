@@ -99,7 +99,7 @@ export default function Dashboard(props) {
             <input type='checkbox' disabled={isTaskActive} checked={combinedOptions.face} onChange={(e) => { const next = {...combinedOptions, face: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Scan for Faces
         </label>
         <label style={{display:'flex',alignItems:'center',gap:'8px', color: isTaskActive ? '#64748b' : '#f8fafc', fontSize:'13px', cursor: isTaskActive ? 'not-allowed' : 'pointer'}}>
-            <input type='checkbox' disabled={isTaskActive} checked={combinedOptions.document} onChange={(e) => { const next = {...combinedOptions, document: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Extract Document Text
+            <input type='checkbox' disabled={isTaskActive} checked={combinedOptions.document} onChange={(e) => { const next = {...combinedOptions, document: e.target.checked}; setCombinedOptions(next); axios.post(`${API}/indexer/set-options`, next).catch(err => console.warn('Failed to save options', err)); }} /> Extract Text
         </label>
         </div>
 
@@ -181,8 +181,8 @@ export default function Dashboard(props) {
         <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.document_scanner_current_file || ''}</div>
         </>
         ) : (
-        <ActionButton disabled={isTaskActive} onClick={startDocumentScan} style={{ width: '100%' }} title="Extract content from PDFs and Documents so they appear in search results">
-        Extract Document Text
+        <ActionButton disabled={isTaskActive} onClick={startDocumentScan} style={{ width: '100%' }} title="Extract content from PDFs, documents, and photos so they appear in search results">
+        Extract Text
         </ActionButton>
         )}
         </div>

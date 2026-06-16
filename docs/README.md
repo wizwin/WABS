@@ -136,6 +136,7 @@ OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 ./WABS-Linux
 ## Third-Party Licenses & Acknowledgments
 * This project bundles the **MobileNetV2** model and **ImageNet** class list, exported from PyTorch/Torchvision. Torchvision is licensed under the BSD 3-Clause License. Copyright (c) Soumith Chintala 2016.
 * Face Detection and Recognition models (**YuNet**, **SFace**) are provided by the OpenCV Zoo, licensed under the Apache 2.0 License.
+* Offline Optical Character Recognition (OCR) is powered by **RapidOCR** (onnxruntime package) using the **PaddleOCR** models (`paddleOCR_det.onnx`, `paddleOCR_rec.onnx`, `paddleOCR_dict.txt`), licensed under the Apache 2.0 License.
 
 ---
 **Developer:** Winny Mathew Kurian | **Email:** WiZarD.Devel@gmail.com | **License:** MIT

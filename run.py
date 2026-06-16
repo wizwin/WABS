@@ -1,6 +1,12 @@
 import multiprocessing
 import os
 import sys
+
+# Prevent thread spinning and busy-waiting in background thread pools (OpenMP, OpenBLAS)
+os.environ["OMP_WAIT_POLICY"] = "passive"
+os.environ["OPENBLAS_MAIN_FREE"] = "1"
+os.environ["OPENBLAS_THREAD_TIMEOUT"] = "10"
+
 import threading
 import webbrowser
 import socket
