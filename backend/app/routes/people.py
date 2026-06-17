@@ -249,8 +249,16 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
 
         try:
             detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320), 0.9, 0.3, 5000, backend_id, target_id)
+            # Test detection to verify backend stability
+            test_img = np.zeros((320, 320, 3), dtype=np.uint8)
+            detector.detect(test_img)
         except Exception:
-            detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
+            backend_id = getattr(cv2.dnn, 'DNN_BACKEND_DEFAULT', 0)
+            target_id = getattr(cv2.dnn, 'DNN_TARGET_CPU', 0)
+            try:
+                detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320), 0.9, 0.3, 5000, backend_id, target_id)
+            except Exception:
+                detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
         detector.setScoreThreshold(0.5)
         try:
             recognizer = cv2.FaceRecognizerSF.create(sface_path, "", backend_id, target_id)

@@ -533,18 +533,57 @@ def get_ocr_engine():
                 os.environ["OMP_NUM_THREADS"] = str(cpu_threads)
                 os.environ["MKL_NUM_THREADS"] = str(cpu_threads)
             
-            # Apply dynamic monkeypatch to restrict ONNX Runtime threads
+            # Apply dynamic monkeypatch to restrict ONNX Runtime threads and optimize execution providers
             try:
                 original_init = ort.InferenceSession.__init__
                 def patched_init(self, *args, **kwargs):
+                    # Intercept and configure providers
+                    providers = kwargs.get('providers')
+                    args_list = list(args)
+                    providers_in_args = False
+                    if providers is None:
+                        if len(args_list) > 2:
+                            providers = args_list[2]
+                            providers_in_args = True
+                    
+                    try:
+                        available = ort.get_available_providers()
+                    except Exception:
+                        available = []
+                        
+                    preferred = []
+                    if "CUDAExecutionProvider" in available:
+                        preferred.append("CUDAExecutionProvider")
+                    if "TensorrtExecutionProvider" in available:
+                        preferred.append("TensorrtExecutionProvider")
+                    if "DmlExecutionProvider" in available:
+                        preferred.append("DmlExecutionProvider")
+                    if "CPUExecutionProvider" in available:
+                        preferred.append("CPUExecutionProvider")
+                        
+                    if preferred:
+                        new_providers = []
+                        for p in preferred:
+                            if p not in new_providers:
+                                new_providers.append(p)
+                        if isinstance(providers, (list, tuple)):
+                            for p in providers:
+                                p_name = p[0] if isinstance(p, tuple) else p
+                                if p_name in available and p_name not in new_providers:
+                                    new_providers.append(p)
+                        if providers_in_args:
+                            args_list[2] = new_providers
+                            args = tuple(args_list)
+                        else:
+                            kwargs['providers'] = new_providers
+
                     sess_opt = kwargs.get('sess_options')
                     if sess_opt is None:
-                        if len(args) > 1 and isinstance(args[1], ort.SessionOptions):
-                            sess_opt = args[1]
+                        if len(args_list) > 1 and isinstance(args_list[1], ort.SessionOptions):
+                            sess_opt = args_list[1]
                         else:
                             sess_opt = ort.SessionOptions()
-                            if len(args) > 1:
-                                args_list = list(args)
+                            if len(args_list) > 1:
                                 args_list[1] = sess_opt
                                 args = tuple(args_list)
                             else:
@@ -692,8 +731,17 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                 try:
                     net.setPreferableBackend(backend_id)
                     net.setPreferableTarget(target_id)
+                    # Test forward pass to verify backend stability
+                    test_blob = np.zeros((1, 3, 224, 224), dtype=np.float32)
+                    net.setInput(test_blob)
+                    net.forward()
                 except Exception:
-                    pass
+                    # Fallback to CPU
+                    try:
+                        net.setPreferableBackend(getattr(cv2.dnn, 'DNN_BACKEND_DEFAULT', 0))
+                        net.setPreferableTarget(getattr(cv2.dnn, 'DNN_TARGET_CPU', 0))
+                    except Exception:
+                        pass
             with open(classes_path, 'rt') as f:
                 classes = [line.strip() for line in f.readlines()]
             object_sensitivity = cfg.get("object_sensitivity", "medium")
@@ -715,8 +763,16 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             if Path(yunet_path).exists() and Path(sface_path).exists():
                 try:
                     detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320), 0.9, 0.3, 5000, backend_id, target_id)
+                    # Test detection to verify backend stability
+                    test_img = np.zeros((320, 320, 3), dtype=np.uint8)
+                    detector.detect(test_img)
                 except Exception:
-                    detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
+                    backend_id = getattr(cv2.dnn, 'DNN_BACKEND_DEFAULT', 0)
+                    target_id = getattr(cv2.dnn, 'DNN_TARGET_CPU', 0)
+                    try:
+                        detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320), 0.9, 0.3, 5000, backend_id, target_id)
+                    except Exception:
+                        detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
                 face_sensitivity = cfg.get("face_sensitivity", "medium")
                 face_threshold = 0.55 if face_sensitivity == "high" else 0.85 if face_sensitivity == "low" else 0.70
                 detector.setScoreThreshold(face_threshold)
@@ -1168,12 +1224,16 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     # --- 3. OPTIMIZATION: Read image ONCE from disk for ML models & OCR ---
                     if (needs_face or needs_object or (needs_text and category == 'photo')) and img is None:
                         try:
-                            # Read dimensions first using PIL to optimize image decoding
+                            # Read dimensions and EXIF orientation first using PIL to optimize image decoding
                             from PIL import Image, ImageOps
                             width, height = 0, 0
+                            orientation = None
                             try:
                                 with Image.open(file) as pil_img:
                                     width, height = pil_img.size
+                                    exif = pil_img.getexif()
+                                    if exif:
+                                        orientation = exif.get(274)
                             except Exception:
                                 pass
                             
@@ -1184,8 +1244,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             if width > 0 and height > 0 and file.suffix.lower() in ('.jpg', '.jpeg'):
                                 max_dim = max(width, height)
                                 if ocr_enabled:
-                                    # OCR needs higher resolution, only downscale by 1/2 if image is extremely large (>= 4000px)
-                                    if max_dim >= 4000:
+                                    # OCR needs higher resolution, only downscale by 1/2 if image is extremely large (>= 3000px)
+                                    if max_dim >= 3000:
                                         img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_2)
                                         decode_scale = 0.5
                                 else:
@@ -1199,6 +1259,15 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             
                             if img is None:
                                 img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                                
+                            # Rotate image using native OpenCV based on EXIF orientation tag if imdecode succeeded
+                            if img is not None and orientation in (3, 6, 8):
+                                if orientation == 3:
+                                    img = cv2.rotate(img, cv2.ROTATE_180)
+                                elif orientation == 6:
+                                    img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+                                elif orientation == 8:
+                                    img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
                             if img is None:
                                 try:
@@ -1359,7 +1428,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                             best_match_id = best_match_id_candidate
                                             
                                     if new_embs:
-                                        new_similarities = [np.dot(ne, emb_np_norm) for ne in new_embs]
+                                        new_embs_matrix = np.vstack(new_embs)
+                                        new_similarities = np.dot(new_embs_matrix, emb_np_norm)
                                         max_new_idx = np.argmax(new_similarities)
                                         max_new_sim = new_similarities[max_new_idx]
                                         if max_new_sim > cluster_threshold and max_new_sim > best_sim:
