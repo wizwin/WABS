@@ -1058,6 +1058,8 @@ def reclassify_people(payload: dict = Body(...)):
         reclassified_count = 0
         files_to_tag = {}
         affected_person_ids = set()
+        new_embs = []
+        new_ids = []
         
         cursor.execute("SELECT id, name FROM people WHERE name NOT LIKE 'Unknown Person%'")
         named_people_map = {r[0]: r[1] for r in cursor.fetchall()}
@@ -1074,14 +1076,22 @@ def reclassify_people(payload: dict = Body(...)):
             emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
             
             best_match_id = None
+            max_sim = 0.0
             
             if cluster_matrix_norm is not None:
                 similarities = np.dot(cluster_matrix_norm, emb_np_norm)
                 max_idx = np.argmax(similarities)
                 max_sim = similarities[max_idx]
-                
                 if max_sim >= threshold:
                     best_match_id = cluster_ids_list[max_idx]
+                    
+            if new_embs:
+                new_similarities = [np.dot(ne, emb_np_norm) for ne in new_embs]
+                max_new_idx = np.argmax(new_similarities)
+                max_new_sim = new_similarities[max_new_idx]
+                if max_new_sim >= threshold and max_new_sim > max_sim:
+                    best_match_id = new_ids[max_new_idx]
+                    max_sim = max_new_sim
                     
             if best_match_id is None:
                 while True:
@@ -1091,17 +1101,13 @@ def reclassify_people(payload: dict = Body(...)):
                         best_match_id = cursor.lastrowid
                         break
                 clusters[best_match_id] = [embedding]
-                if cluster_matrix_norm is None:
-                    cluster_matrix_norm = np.array([emb_np_norm])
-                    cluster_ids_list = [best_match_id]
-                else:
-                    cluster_matrix_norm = np.vstack([cluster_matrix_norm, emb_np_norm])
-                    cluster_ids_list.append(best_match_id)
+                new_embs.append(emb_np_norm)
+                new_ids.append(best_match_id)
             else:
                 if len(clusters[best_match_id]) < 15:
                     clusters[best_match_id].append(embedding)
-                    cluster_matrix_norm = np.vstack([cluster_matrix_norm, emb_np_norm])
-                    cluster_ids_list.append(best_match_id)
+                    new_embs.append(emb_np_norm)
+                    new_ids.append(best_match_id)
                     
             cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
                             (best_match_id, file_id, emb_json))

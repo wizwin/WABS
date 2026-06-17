@@ -703,6 +703,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         detector, recognizer, clusters, p_count = None, None, {}, 0
         cluster_matrix_norm = None
         cluster_ids_list = []
+        new_embs = []
+        new_ids = []
         face_threshold, cluster_threshold = 0.70, 0.55
         if run_face:
             yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
@@ -1341,21 +1343,29 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     best_match_id = None
                                     best_sim = -1.0
                                     
+                                    emb_np = np.array(embedding, dtype=np.float32)
+                                    emb_norm = np.linalg.norm(emb_np)
+                                    emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
+                                    
                                     if cluster_matrix_norm is not None:
-                                        emb_np = np.array(embedding, dtype=np.float32)
-                                        emb_norm = np.linalg.norm(emb_np)
-                                        if emb_norm > 0:
-                                            emb_np_norm = emb_np / emb_norm
-                                            similarities = np.dot(cluster_matrix_norm, emb_np_norm)
-                                            max_idx = np.argmax(similarities)
-                                            max_sim = similarities[max_idx]
+                                        similarities = np.dot(cluster_matrix_norm, emb_np_norm)
+                                        max_idx = np.argmax(similarities)
+                                        max_sim = similarities[max_idx]
+                                        
+                                        best_sim = float(max_sim)
+                                        best_match_id_candidate = cluster_ids_list[max_idx]
+                                        log_operation(f"Comparing face #{face_idx} in {file.name} against {len(clusters)} clusters: best similarity {best_sim:.4f} with person_id {best_match_id_candidate}", is_verbose=True)
+                                        if max_sim > cluster_threshold:
+                                            best_match_id = best_match_id_candidate
                                             
-                                            best_sim = float(max_sim)
-                                            best_match_id_candidate = cluster_ids_list[max_idx]
-                                            log_operation(f"Comparing face #{face_idx} in {file.name} against {len(clusters)} clusters: best similarity {best_sim:.4f} with person_id {best_match_id_candidate}", is_verbose=True)
-                                            if max_sim > cluster_threshold:
-                                                best_match_id = best_match_id_candidate
-
+                                    if new_embs:
+                                        new_similarities = [np.dot(ne, emb_np_norm) for ne in new_embs]
+                                        max_new_idx = np.argmax(new_similarities)
+                                        max_new_sim = new_similarities[max_new_idx]
+                                        if max_new_sim > cluster_threshold and max_new_sim > best_sim:
+                                            best_match_id = new_ids[max_new_idx]
+                                            best_sim = float(max_new_sim)
+                                            
                                     if best_match_id is None:
                                         while True:
                                             p_count += 1
@@ -1365,26 +1375,14 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                                 break
                                         log_operation(f"Face #{face_idx} in {file.name}: similarity below threshold ({best_sim:.4f} vs threshold {cluster_threshold}). Mapped to new person_id: {best_match_id}", is_verbose=True)
                                         clusters[best_match_id] = [embedding]
-                                        
-                                        emb_np = np.array(embedding, dtype=np.float32)
-                                        emb_norm = np.linalg.norm(emb_np)
-                                        emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
-                                        if cluster_matrix_norm is None:
-                                            cluster_matrix_norm = np.array([emb_np_norm], dtype=np.float32)
-                                            cluster_ids_list = [best_match_id]
-                                        else:
-                                            cluster_matrix_norm = np.vstack([cluster_matrix_norm, emb_np_norm])
-                                            cluster_ids_list.append(best_match_id)
+                                        new_embs.append(emb_np_norm)
+                                        new_ids.append(best_match_id)
                                     else:
                                         log_operation(f"Face #{face_idx} in {file.name}: Matched existing person_id: {best_match_id} (sim: {best_sim:.4f})", is_verbose=True)
                                         if len(clusters[best_match_id]) < 15:
                                             clusters[best_match_id].append(embedding)
-                                            
-                                            emb_np = np.array(embedding, dtype=np.float32)
-                                            emb_norm = np.linalg.norm(emb_np)
-                                            emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
-                                            cluster_matrix_norm = np.vstack([cluster_matrix_norm, emb_np_norm])
-                                            cluster_ids_list.append(best_match_id)
+                                            new_embs.append(emb_np_norm)
+                                            new_ids.append(best_match_id)
                                     cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
                                                     (best_match_id, db_item_id, json.dumps(embedding)))
                                     log_operation(f"Detected and mapped face for file: {file.name} to person_id: {best_match_id}", user_logs_enabled=enable_logging, is_verbose=True)
