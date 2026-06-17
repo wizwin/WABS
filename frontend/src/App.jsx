@@ -107,6 +107,12 @@ const systemOpsState = useSystemOps({
 
 useEffect(() => {
   localStorage.setItem('wabs_combined_options', JSON.stringify(combinedOptions));
+  setSettings(prev => ({
+    ...prev,
+    run_face_scan: combinedOptions.face,
+    run_object_scan: combinedOptions.tag,
+    run_document_scan: combinedOptions.document
+  }));
 }, [combinedOptions]);
 
 const handleSearchChange = (e) => {

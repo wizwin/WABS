@@ -185,6 +185,7 @@ def settings():
         "ocr_det_limit_type": "min",
         "run_face_scan": False,
         "run_object_scan": False,
+        "run_document_scan": False,
         "backup_configs": [],
         "smart_searches": [],
         "auto_run_on_startup": False,
