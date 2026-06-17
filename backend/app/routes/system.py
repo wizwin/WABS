@@ -184,6 +184,7 @@ def settings():
         "run_object_scan": False,
         "backup_configs": [],
         "smart_searches": [],
+        "auto_run_on_startup": False,
     }
 
     def merge_defaults(config, defaults_dict):
@@ -201,6 +202,13 @@ def save(data:dict):
 
     save_config(data)
     shared_state.LOGGING_ENABLED = data.get("enable_logging", False)
+    
+    # Apply startup configurations
+    try:
+        from backend.app.utils.startup import update_startup_setting
+        update_startup_setting(data.get("auto_run_on_startup", False))
+    except Exception as e:
+        print(f"Error updating startup settings: {e}")
     
     # Apply thread limits dynamically
     try:

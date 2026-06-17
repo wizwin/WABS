@@ -584,6 +584,21 @@ useEffect(()=>{
 },[])
 
 useEffect(() => {
+  const handleHashChange = () => {
+    const hash = window.location.hash;
+    if (hash === '#settings') {
+      setPage('settings');
+      setSettingsTab('general');
+    } else if (hash === '#dashboard' || hash === '') {
+      setPage('dashboard');
+    }
+  };
+  window.addEventListener('hashchange', handleHashChange);
+  handleHashChange();
+  return () => window.removeEventListener('hashchange', handleHashChange);
+}, []);
+
+useEffect(() => {
   let isMounted = true;
   let timeoutId;
   let errorRetries = 0;

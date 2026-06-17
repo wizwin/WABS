@@ -102,6 +102,16 @@ export default function Settings(props) {
                 <input type='checkbox' checked={(settings.allow_unverified_deletion ?? settings.ui_preferences?.allow_unverified_deletion) || false} onChange={(e)=>updateUIPreferences({ allow_unverified_deletion: e.target.checked })} /> Allow deleting unverified duplicates (Dangerous)
                 </label>
 
+                <h3 style={{ margin: '32px 0 16px 0' }}>Startup</h3>
+                <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px', color:'#cbd5e1'}}>
+                <input 
+                    type="checkbox" 
+                    checked={settings.auto_run_on_startup || false} 
+                    onChange={(e) => setSettings(prev => ({ ...prev, auto_run_on_startup: e.target.checked }))} 
+                />
+                Start WABS automatically on user login (runs in background)
+                </label>
+
                 <h3 style={{ margin: '32px 0 16px 0' }}>Diagnostics</h3>
                 <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'0', color:'#cbd5e1'}}>
                 <input 

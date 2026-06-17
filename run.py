@@ -82,7 +82,13 @@ if __name__ == "__main__":
     # Attach the server object to the app's state so it can be accessed from endpoints
     app.state.server = server
 
+    # Start the system tray icon in the background
+    from backend.app.utils.tray import start_tray_icon, stop_tray_icon
+    start_tray_icon(server, port)
+
     try:
         server.run()
     except KeyboardInterrupt:
         print("\nWABS Server stopped by user.")
+    finally:
+        stop_tray_icon()
