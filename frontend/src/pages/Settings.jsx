@@ -112,6 +112,46 @@ export default function Settings(props) {
                 Start WABS automatically on user login (runs in background)
                 </label>
 
+                <h3 style={{ margin: '32px 0 16px 0' }}>Memory Management</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', color: '#cbd5e1' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '0' }}>
+                    <input 
+                        type="checkbox" 
+                        checked={settings.idle_unload_timeout_seconds !== 0} 
+                        onChange={(e) => setSettings(prev => ({ 
+                            ...prev, 
+                            idle_unload_timeout_seconds: e.target.checked ? 1800 : 0 
+                        }))} 
+                    />
+                    Automatically release memory and unload background libraries when idle (reclaims ~500MB+ RAM)
+                    </label>
+                    {settings.idle_unload_timeout_seconds > 0 && (
+                        <div style={{ paddingLeft: '26px', display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '0' }}>
+                            <span style={{ fontSize: '13px', color: '#94a3b8' }}>Unload after idle for:</span>
+                            <select 
+                                value={settings.idle_unload_timeout_seconds} 
+                                onChange={(e) => setSettings(prev => ({ 
+                                    ...prev, 
+                                    idle_unload_timeout_seconds: parseInt(e.target.value) 
+                                }))}
+                                style={{ 
+                                    background: '#0f172a', 
+                                    color: '#cbd5e1', 
+                                    border: '1px solid #334155', 
+                                    borderRadius: '4px', 
+                                    padding: '4px 8px',
+                                    outline: 'none'
+                                }}
+                            >
+                                <option value={300}>5 minutes</option>
+                                <option value={600}>10 minutes</option>
+                                <option value={1800}>30 minutes</option>
+                                <option value={3600}>1 hour</option>
+                            </select>
+                        </div>
+                    )}
+                </div>
+
                 <h3 style={{ margin: '32px 0 16px 0' }}>Diagnostics</h3>
                 <label style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'0', color:'#cbd5e1'}}>
                 <input 

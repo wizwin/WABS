@@ -198,10 +198,16 @@ sys.stdout = PrintLogger(sys.stdout)
 sys.stderr = PrintLogger(sys.stderr)
 
 @app.middleware("http")
-async def add_cache_headers(request: Request, call_next):
+async def track_activity_and_cache(request: Request, call_next):
+    path = request.url.path
+    if not (path.startswith("/assets") or 
+            path == "/" or 
+            path == "/indexer/status" or 
+            path == "/stats"):
+        shared_state.LAST_ACTIVITY_TIME = time.time()
+
     response = await call_next(request)
     if request.method == "GET" and response.status_code == 200:
-        path = request.url.path
         if path.endswith("/thumbnail") or "/preview/" in path:
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
@@ -221,6 +227,11 @@ def startup_event():
         shared_state.LOGGING_ENABLED = cfg.get("enable_logging", False)
     except Exception:
         pass
+    try:
+        from backend.app.utils.memory import start_idle_monitor
+        start_idle_monitor()
+    except Exception as e:
+        print(f"Failed to start idle memory monitor: {e}")
     try:
         with SessionLocal() as s:
             count = s.query(FileIndex).count()

@@ -67,7 +67,7 @@ def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", so
                     q = q.filter(FileIndex.size.in_(dup_sizes))
                     q = q.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
                 elif category == "searchable_documents":
-                    q = q.filter(text("files.id IN (SELECT file_id FROM processed_text)"))
+                    q = q.filter(FileIndex.category.in_(['document', 'ebook', 'code']), text("files.id IN (SELECT file_id FROM processed_text)"))
                 elif category == "untagged":
                     q = q.filter(FileIndex.category == 'photo', (FileIndex.tags.is_(None) | (~FileIndex.tags.like('%object:%') & ~FileIndex.tags.like('%person:%'))))
                 else:

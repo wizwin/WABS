@@ -801,6 +801,8 @@ def cluster_unknowns(payload: dict = Body(...)):
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         
+        # NOTE: Do NOT use get_or_create_exemplars here. Loading directly from DB in-memory is
+        # critical for performance at scale (e.g. 30,000 profiles). get_or_create_exemplars is only for on-demand UI.
         # Fetch ONLY Unknown People embeddings to cluster them together
         cursor.execute("""
             SELECT p.id, p.name, f.embedding_json
@@ -996,21 +998,27 @@ def reclassify_people(payload: dict = Body(...)):
         target_person_ids = list(set([r[3] for r in faces_to_reclassify]))
         
         # 2. Fetch the exemplar embeddings for all OTHER profiles (Named and Unselected Unknowns)
-        cursor.execute("SELECT DISTINCT person_id FROM faces WHERE embedding_json != '[]'")
-        all_pids = [r[0] for r in cursor.fetchall()]
+        # NOTE: Do NOT use get_or_create_exemplars in a loop here. Loading directly from DB in-memory is
+        # critical for performance at scale (e.g. 30,000 profiles). get_or_create_exemplars is only for on-demand UI.
+        cursor.execute("SELECT person_id, embedding_json FROM faces WHERE embedding_json != '[]'")
+        all_faces_rows = cursor.fetchall()
         
         target_ids_set = set(person_ids)
         clusters = {}
-        for pid in all_pids:
+        for pid, emb_json in all_faces_rows:
             if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
                 raise HTTPException(status_code=400, detail="Operation cancelled")
             if pid in target_ids_set:
                 continue
-            curated_embs = get_or_create_exemplars(pid, cursor)
-            if curated_embs:
-                clusters[pid] = curated_embs
-            else:
-                EXEMPLAR_CACHE.pop(pid, None)
+            if pid not in clusters:
+                clusters[pid] = []
+            if len(clusters[pid]) < 15:
+                try:
+                    emb = json.loads(emb_json)
+                    if emb and len(emb) == 128:
+                        clusters[pid].append(emb)
+                except Exception:
+                    continue
             
         # 3. Delete the old targeted profiles and their faces
         for pid in target_person_ids:

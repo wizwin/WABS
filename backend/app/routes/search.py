@@ -54,7 +54,7 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50, sort_by
                     q_base = q_base.filter(FileIndex.size.in_(dup_sizes))
                     q_base = q_base.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
                 elif category == "searchable_documents":
-                    q_base = q_base.filter(text("files.id IN (SELECT file_id FROM processed_text)"))
+                    q_base = q_base.filter(FileIndex.category.in_(['document', 'ebook', 'code']), text("files.id IN (SELECT file_id FROM processed_text)"))
                 elif category == "tagged_objects":
                     q_base = q_base.filter(FileIndex.tags.like('%object:%'))
                 else:

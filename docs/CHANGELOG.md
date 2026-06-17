@@ -3,6 +3,8 @@
 ## v1.0.0
 
 ### 🚀 Major New Features & Enhancements
+*   **System Tray (Taskbar) Icon:** Added a system tray taskbar icon using `pystray`. The icon provides options to open WABS (Dashboard), open Settings, or gracefully Shutdown the backend. It runs in a background thread and removes itself cleanly on shutdown.
+*   **Auto Run on Startup:** Introduced an "Auto run on startup" configuration toggle in Settings. Enabling this configures WABS to run automatically on user login in background mode (`--no-browser` and hidden console/terminal) for both Windows (using a startup registry key) and Linux/Ubuntu (using an XDG `.desktop` autostart entry).
 *   **Offline OCR (Optical Character Recognition) Integration:** Integrated **RapidOCR** with local PaddleOCR models (`paddleOCR_det.onnx`, `paddleOCR_rec.onnx`, `paddleOCR_dict.txt`) to extract English text from photos and scanned/image-only PDF pages. Extracted text is indexed into the Full-Text Search (FTS5) engine, making them instantly searchable.
 *   **GPU Acceleration for OCR:** Added automatic detection of GPU execution providers in ONNX Runtime (such as CUDA, DirectML, and ROCm). If a GPU is present, WABS configures the OCR engine to use it for hardware-accelerated text recognition, falling back dynamically to CPU otherwise.
 *   **Smart Photo Filtering setting (`ocr_only_no_ai_tags`):** Added a new filter setting (default: `True`) that skips OCR on photos that already have detected faces or objects. This focuses text recognition resources specifically on receipts, invoices, screenshots, and scanned documents, while bypassing scenic/family photos to optimize processing speed and database size.
@@ -11,6 +13,10 @@
 *   **Early-Downscaling Image Pipeline:** Introduces early resizing of huge images to 2000px max side when OCR is enabled. Subsequent Face and Object detection algorithms resize from this pre-downscaled image, avoiding high memory footprint and CPU processing spikes on massive camera photos.
 *   **Unified UI Controls:** Renamed "Extract Document Text" to "Extract Text" across the dashboard and tags page, adapting the button and progress components to process both documents and photos when OCR is enabled.
 *   **Third-Party Acknowledgments:** Updated the About page and documentation to attribute proper credits and license details to PaddleOCR and RapidOCR.
+*   **Fast Startup via Deferred Lazy Imports:** Optimized the backend initialization time down from ~8 seconds to under 2 seconds. Deferred importing of heavy packages (`cv2`, `fitz`, `docx`, `pptx`, `openpyxl`, `mutagen`, `pefile`, and `filetype`) from module-level to function-local/on-demand execution scope.
+*   **Dynamic Memory Unloading & Idle Monitor:** Introduced automatic memory release when WABS is idle. A background monitor thread tracks user activity, checks if any scanners are running, and automatically unloads heavy Python libraries (`fitz`, `docx`, `pptx`, `openpyxl`, `mutagen`, `pefile`, `filetype`) from the `sys.modules` cache when inactive for a configured timeout (5m, 10m, 30m, 1h).
+*   **Synchronized Thread-Safe Imports:** Coordinated both dynamic on-demand imports and background module unloading using a global application-level lock (`MEMORY_LOCK`) to ensure absolute stability and prevent race conditions if a user performs operations during memory release.
+*   **Memory Management UI Settings:** Added a new "Memory Management" section in the General Settings panel, allowing users to toggle idle memory release and configure the idle timeout threshold. Mapped the dynamic unloading to the `/system/free-memory` endpoint to allow manually releasing memory on demand.
 
 ### 🐞 Bug Fixes & Refinements
 *   **RapidOCR Model Loading Fix:** Patched RapidOCR parameter mapping so that custom model paths in the `backend/` directory are loaded correctly instead of falling back to default site-package paths.

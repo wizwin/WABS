@@ -39,53 +39,60 @@ except ImportError:
     ExifTags = None
 
 def _get_fitz():
-    try:
-        import fitz
-        return fitz
-    except ImportError:
-        return None
+    with shared_state.MEMORY_LOCK:
+        try:
+            import fitz
+            return fitz
+        except ImportError:
+            return None
 
 def _get_mutagen():
-    try:
-        import mutagen
-        return mutagen
-    except ImportError:
-        return None
+    with shared_state.MEMORY_LOCK:
+        try:
+            import mutagen
+            return mutagen
+        except ImportError:
+            return None
 
 def _get_pefile():
-    try:
-        import pefile
-        return pefile
-    except ImportError:
-        return None
+    with shared_state.MEMORY_LOCK:
+        try:
+            import pefile
+            return pefile
+        except ImportError:
+            return None
 
 def _get_filetype():
-    try:
-        import filetype
-        return filetype
-    except ImportError:
-        return None
+    with shared_state.MEMORY_LOCK:
+        try:
+            import filetype
+            return filetype
+        except ImportError:
+            return None
 
 def _get_openpyxl():
-    try:
-        import openpyxl
-        return openpyxl
-    except ImportError:
-        return None
+    with shared_state.MEMORY_LOCK:
+        try:
+            import openpyxl
+            return openpyxl
+        except ImportError:
+            return None
 
 def _get_docx():
-    try:
-        import docx
-        return docx
-    except ImportError:
-        return None
+    with shared_state.MEMORY_LOCK:
+        try:
+            import docx
+            return docx
+        except ImportError:
+            return None
 
 def _get_pptx():
-    try:
-        import pptx
-        return pptx
-    except ImportError:
-        return None
+    with shared_state.MEMORY_LOCK:
+        try:
+            import pptx
+            return pptx
+        except ImportError:
+            return None
 
 STOP_WORDS = frozenset({
     "the", "and", "to", "of", "a", "in", "is", "that", "for", "it", "with", "as", "was", "on", 
@@ -329,6 +336,8 @@ def get_or_create_exemplars(person_id: int, conn_or_cursor) -> list:
         return known_embeddings
 
     # Curate reference embeddings dynamically
+    from backend.app.utils.log_utils import log_operation
+    log_operation(f"[DEBUG-SCANNER] Curating exemplars for person {person_id} with {current_face_count} faces (Disk path)...", is_verbose=True)
     file_id_to_embs = {}
     for face_id, file_id, emb_json in known_rows:
         if file_id not in file_id_to_embs:
@@ -358,12 +367,12 @@ def get_or_create_exemplars(person_id: int, conn_or_cursor) -> list:
     selected_file_ids = set()
     yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
     
-    # Sample at most 50 files timeline-distributed
+    # Sample at most 30 files timeline-distributed to allow up to 2 batches of 15
     sampled_files = []
-    if len(files_info) > 50:
+    if len(files_info) > 30:
         seen_indices = set()
-        for i in range(50):
-            idx = int(round(i * (len(files_info) - 1) / 49.0))
+        for i in range(30):
+            idx = int(round(i * (len(files_info) - 1) / 29.0))
             if idx not in seen_indices:
                 seen_indices.add(idx)
                 sampled_files.append(files_info[idx])
@@ -372,34 +381,52 @@ def get_or_create_exemplars(person_id: int, conn_or_cursor) -> list:
         
     analyzed_files = []
     is_scan_active = app_state.face_scanner_running or app_state.combined_scanner_running
-    if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
-        return []
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {}
-        for f_item in sampled_files:
-            if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
-                break
-            file_path = _resolve_path(Path(f_item.path))
-            if file_path.exists():
-                futures[executor.submit(_evaluate_image_faces, file_path, yunet_path)] = f_item
-                
-        for future in concurrent.futures.as_completed(futures):
-            if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
-                break
-            f_item = futures[future]
-            try:
-                metrics = future.result()
-                if metrics:
-                    best_metric = max(metrics, key=lambda x: x["score"])
-                    analyzed_files.append({
-                        "file_id": f_item.id,
-                        "date": str(f_item.modified or ""),
-                        "area": best_metric["area"],
-                        "sharpness": best_metric["sharpness"]
-                    })
-            except Exception:
-                continue
+    
+    # Process in batches of 15
+    import math
+    num_batches = math.ceil(len(sampled_files) / 15)
+    batches = [[] for _ in range(num_batches)]
+    for idx, f_item in enumerate(sampled_files):
+        batch_idx = idx % num_batches
+        batches[batch_idx].append(f_item)
+        
+    for batch_idx, batch in enumerate(batches):
+        if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
+            return []
+            
+        log_operation(f"[DEBUG-SCANNER] Curation batch {batch_idx + 1}/{num_batches} for person {person_id}: evaluating {len(batch)} files...", is_verbose=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {}
+            for f_item in batch:
+                if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
+                    break
+                file_path = _resolve_path(Path(f_item.path))
+                if file_path.exists():
+                    futures[executor.submit(_evaluate_image_faces, file_path, yunet_path)] = f_item
+                    
+            for future in concurrent.futures.as_completed(futures):
+                if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
+                    break
+                f_item = futures[future]
+                try:
+                    metrics = future.result()
+                    if metrics:
+                        best_metric = max(metrics, key=lambda x: x["score"])
+                        analyzed_files.append({
+                            "file_id": f_item.id,
+                            "date": str(f_item.modified or ""),
+                            "area": best_metric["area"],
+                            "sharpness": best_metric["sharpness"]
+                        })
+                except Exception:
+                    continue
+                    
+        # Check if we have accumulated at least 15 sharp/non-blurry files so far.
+        # Laplacian variance threshold of 80.0 is used as standard for non-blurry faces.
+        sharp_count = sum(1 for x in analyzed_files if x["sharpness"] >= 80.0)
+        if sharp_count >= 15:
+            log_operation(f"[DEBUG-SCANNER] Found {sharp_count} sharp exemplars (threshold 80.0) for person {person_id}. Curation early breakout.", is_verbose=True)
+            break
 
     if analyzed_files:
         # Sort analyzed files by sharpness descending
@@ -610,6 +637,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
     except Exception:
         pass
         
+    STATE["status"] = "Starting..."
+    STATE["stopped"] = False
     if run_face:
         app_state.face_scanner_running = True
         STATE["face_scanner_running"] = True
@@ -712,17 +741,22 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                 s.commit()
                 text_processed_ids = set(r[0] for r in s.execute(text("SELECT file_id FROM processed_text")).fetchall())
 
+        log_operation("[DEBUG-SCANNER] Initializing SQLite AI database...", is_verbose=True)
         ai_db_path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(str(ai_db_path), timeout=15) as conn:
+            log_operation("[DEBUG-SCANNER] Setting PRAGMA journal_mode=WAL...", is_verbose=True)
             conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
             if run_face:
+                log_operation("[DEBUG-SCANNER] Creating people table...", is_verbose=True)
                 cursor.execute('''CREATE TABLE IF NOT EXISTS people (
                                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                                 name TEXT DEFAULT 'Unknown Person',
                                 thumbnail_file_id INTEGER
                               )''')
+                log_operation("[DEBUG-SCANNER] Creating idx_people_name index...", is_verbose=True)
                 cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_people_name ON people(name)")
+                log_operation("[DEBUG-SCANNER] Creating faces table...", is_verbose=True)
                 cursor.execute('''CREATE TABLE IF NOT EXISTS faces (
                                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                                     person_id INTEGER,
@@ -730,21 +764,51 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     embedding_json TEXT,
                                     FOREIGN KEY(person_id) REFERENCES people(id)
                                 )''')
+                log_operation("[DEBUG-SCANNER] Creating idx_faces_person_file index...", is_verbose=True)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_faces_person_file ON faces(person_id, file_id)")
+                log_operation("[DEBUG-SCANNER] Creating idx_faces_unique index...", is_verbose=True)
                 cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_faces_unique ON faces(person_id, file_id, embedding_json)")
+                log_operation("[DEBUG-SCANNER] Creating processed_files table...", is_verbose=True)
                 cursor.execute('''CREATE TABLE IF NOT EXISTS processed_files (
                                     file_id INTEGER PRIMARY KEY
                                 )''')
+                log_operation("[DEBUG-SCANNER] Syncing processed_files from faces...", is_verbose=True)
                 cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) SELECT DISTINCT file_id FROM faces")
+                log_operation("[DEBUG-SCANNER] Querying processed_files...", is_verbose=True)
                 cursor.execute("SELECT file_id FROM processed_files")
                 face_processed_ids = set(r[0] for r in cursor.fetchall())
 
-                cursor.execute("SELECT DISTINCT person_id FROM faces WHERE embedding_json != '[]'")
-                p_ids = [r[0] for r in cursor.fetchall()]
-                for p_id in p_ids:
+                log_operation("[DEBUG-SCANNER] Loading all face records in a single query...", is_verbose=True)
+                cursor.execute("SELECT person_id, embedding_json FROM faces WHERE embedding_json != '[]' ORDER BY person_id")
+                all_faces_rows = cursor.fetchall()
+                
+                log_operation(f"[DEBUG-SCANNER] Grouping {len(all_faces_rows)} face records by person_id...", is_verbose=True)
+                faces_by_person = {}
+                for pid, emb_json in all_faces_rows:
+                    if pid not in faces_by_person:
+                        faces_by_person[pid] = []
+                    faces_by_person[pid].append(emb_json)
+                
+                # NOTE: Do NOT use get_or_create_exemplars here. Loading directly from DB in-memory is
+                # critical for startup speed at scale (e.g. 30,000 profiles). get_or_create_exemplars is only for on-demand UI.
+                log_operation(f"[DEBUG-SCANNER] Loading initial face embeddings for {len(faces_by_person)} people clusters...", is_verbose=True)
+                for c_idx, (p_id, emb_jsons) in enumerate(faces_by_person.items()):
                     if STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped:
                         break
-                    clusters[p_id] = get_or_create_exemplars(p_id, cursor)
+                        
+                    if c_idx > 0 and c_idx % 5000 == 0:
+                        log_operation(f"[DEBUG-SCANNER] Loaded embeddings for {c_idx} / {len(faces_by_person)} people clusters...", is_verbose=True)
+                        
+                    parsed_embs = []
+                    for emb_json in emb_jsons[:15]:
+                        try:
+                            emb = json.loads(emb_json)
+                            if emb and len(emb) == 128:
+                                parsed_embs.append(emb)
+                        except Exception:
+                            continue
+                    clusters[p_id] = parsed_embs
+                log_operation("[DEBUG-SCANNER] Face embedding preloading completed.", is_verbose=True)
 
                 cursor.execute("SELECT MAX(id) FROM people")
                 p_row = cursor.fetchone()
@@ -773,10 +837,12 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             conn.commit()
 
         # --- Build File List ---
+        log_operation("[DEBUG-SCANNER] Building file list...", is_verbose=True)
         files_to_process = []
         preloaded_cache = {}
         
         if run_index:
+            STATE["status"] = "Discovering files..."
             backup_configs = cfg.get("backup_configs", [])
             roots = [Path(c.get("backup_path", "")) for c in backup_configs if c.get("backup_path")]
             valid_roots = [r for r in roots if r.exists() and r.is_dir()]
@@ -790,6 +856,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         if app_state.combined_scanner_stopped or STATE.get("stopped"):
                             break
                         files_to_process.append(os.path.join(dirpath, f))
+                        if len(files_to_process) % 1000 == 0:
+                            STATE["status"] = f"Discovering files... ({len(files_to_process)} found)"
         else:
             with SessionLocal() as s:
                 q = s.query(FileIndex.path, FileIndex.id, FileIndex.category, FileIndex.filename)
@@ -818,6 +886,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     preloaded_cache[path_str] = {"id": item_id, "size": "", "modified": "", "category": cat, "filename": filename}
 
         total_files = len(files_to_process)
+        log_operation(f"[DEBUG-SCANNER] File list built. Total: {total_files} files.", is_verbose=True)
 
         if run_index:
             STATE["total"] = total_files
@@ -847,14 +916,17 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
             with SessionLocal() as session:
+                log_operation("[DEBUG-SCANNER] Starting file indexing & scanning loop...", is_verbose=True)
                 # Store lightweight info mapping dynamically in chunks of 1000 to avoid loading millions of rows at startup
                 file_cache = {} if run_index else preloaded_cache
                 
+                offline_roots = set()
                 for idx, file_str in enumerate(files_to_process):
                     if shared_state.APP_SHUTTING_DOWN:
                         break
                     
                     if run_index and file_str not in file_cache:
+                        log_operation(f"[DEBUG-SCANNER] Loading file cache chunk starting at index {idx}...", is_verbose=True)
                         # Clear old cache to limit memory usage, and load the next chunk of 1,000 files
                         file_cache.clear()
                         chunk = files_to_process[idx : idx + 1000]
@@ -935,6 +1007,49 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     if not run_index and not run_document and not run_face and not run_object:
                         break
                         
+                    # Check if path starts with any known offline root
+                    is_offline = False
+                    for off_root in offline_roots:
+                        if file_str.lower().startswith(off_root):
+                            is_offline = True
+                            break
+                    
+                    if is_offline:
+                        if run_index:
+                            STATE["current"] += 1
+                        if run_face and not STATE.get("face_scanner_stopped"):
+                            STATE["face_scanner_current"] += 1
+                        if run_object and not STATE.get("object_scanner_stopped"):
+                            STATE["object_scanner_current"] += 1
+                        if run_document and not STATE.get("document_scanner_stopped"):
+                            STATE["document_scanner_current"] += 1
+                        continue
+
+                    if not run_index:
+                        cached_info = file_cache.get(file_str)
+                        if cached_info:
+                            db_item_id = cached_info["id"]
+                            category = cached_info["category"]
+                            
+                            obj_stopped = STATE.get("object_scanner_stopped", False)
+                            doc_stopped = STATE.get("document_scanner_stopped", False)
+                            face_stopped = STATE.get("face_scanner_stopped", False)
+                            
+                            needs_text = run_document and not doc_stopped and db_item_id not in text_processed_ids and (
+                                category in ['document', 'ebook', 'code', 'other'] or (category == 'photo' and cfg.get("ocr_enabled", False))
+                            )
+                            needs_face = run_face and not face_stopped and db_item_id not in face_processed_ids and category == 'photo'
+                            needs_object = run_object and not obj_stopped and db_item_id not in object_processed_ids and category == 'photo'
+                            
+                            if not needs_face and not needs_object and not needs_text:
+                                if run_face and not STATE.get("face_scanner_stopped"):
+                                    STATE["face_scanner_current"] += 1
+                                if run_object and not STATE.get("object_scanner_stopped"):
+                                    STATE["object_scanner_current"] += 1
+                                if run_document and not STATE.get("document_scanner_stopped"):
+                                    STATE["document_scanner_current"] += 1
+                                continue
+
                     file = Path(file_str)
                     if run_index:
                         STATE["current"] += 1
@@ -950,6 +1065,14 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         STATE["document_scanner_current_file"] = file.name
                         
                     if not file.exists():
+                        try:
+                            anchor = file.anchor
+                            if anchor and not Path(anchor).exists():
+                                offline_roots.add(anchor.lower())
+                            elif not file.parent.exists():
+                                offline_roots.add(str(file.parent).lower() + os.sep)
+                        except Exception:
+                            pass
                         continue
 
                     # --- 1. Indexing Phase ---
@@ -2058,6 +2181,8 @@ def run():
                         if shared_state.APP_SHUTTING_DOWN or STATE.get("stopped"):
                             break
                         raw_files.append(os.path.join(dirpath, f))
+                        if len(raw_files) % 1000 == 0:
+                            STATE["status"] = f"Discovering files... ({len(raw_files)} found)"
             
             raw_files.sort()
 
@@ -2097,6 +2222,14 @@ def run():
                     STATE["status"] = f"Removing {len(paths_to_delete)} missing/excluded files..."
                     for i in range(0, len(paths_to_delete), 500):
                         chunk = paths_to_delete[i:i+500]
+                        from sqlalchemy import text
+                        ids_to_delete = [r[0] for r in session.query(FileIndex.id).filter(FileIndex.path.in_(chunk)).all()]
+                        if ids_to_delete:
+                            try:
+                                session.execute(text(f"DELETE FROM processed_text WHERE file_id IN ({','.join(map(str, ids_to_delete))})"))
+                                session.execute(text(f"DELETE FROM file_text_fts WHERE file_id IN ({','.join(map(str, ids_to_delete))})"))
+                            except Exception:
+                                pass
                         session.query(FileIndex).filter(FileIndex.path.in_(chunk)).delete(synchronize_session=False)
                     session.commit()
 

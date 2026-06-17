@@ -1,6 +1,7 @@
 import traceback
 from pathlib import Path
 from fastapi.responses import FileResponse, Response
+import backend.app.shared_state as shared_state
 
 
 
@@ -111,10 +112,11 @@ def generate_video_thumbnail(file_path: Path, cached_thumb: Path) -> bool:
 
 def generate_document_thumbnail(file_path: Path, cached_thumb: Path, theme: str) -> Response | None:
     if file_path.suffix.lower() == ".pdf":
-        try:
-            import fitz
-        except ImportError:
-            fitz = None
+        with shared_state.MEMORY_LOCK:
+            try:
+                import fitz
+            except ImportError:
+                fitz = None
         if fitz is not None:
             try:
                 doc = fitz.open(str(file_path))
@@ -143,10 +145,11 @@ def generate_document_thumbnail(file_path: Path, cached_thumb: Path, theme: str)
                 print(f"ERROR: PDF thumbnail error for {file_path}: {e}")
                 traceback.print_exc()
     elif file_path.suffix.lower() == ".docx":
-        try:
-            import docx
-        except ImportError:
-            docx = None
+        with shared_state.MEMORY_LOCK:
+            try:
+                import docx
+            except ImportError:
+                docx = None
         if docx is not None:
             try:
                 doc = docx.Document(str(file_path))

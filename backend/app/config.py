@@ -58,8 +58,8 @@ DEFAULT = {
     "theme": "dark",
     "thumbnail_path": "./cache/thumbnails",
     "thumbnail_size": 256,
-    "timeline_width": 158,
-    "auto_run_on_startup": False
+    "auto_run_on_startup": False,
+    "idle_unload_timeout_seconds": 1800
 }
 
 def _get_machine_key():

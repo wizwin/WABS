@@ -48,8 +48,11 @@ def stats():
         stats_dict["duplicates"] = int(dup_count)
         
         try:
-            doc_count = s.execute(text("SELECT COUNT(file_id) FROM processed_text")).scalar()
-            stats_dict["searchable_documents"] = int(doc_count) if doc_count else 0
+            doc_count = s.query(func.count(FileIndex.id)).filter(
+                FileIndex.category.in_(['document', 'ebook', 'code']),
+                text("files.id IN (SELECT file_id FROM processed_text)")
+            ).scalar() or 0
+            stats_dict["searchable_documents"] = int(doc_count)
         except Exception:
             stats_dict["searchable_documents"] = 0
 
@@ -116,7 +119,7 @@ def timeline(category: str = "all"):
                 dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
                 q = q.filter(FileIndex.size.in_(dup_sizes))
             elif category == "searchable_documents":
-                q = q.filter(text("files.id IN (SELECT file_id FROM processed_text)"))
+                q = q.filter(FileIndex.category.in_(['document', 'ebook', 'code']), text("files.id IN (SELECT file_id FROM processed_text)"))
             elif category == "tagged_objects":
                 q = q.filter(FileIndex.tags.like('%object:%'))
             else:
@@ -389,40 +392,9 @@ def debug_threads():
 
 @router.post("/system/free-memory")
 def free_memory():
-    import gc
-    import sqlite3
-    
-    gc.collect()
-    
-    cfg = load_config()
-    db_path_str = cfg.get("database_path") or "archive.db"
-    main_db_path = Path(db_path_str)
-    if not main_db_path.is_absolute():
-        if getattr(sys, 'frozen', False):
-            main_db_path = Path(sys.executable).parent / main_db_path
-        else:
-            main_db_path = Path(__file__).resolve().parent.parent.parent.parent / main_db_path
-
-    try:
-        if main_db_path.exists():
-            with sqlite3.connect(main_db_path) as db:
-                db.execute("PRAGMA shrink_memory")
-    except Exception:
-        pass
-        
-    ai_db_path = get_ai_db_path()
-    try:
-        if ai_db_path.exists():
-            with sqlite3.connect(ai_db_path) as db:
-                db.execute("PRAGMA shrink_memory")
-    except Exception:
-        pass
-
-    if cfg.get("enable_logging"):
-        import logging
-        logging.info("System memory released via garbage collection and SQLite cache flush.")
-
-    return {"status": "Memory released"}
+    from backend.app.utils.memory import unload_heavy_modules
+    unloaded = unload_heavy_modules()
+    return {"status": "Memory released", "unloaded_modules": unloaded}
 
 @router.post("/system/backup", dependencies=[Depends(lock_data_operation)])
 def backup_databases(payload: dict = Body(...)):
