@@ -905,6 +905,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             roots = [Path(c.get("backup_path", "")) for c in backup_configs if c.get("backup_path")]
             valid_roots = [r for r in roots if r.exists() and r.is_dir()]
             for root_path in valid_roots:
+                log_operation(f"Scanning backup path: {root_path}", user_logs_enabled=enable_logging)
                 if app_state.combined_scanner_stopped or STATE.get("stopped"):
                     break
                 for dirpath, _, filenames in os.walk(str(root_path)):
@@ -1494,6 +1495,31 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     if has_face or has_object:
                                         skip_ocr = True
                                         log_operation(f"Skipping OCR for photo {file.name} because image already has faces/objects", is_verbose=True)
+                                
+                                if not skip_ocr and img is not None:
+                                    h, w = img.shape[:2]
+                                    min_dim = min(h, w)
+                                    if min_dim < 20:
+                                        skip_ocr = True
+                                        log_operation(f"Skipping OCR for photo {file.name} because its dimensions ({w}x{h}) are too small (< 20px)", is_verbose=True)
+                                    elif min_dim < 150:
+                                        # Scale shorter side to 150px to ensure text clarity
+                                        scale_factor = 150.0 / min_dim
+                                        new_w = int(w * scale_factor)
+                                        new_h = int(h * scale_factor)
+                                        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+                                        
+                                        # Pad with a white border to at least 736px to prevent RapidOCR's internal extreme upscaling
+                                        h_new, w_new = img.shape[:2]
+                                        if h_new < 736 or w_new < 736:
+                                            pad_h = max(0, 736 - h_new)
+                                            pad_w = max(0, 736 - w_new)
+                                            top = pad_h // 2
+                                            bottom = pad_h - top
+                                            left = pad_w // 2
+                                            right = pad_w - left
+                                            img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=[255, 255, 255])
+                                            log_operation(f"Rescaled and padded small photo {file.name} to {img.shape[1]}x{img.shape[0]} for optimal OCR", is_verbose=True)
                                 
                                 if ocr_enabled and not skip_ocr and img is not None:
                                     log_operation(f"Running OCR engine on photo: {file.name}", is_verbose=True)
@@ -2211,6 +2237,7 @@ def run():
     if not valid_roots:
         STATE["running"] = False
         STATE["status"] = "No valid backup paths configured or found."
+        log_operation(STATE["status"], user_logs_enabled=enable_logging)
         return
 
     try:
@@ -2235,6 +2262,7 @@ def run():
             
             raw_files = []
             for root_path in valid_roots:
+                log_operation(f"Indexing backup path: {root_path}", user_logs_enabled=enable_logging)
                 matching_config = next((c for c in backup_configs if c.get("backup_path") and Path(c["backup_path"]) == root_path), {})
                 excluded_str = matching_config.get("excluded_paths", "")
                 backup_excluded_list = [p.strip() for p in excluded_str.split(",") if p.strip()]

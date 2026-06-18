@@ -80,9 +80,12 @@ jobs:
           pip install -r requirements.txt
 
       - name: Package with PyInstaller
-        shell: bash # Prevents Windows PowerShell from breaking the semicolon
+        shell: bash
+        env:
+          # Pass the target artifact name to the spec file
+          WABS_ARTIFACT_NAME: ${{ matrix.artifact_name }}
         run: |
-          pyinstaller --name ${{ matrix.artifact_name }} --onefile --noconsole ${{ matrix.icon_flag }} --add-data "frontend/dist${{ matrix.path_sep }}frontend/dist" --add-data "backend/*.onnx${{ matrix.path_sep }}backend" --add-data "backend/*.txt${{ matrix.path_sep }}backend" run.py
+          pyinstaller WABS-Windows.exe.spec
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2

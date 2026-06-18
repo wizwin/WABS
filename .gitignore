@@ -23,7 +23,6 @@ thumbnails/
 .DS_Store?
 ._*
 Thumbs.db
-WABS-Windows.exe.spec
 /dist
 config.yaml
 /models
