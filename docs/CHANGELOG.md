@@ -17,10 +17,20 @@
 *   **Dynamic Memory Unloading & Idle Monitor:** Introduced automatic memory release when WABS is idle. A background monitor thread tracks user activity, checks if any scanners are running, and automatically unloads heavy Python libraries (`fitz`, `docx`, `pptx`, `openpyxl`, `mutagen`, `pefile`, `filetype`) from the `sys.modules` cache when inactive for a configured timeout (5m, 10m, 30m, 1h).
 *   **Synchronized Thread-Safe Imports:** Coordinated both dynamic on-demand imports and background module unloading using a global application-level lock (`MEMORY_LOCK`) to ensure absolute stability and prevent race conditions if a user performs operations during memory release.
 *   **Memory Management UI Settings:** Added a new "Memory Management" section in the General Settings panel, allowing users to toggle idle memory release and configure the idle timeout threshold. Mapped the dynamic unloading to the `/system/free-memory` endpoint to allow manually releasing memory on demand.
+*   **DirectML & OpenCL HW Acceleration:** Enhanced the ONNX Runtime execution provider configuration to support DirectML (`DmlExecutionProvider`) on Windows with automatic fallbacks. Added OpenCL (`cv2.ocl`) acceleration for OpenCV DNN models when CUDA is not present.
+*   **EXIF Portrait Photo Rotation:** Implemented native EXIF orientation handling inside the OpenCV decoding pipeline. Upright rotation is applied via `cv2.rotate` after decoding, ensuring correct orientation for YuNet face/object detection and OCR text extraction.
+*   **Vectorized Face Similarity:** Stacked face embeddings into a single 2D NumPy array to perform matrix-vector dot products via `np.dot` in matching loops, accelerating similarity checks as the database grows.
+*   **Batch Face Matching Buffer:** Implemented in-memory buffers (`new_embs` / `new_ids`) during face-matching runs. Newly discovered face clusters are immediately considered for subsequent faces in the same batch, avoiding redundant database writes and boosting accuracy.
+*   **Scale-On-Decode (OCR):** Enabled OpenCV's native scale-on-decode (`IMREAD_REDUCED_COLOR_2`) to decode large images (>3000px) at 1/2 size when OCR is active, significantly saving memory and processing overhead.
+*   **Document Scanner Sync:** Added a `run_document_scan` setting in the backend and synced the dashboard checkboxes (Face, Object, and Document scanners) with the frontend's persistent options in `localStorage`.
+*   **Custom PyInstaller Spec:** Replaced the generic PyInstaller config with a dedicated `WABS-Windows.exe.spec` file that dynamically names the executable via workflow variables, excludes large unused libraries like `tzdata` and `pyarrow` to reduce package size, and correctly packages frontend assets.
 
 ### 🐞 Bug Fixes & Refinements
 *   **RapidOCR Model Loading Fix:** Patched RapidOCR parameter mapping so that custom model paths in the `backend/` directory are loaded correctly instead of falling back to default site-package paths.
 *   **GPU Module Enablement Fix:** Corrected ONNX Runtime execution provider configuration inside the OCR session to properly activate GPU acceleration for both detection and recognition modules when GPU is present.
+*   **OCR Image Scaling & Safety:** Configured WABS to skip OCR on extremely small images (<20px) and scale up/pad small images (<150px) to prevent internal upscaling issues in PaddleOCR.
+*   **GPU Stability Verification & Fallback:** Added startup stability verification tests for Face Detection, Face Recognition, and Object Classification models on the GPU. If a GPU backend fails or runs into driver issues, WABS automatically and gracefully falls back to CPU to ensure stable execution.
+*   **Clearer Scanning & Indexing Logs:** Added detailed user-facing log entries for backup scanning/indexing paths and when no valid roots are found, as well as clearer OCR rescale action details.
 
 ## v1.0.0-beta.8
 
