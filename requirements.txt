@@ -14,5 +14,6 @@ scikit-learn
 python-docx
 python-pptx
 openpyxl
-rapidocr-onnxruntime
+rapidocr-onnxruntime==1.2.3
+onnxruntime==1.26.0
 pystray
