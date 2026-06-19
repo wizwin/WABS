@@ -1,5 +1,5 @@
 import re
-from sqlalchemy import or_, func, Integer
+from sqlalchemy import or_, func, Integer, text
 from backend.app.database import FileIndex
 
 def _parse_regex_pattern(query):
@@ -37,7 +37,7 @@ def _build_search_query(query, s, q_base=None):
     specific_filters = []
     exclude_filters = []
 
-    for token in tokens:
+    for idx, token in enumerate(tokens):
         lower_token = token.lower()
         if lower_token.startswith("-") and len(lower_token) > 1:
             val = lower_token[1:]
@@ -94,11 +94,13 @@ def _build_search_query(query, s, q_base=None):
                 if len(parts) == 2:
                     exclude_filters.append(func.lower(func.json_extract(FileIndex.metadata_json, f'$.{parts[0]}')).contains(parts[1].lower()))
             else:
+                param_name = f"exclude_fts_{idx}"
                 exclude_filters.append(or_(
                     text_filter(FileIndex.filename, val),
                     text_filter(FileIndex.path, val),
                     text_filter(FileIndex.tags, val),
-                    text_filter(FileIndex.metadata_json, val)
+                    text_filter(FileIndex.metadata_json, val),
+                    text(f"files.id IN (SELECT file_id FROM file_text_fts WHERE file_text_fts MATCH :{param_name})").bindparams(**{param_name: f'"{val}" *'})
                 ))
             continue
         if lower_token.startswith("date:"):
@@ -268,12 +270,14 @@ def _build_search_query(query, s, q_base=None):
         q = q.filter(sf)
 
     if filters:
-        for term in filters:
+        for idx, term in enumerate(filters):
+            param_name = f"filter_fts_{idx}"
             q = q.filter(or_(
                 text_filter(FileIndex.filename, term),
                 text_filter(FileIndex.path, term),
                 text_filter(FileIndex.tags, term),
-                text_filter(FileIndex.metadata_json, term)
+                text_filter(FileIndex.metadata_json, term),
+                text(f"files.id IN (SELECT file_id FROM file_text_fts WHERE file_text_fts MATCH :{param_name})").bindparams(**{param_name: f'"{term}" *'})
             ))
     if tag_tokens:
         q = q.filter(or_(*[

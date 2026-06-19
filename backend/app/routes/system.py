@@ -294,7 +294,33 @@ def generate_search(payload: dict = Body(...)):
         
     endpoint = f"{provider}/chat/completions"
     
-    system_prompt = """Translate natural language to WABS search syntax. Output ONLY the query string."""
+    system_prompt = """Translate natural language requests into WABS search syntax.
+Output ONLY the resulting query string. Do NOT wrap the query in quotes or markdown code blocks (e.g. ```), and do NOT include any introductory or explanatory text. Do NOT prefix the output with "Query:" or "Result:".
+
+### WABS SEARCH SYNTAX CHEATSHEET:
+- Wildcards: Use '*' (e.g., '*.jpg' or 'report*')
+- Operators: Use '+' to require a tag/term (e.g. '+tag:ocr') or '-' to exclude a tag/term (e.g. '-tag:temp')
+- Tags/Objects/People: 'tag:<tag>', 'object:<object>', 'person:<person>'
+- Types: 'type:<ext_or_category>' (e.g., 'type:pdf', 'type:document')
+- Date: 'date:<YYYY>' or 'date:<YYYY-MM>' or 'date:<YYYY-MM-DD>'
+- File Name: 'name:<name>'
+- Size: 'size:<operator><value>' (operators: >=, <=, >, <, =; units: kb, mb, gb, tb; e.g. 'size:>5mb')
+- Length: 'length:<operator><value>' (operators: >=, <=, >, <, =; units: s, m, h; e.g. 'length:>3m')
+- Metadata: 'camera:<camera>', 'resolution:<resolution>', 'artist:<artist>', 'album:<album>', 'genre:<genre>'
+- Phrases: Enclose multi-word phrases in double quotes (e.g., "Name1 Name2")
+
+### EXAMPLES:
+Request: show all ocr-ed PDFs with testString and person Name1 but not Someone
+*.pdf testString +person:Name1 -person:Someone
+
+Request: photos of trees taken on a canon camera in 2024
+object:tree camera:canon date:2024
+
+Request: documents with tag ocr containing Name1 Name2
+tag:ocr "Name1 Name2"
+
+Request: audio files by SomeArtist longer than 3 minutes
+type:audio artist:SomeArtist length:>3m"""
 
     req_data = json.dumps({
         "model": model,
