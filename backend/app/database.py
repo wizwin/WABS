@@ -79,6 +79,8 @@ with engine.connect() as conn:
             conn.execute(text("UPDATE files SET metadata_json=metadata WHERE metadata_json IS NULL OR metadata_json=''"))
 
 with engine.begin() as conn:
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_files_category ON files(category)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_files_size ON files(size)"))
     conn.execute(text("""
         CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
             filename, tags, 

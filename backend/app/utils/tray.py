@@ -57,10 +57,29 @@ def _create_icon(server, port):
     
     return pystray.Icon("WABS", icon_image, "WABS Backend", menu)
 
+def _print_xlib_warning():
+    print("\n" + "="*80)
+    print("WARNING: WABS system tray is using the legacy 'xlib' backend.")
+    print("On modern Ubuntu/GNOME (especially under Wayland), the 'xlib' backend")
+    print("does not support interactive right-click/left-click menus.")
+    print("\nTo enable full menu support, please install the AppIndicator dependencies:")
+    print("  1. Install system packages:")
+    print("     sudo apt update")
+    print("     sudo apt install python3-gi gir1.2-appindicator3-0.1")
+    print("  2. Allow your virtual environment (venv) to access system packages, or")
+    print("     install pygobject inside your venv (requires libcairo2-dev and libgirepository1.0-dev):")
+    print("     pip install pygobject")
+    print("="*80 + "\n")
+
 def start_tray_icon(server, port):
     global _tray_icon
     try:
         _tray_icon = _create_icon(server, port)
+        icon_module = _tray_icon.__class__.__module__
+        print(f"System tray icon initialized using backend: {icon_module}")
+        if "_xlib" in icon_module:
+            _print_xlib_warning()
+        
         # Run in a daemon thread so it doesn't block python shutdown (used for Windows)
         t = threading.Thread(target=_tray_icon.run, daemon=True)
         t.start()
@@ -72,6 +91,11 @@ def run_tray_icon(server, port):
     global _tray_icon
     try:
         _tray_icon = _create_icon(server, port)
+        icon_module = _tray_icon.__class__.__module__
+        print(f"System tray icon initialized using backend: {icon_module}")
+        if "_xlib" in icon_module:
+            _print_xlib_warning()
+
         print("System tray icon running on main thread.")
         _tray_icon.run()  # Blocks until icon.stop() is called (used for Linux)
     except Exception as e:
@@ -83,6 +107,6 @@ def stop_tray_icon():
         try:
             _tray_icon.stop()
             print("System tray icon stopped.")
-        except Exception as e:
+        except BaseException as e:
             print(f"Could not stop system tray: {e}")
         _tray_icon = None

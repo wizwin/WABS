@@ -767,52 +767,59 @@ Rec:
 
 
 def _process_unified_scanners(run_index: bool = False, run_face: bool = False, run_object: bool = False, run_document: bool = False):
-    cv2 = _get_cv2()
-    fitz = _get_fitz()
-    docx = _get_docx()
-    pptx = _get_pptx()
-    openpyxl = _get_openpyxl()
-    filetype = _get_filetype()
-    enable_logging = False
-
-    """
-    Main routine for processing files through AI scanners and text extraction.
-    """
     try:
-        from backend.app.config import load_config
-        cfg = load_config()
-        opencv_threads = int(cfg.get("opencv_cpu_threads", 4))
-        if cv2 is not None and opencv_threads > 0:
-            cv2.setNumThreads(opencv_threads)
-    except Exception:
-        pass
-        
-    STATE["status"] = "Starting..."
-    STATE["stopped"] = False
-    if run_face:
-        app_state.face_scanner_running = True
-        STATE["face_scanner_running"] = True
-        app_state.face_scanner_stopped = False
-        STATE["face_scanner_stopped"] = False
-        STATE["face_scanner_total"] = 0
-        STATE["face_scanner_current"] = 0
-    if run_object:
-        app_state.object_scanner_running = True
-        STATE["object_scanner_running"] = True
-        app_state.object_scanner_stopped = False
-        STATE["object_scanner_stopped"] = False
-        STATE["object_scanner_total"] = 0
-        STATE["object_scanner_current"] = 0
-    if run_document:
-        app_state.document_scanner_running = True
-        STATE["document_scanner_running"] = True
-        STATE["document_scanner_stopped"] = False
-        STATE["document_scanner_total"] = 0
-        STATE["document_scanner_current"] = 0
+        cv2 = _get_cv2()
+        fitz = _get_fitz()
+        docx = _get_docx()
+        pptx = _get_pptx()
+        openpyxl = _get_openpyxl()
+        filetype = _get_filetype()
+        enable_logging = False
 
-
-
-    try:
+        """
+        Main routine for processing files through AI scanners and text extraction.
+        """
+        try:
+            from backend.app.config import load_config
+            cfg = load_config()
+            opencv_threads = int(cfg.get("opencv_cpu_threads", 4))
+            if cv2 is not None and opencv_threads > 0:
+                cv2.setNumThreads(opencv_threads)
+        except Exception:
+            pass
+            
+        if run_index:
+            STATE["status"] = "Starting..."
+        elif run_document:
+            STATE["status"] = "Extracting Text..."
+        elif run_face:
+            STATE["status"] = "Scanning Faces..."
+        elif run_object:
+            STATE["status"] = "Classifying Objects..."
+        else:
+            STATE["status"] = "Starting..."
+            
+        STATE["stopped"] = False
+        if run_face:
+            app_state.face_scanner_running = True
+            STATE["face_scanner_running"] = True
+            app_state.face_scanner_stopped = False
+            STATE["face_scanner_stopped"] = False
+            STATE["face_scanner_total"] = 0
+            STATE["face_scanner_current"] = 0
+        if run_object:
+            app_state.object_scanner_running = True
+            STATE["object_scanner_running"] = True
+            app_state.object_scanner_stopped = False
+            STATE["object_scanner_stopped"] = False
+            STATE["object_scanner_total"] = 0
+            STATE["object_scanner_current"] = 0
+        if run_document:
+            app_state.document_scanner_running = True
+            STATE["document_scanner_running"] = True
+            STATE["document_scanner_stopped"] = False
+            STATE["document_scanner_total"] = 0
+            STATE["document_scanner_current"] = 0
         import numpy as np
         from backend.app.utils.paths import get_bundled_model_path, get_ai_db_path
         from backend.app.utils.media import get_cv2_dnn_backends
@@ -1115,7 +1122,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                 
                 offline_roots = set()
                 for idx, file_str in enumerate(files_to_process):
-                    if shared_state.APP_SHUTTING_DOWN:
+                    if shared_state.APP_SHUTTING_DOWN or STATE.get("stopped") or app_state.combined_scanner_stopped:
                         break
                     
                     if run_index and file_str not in file_cache:
@@ -1857,18 +1864,27 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
     except Exception as e:
         print(f"CRITICAL: Unified Worker Error: {e}")
         traceback.print_exc()
+        STATE["status"] = f"Error: {e}"
     finally:
         face_processed = STATE.get("face_scanner_current", 0)
         object_processed = STATE.get("object_scanner_current", 0)
         document_processed = STATE.get("document_scanner_current", 0)
         with app_state.scanner_lock:
+            is_stopped = STATE.get("stopped", False) or app_state.combined_scanner_stopped
+            if run_face and STATE.get("face_scanner_stopped"):
+                is_stopped = True
+            if run_object and STATE.get("object_scanner_stopped"):
+                is_stopped = True
+            if run_document and STATE.get("document_scanner_stopped"):
+                is_stopped = True
+
             if run_index:
-                is_stopped = STATE.get("stopped", False) or app_state.combined_scanner_stopped
                 STATE["running"] = False
-                if is_stopped:
-                    STATE["status"] = "Stopped"
-                else:
-                    STATE["status"] = "Completed"
+                
+            if is_stopped:
+                STATE["status"] = "Stopped"
+            elif STATE["status"] in ["Starting...", "Extracting Text...", "Scanning Faces...", "Classifying Objects...", "Discovering files...", "Indexing & Scanning..."]:
+                STATE["status"] = "Completed"
             
             app_state.face_scanner_running = False
             app_state.object_scanner_running = False
@@ -2248,10 +2264,11 @@ def background_lazy_hasher():
         return
     STATE["hasher_running"] = True
     STATE["hasher_stopped"] = False
-    session = SessionLocal()
-    cfg = load_config()
-    enable_logging = cfg.get("enable_logging", False)
+    session = None
     try:
+        session = SessionLocal()
+        cfg = load_config()
+        enable_logging = cfg.get("enable_logging", False)
         log_operation("Started background lazy hasher.", user_logs_enabled=enable_logging)
         dup_sizes_query = session.query(FileIndex.size).filter(
             FileIndex.size != '0', 
@@ -2328,7 +2345,8 @@ def background_lazy_hasher():
         STATE["hasher_current_file"] = ""
         STATE["duplicates_status_changed_at"] = time.time()
         STATE["hasher_stopped"] = False
-        session.close()
+        if session:
+            session.close()
         if enable_logging:
             import logging
             logging.info(f"Duplicate verification completed. Processed {STATE.get('hasher_current', 0)} files.")
@@ -2337,17 +2355,17 @@ def run():
     """
     Main routine for discovering and indexing files from configured backup paths.
     """
-    cfg = load_config()
-    enable_logging = cfg.get("enable_logging", False)
-    backup_configs = cfg.get("backup_configs", [])
-    if not backup_configs:
-        backup_configs = [{"backup_path": cfg.get("backup_path", "")}]
-
-    roots = [Path(c.get("backup_path", "")) for c in backup_configs if c.get("backup_path")]
-    valid_roots = [r for r in roots if r.exists() and r.is_dir()]
-
-    log_operation("Started indexer run.", user_logs_enabled=enable_logging)
     try:
+        cfg = load_config()
+        enable_logging = cfg.get("enable_logging", False)
+        backup_configs = cfg.get("backup_configs", [])
+        if not backup_configs:
+            backup_configs = [{"backup_path": cfg.get("backup_path", "")}]
+
+        roots = [Path(c.get("backup_path", "")) for c in backup_configs if c.get("backup_path")]
+        valid_roots = [r for r in roots if r.exists() and r.is_dir()]
+
+        log_operation("Started indexer run.", user_logs_enabled=enable_logging)
         with SessionLocal() as session:
             others = session.query(FileIndex).filter(FileIndex.category == 'other').all()
             updated_count = 0
@@ -2606,14 +2624,18 @@ def run():
             categorization_thread = Thread(target=background_ai_categorize, args=(cfg,), daemon=True)
             categorization_thread.start()
     except Exception as exc:
-        print(f"Indexer exception: {exc}")
-        traceback.print_exc()
+        try:
+            if load_config().get("enable_logging"):
+                import logging
+                logging.error(f"Indexer error: {exc}")
+        except Exception:
+            pass
         STATE["status"] = f"Error: {exc}"
     finally:
         STATE["running"] = False
         if STATE["stopped"]:
             STATE["status"] = "Stopped"
-        elif not STATE["status"].startswith("Invalid backup path") and not STATE["status"].startswith("Error"):
+        elif STATE["status"] in ["Starting...", "Scanning", "Discovering files...", "Indexing", "Indexing & Scanning..."]:
             STATE["status"] = "Completed"
         STATE["indexed"] = STATE.get("current", 0)
         if enable_logging:

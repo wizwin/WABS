@@ -278,20 +278,20 @@ def _build_search_query(query, s, q_base=None):
     if tag_tokens:
         q = q.filter(or_(*[
             or_(
-                text_filter(FileIndex.tags, tag),
-                text_filter(FileIndex.path, tag),
-                text_filter(FileIndex.filename, tag),
-                text_filter(FileIndex.metadata_json, tag)
+                func.coalesce(FileIndex.tags, '') == tag,
+                func.coalesce(FileIndex.tags, '').like(f'%,{tag}'),
+                func.coalesce(FileIndex.tags, '').like(f'{tag},%'),
+                func.coalesce(FileIndex.tags, '').like(f'%,{tag},%')
             )
             for tag in tag_tokens
         ]))
     if and_tag_tokens:
         for tag in and_tag_tokens:
             q = q.filter(or_(
-                text_filter(FileIndex.tags, tag),
-                text_filter(FileIndex.path, tag),
-                text_filter(FileIndex.filename, tag),
-                text_filter(FileIndex.metadata_json, tag)
+                func.coalesce(FileIndex.tags, '') == tag,
+                func.coalesce(FileIndex.tags, '').like(f'%,{tag}'),
+                func.coalesce(FileIndex.tags, '').like(f'{tag},%'),
+                func.coalesce(FileIndex.tags, '').like(f'%,{tag},%')
             ))
     if exclude_filters:
         for ef in exclude_filters:

@@ -72,7 +72,7 @@ export default function Dashboard(props) {
         <div style={{background:'#111827',padding:'18px',borderRadius:'16px',border:'1px solid #24324a', minWidth: 0}}>
         <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: 0 }}><AnalyticsIcon style={{ color: '#3b82f6' }} /> Indexing Status</h2>
         <p><b>Status:</b> {indexer.status}</p>
-        <p><b>Running:</b> {indexer.running || indexer.combined_scanner_running ? 'Yes' : 'No'}</p>
+        <p><b>Running:</b> {(indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running) ? 'Yes' : 'No'}</p>
         <p><b>Paused:</b> {indexer.paused ? 'Yes' : 'No'}</p>
         <p><b>Indexed:</b> {stats.total}</p>
         {(indexer.running || indexer.combined_scanner_running) && (

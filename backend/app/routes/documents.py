@@ -59,6 +59,19 @@ def reset_document_scanner_progress():
             s.execute(text("CREATE VIRTUAL TABLE IF NOT EXISTS file_text_fts USING fts5(file_id UNINDEXED, content)"))
             s.execute(text("DELETE FROM processed_text"))
             s.execute(text("DELETE FROM file_text_fts"))
+            # Remove "ocr" tag from all files' tags
+            update_tags_query = """
+                UPDATE files 
+                SET tags = CASE 
+                    WHEN tags = 'ocr' THEN ''
+                    WHEN tags LIKE 'ocr,%' THEN SUBSTR(tags, 5)
+                    WHEN tags LIKE '%,ocr' THEN SUBSTR(tags, 1, LENGTH(tags) - 4)
+                    WHEN tags LIKE '%,ocr,%' THEN REPLACE(tags, ',ocr,', ',')
+                    ELSE tags
+                END
+                WHERE tags LIKE '%ocr%';
+            """
+            s.execute(text(update_tags_query))
             s.commit()
             
         if load_config().get("enable_logging"):

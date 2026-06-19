@@ -101,6 +101,12 @@ def graceful_os_shutdown():
     import logging
 
     try:
+        from backend.app.utils.tray import stop_tray_icon
+        stop_tray_icon()
+    except Exception:
+        pass
+
+    try:
         if shared_state.LOGGING_ENABLED:
             logging.info("OS Shutdown / App termination detected. Stopping scanners gracefully...")
     except Exception:
