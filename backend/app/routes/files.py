@@ -219,6 +219,17 @@ def open_file(item_id:int):
 
         return open_file_path(Path(item.path))
 
+def get_clean_env():
+    import os
+    env = dict(os.environ)
+    for var in ["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"]:
+        orig = var + "_ORIG"
+        if orig in env:
+            env[var] = env[orig]
+        else:
+            env.pop(var, None)
+    return env
+
 @router.post("/open-path")
 def open_file_path(path: str = Body(..., embed=True)):
     file_path = _resolve_path(Path(path))
@@ -231,9 +242,9 @@ def open_file_path(path: str = Body(..., embed=True)):
             norm_path = os.path.normpath(file_path)
             subprocess.Popen(f'start "" "{norm_path}"', shell=True)
         elif system_name == "Darwin":
-            subprocess.Popen(["open", str(file_path)])
+            subprocess.Popen(["open", str(file_path)], env=get_clean_env())
         else:
-            subprocess.Popen(["xdg-open", str(file_path)])
+            subprocess.Popen(["xdg-open", str(file_path)], env=get_clean_env())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Unable to open file: {exc}")
 
@@ -257,11 +268,11 @@ def open_folder(path: str = Body(..., embed=True)):
                 subprocess.Popen(['explorer', norm_folder])
         elif system_name == "Darwin":
             if resolved_path.exists() and resolved_path.is_file():
-                subprocess.Popen(["open", "-R", str(resolved_path)])
+                subprocess.Popen(["open", "-R", str(resolved_path)], env=get_clean_env())
             else:
-                subprocess.Popen(["open", str(folder_path)])
+                subprocess.Popen(["open", str(folder_path)], env=get_clean_env())
         else:
-            subprocess.Popen(["xdg-open", str(folder_path)])
+            subprocess.Popen(["xdg-open", str(folder_path)], env=get_clean_env())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Unable to open folder: {exc}")
 

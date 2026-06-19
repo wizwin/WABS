@@ -35,37 +35,47 @@ def load_icon_image():
             pass
     return create_default_icon()
 
+def _create_icon(server, port):
+    import pystray
+    icon_image = load_icon_image()
+    
+    def on_open_wabs(icon, item):
+        webbrowser.open(f"http://127.0.0.1:{port}")
+        
+    def on_open_settings(icon, item):
+        webbrowser.open(f"http://127.0.0.1:{port}/#settings")
+        
+    def on_shutdown(icon, item):
+        icon.stop()
+        server.should_exit = True
+        
+    menu = pystray.Menu(
+        pystray.MenuItem("Open WABS", on_open_wabs),
+        pystray.MenuItem("Settings", on_open_settings),
+        pystray.MenuItem("Shutdown", on_shutdown)
+    )
+    
+    return pystray.Icon("WABS", icon_image, "WABS Backend", menu)
+
 def start_tray_icon(server, port):
     global _tray_icon
     try:
-        import pystray
-        
-        icon_image = load_icon_image()
-        
-        def on_open_wabs(icon, item):
-            webbrowser.open(f"http://127.0.0.1:{port}")
-            
-        def on_open_settings(icon, item):
-            webbrowser.open(f"http://127.0.0.1:{port}/#settings")
-            
-        def on_shutdown(icon, item):
-            icon.stop()
-            server.should_exit = True
-            
-        menu = pystray.Menu(
-            pystray.MenuItem("Open WABS", on_open_wabs),
-            pystray.MenuItem("Settings", on_open_settings),
-            pystray.MenuItem("Shutdown", on_shutdown)
-        )
-        
-        _tray_icon = pystray.Icon("WABS", icon_image, "WABS Backend", menu)
-        
-        # Run in a daemon thread so it doesn't block python shutdown
+        _tray_icon = _create_icon(server, port)
+        # Run in a daemon thread so it doesn't block python shutdown (used for Windows)
         t = threading.Thread(target=_tray_icon.run, daemon=True)
         t.start()
-        print("System tray icon started successfully.")
+        print("System tray icon started successfully in background.")
     except Exception as e:
         print(f"Could not initialize system tray: {e}")
+
+def run_tray_icon(server, port):
+    global _tray_icon
+    try:
+        _tray_icon = _create_icon(server, port)
+        print("System tray icon running on main thread.")
+        _tray_icon.run()  # Blocks until icon.stop() is called (used for Linux)
+    except Exception as e:
+        print(f"Could not run system tray icon: {e}")
 
 def stop_tray_icon():
     global _tray_icon
