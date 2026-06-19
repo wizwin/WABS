@@ -697,16 +697,14 @@ Rec:
                             rec_conf = res_config['Rec']
                             if 'rec_keys_path' in rec_conf:
                                 rec_conf['keys_path'] = rec_conf.pop('rec_keys_path')
-                            for k in list(rec_conf.keys()):
-                                if k.startswith('rec_'):
-                                    rec_conf[k.split('rec_')[1]] = rec_conf.pop(k)
+                            if 'rec_model_path' in rec_conf:
+                                rec_conf['model_path'] = rec_conf.pop('rec_model_path')
                         if 'Cls' in res_config:
                             cls_conf = res_config['Cls']
                             if 'cls_model_path' in cls_conf:
                                 cls_conf['model_path'] = cls_conf.pop('cls_model_path')
-                            for k in list(cls_conf.keys()):
-                                if k.startswith('cls_'):
-                                    cls_conf[k.split('cls_')[1]] = cls_conf.pop(k)
+                            if 'cls_label_list' in cls_conf:
+                                cls_conf['label_list'] = cls_conf.pop('cls_label_list')
                         return res_config
                     UpdateParameters.__call__ = patched_call
             except Exception as patch_ex:
@@ -715,7 +713,6 @@ Rec:
             # Monkeypatch RapidOCR.init_module to support PyInstaller namespace resolving
             try:
                 import importlib
-                import rapidocr_onnxruntime.rapid_ocr_api
                 
                 def patched_init_module(module_name, class_name):
                     try:
@@ -727,10 +724,15 @@ Rec:
                             raise
                     return getattr(module_part, class_name)
                 
-                if hasattr(rapidocr_onnxruntime.rapid_ocr_api, 'init_module'):
-                    rapidocr_onnxruntime.rapid_ocr_api.init_module = patched_init_module
                 if hasattr(RapidOCR, 'init_module'):
                     RapidOCR.init_module = staticmethod(patched_init_module)
+                
+                try:
+                    import rapidocr_onnxruntime.rapid_ocr_api
+                    if hasattr(rapidocr_onnxruntime.rapid_ocr_api, 'init_module'):
+                        rapidocr_onnxruntime.rapid_ocr_api.init_module = patched_init_module
+                except Exception:
+                    pass
             except Exception as patch_ex:
                 logging.warning(f"Could not monkeypatch RapidOCR.init_module: {patch_ex}")
 

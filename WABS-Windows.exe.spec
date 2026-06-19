@@ -24,6 +24,9 @@ a = Analysis(
     binaries=[],
     datas=[('frontend/dist', 'frontend/dist'), ('backend/*.onnx', 'backend'), ('backend/*.txt', 'backend')] + rapidocr_datas,
     hiddenimports=[
+        'rapidocr_onnxruntime',
+        'rapidocr_onnxruntime.utils',
+        'rapidocr_onnxruntime.rapid_ocr_api',
         'rapidocr_onnxruntime.ch_ppocr_v3_det',
         'rapidocr_onnxruntime.ch_ppocr_v3_rec',
         'rapidocr_onnxruntime.ch_ppocr_v2_cls'
