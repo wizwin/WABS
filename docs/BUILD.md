@@ -89,18 +89,13 @@ cd ..
 ```
 
 ### 2. Package with PyInstaller
-Ensure your Python virtual environment is activated and `pyinstaller` is installed. Run the command applicable to your OS from the repository root:
+Ensure your Python virtual environment is activated and `pyinstaller` is installed.
 
-**For Windows:**
+Run PyInstaller using the unified spec file from the repository root:
 ```bash
-pyinstaller --name WABS-Windows.exe --onefile --noconsole --add-data "frontend/dist;frontend/dist" --add-data "backend/*.onnx;backend" --add-data "backend/*.txt;backend" run.py
+pyinstaller WABS-Windows.exe.spec
 ```
-
-**For Linux:**
-```bash
-pyinstaller --name WABS-Linux --onefile --noconsole --add-data "frontend/dist:frontend/dist" --add-data "backend/*.onnx:backend" --add-data "backend/*.txt:backend" run.py
-```
-*(Note the separator difference: Windows uses `;` while Linux uses `:`)*
+*(This spec file is cross-platform. It automatically compiles WABS-Windows.exe on Windows and WABS-Linux on Linux/macOS, handles path separations correctly, and bundles necessary data files such as the frontend assets, model files, and OCR engine configurations.)*
 
 The final bundled executable will be generated inside the `dist/` folder.
 

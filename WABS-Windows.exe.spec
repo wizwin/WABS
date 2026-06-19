@@ -7,12 +7,27 @@ import sys
 # using the same spec file configuration.
 artifact_name = os.environ.get('WABS_ARTIFACT_NAME', 'WABS-Windows.exe' if sys.platform.startswith('win') else 'WABS-Linux')
 
+# Locate rapidocr_onnxruntime config.yaml dynamically
+rapidocr_datas = []
+try:
+    import rapidocr_onnxruntime
+    rapidocr_dir = os.path.dirname(rapidocr_onnxruntime.__file__)
+    config_path = os.path.join(rapidocr_dir, 'config.yaml')
+    if os.path.exists(config_path):
+        rapidocr_datas = [(config_path, 'rapidocr_onnxruntime')]
+except ImportError:
+    pass
+
 a = Analysis(
     ['run.py'],
     pathex=[],
     binaries=[],
-    datas=[('frontend/dist', 'frontend/dist'), ('backend/*.onnx', 'backend'), ('backend/*.txt', 'backend')],
-    hiddenimports=[],
+    datas=[('frontend/dist', 'frontend/dist'), ('backend/*.onnx', 'backend'), ('backend/*.txt', 'backend')] + rapidocr_datas,
+    hiddenimports=[
+        'rapidocr_onnxruntime.ch_ppocr_v3_det',
+        'rapidocr_onnxruntime.ch_ppocr_v3_rec',
+        'rapidocr_onnxruntime.ch_ppocr_v2_cls'
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -22,7 +37,7 @@ a = Analysis(
     excludes=['pyarrow', 'tzdata'],
     noarchive=False,
     optimize=0,
-    )
+)
 
 # Post-processing filters to strip out dependencies that PyInstaller hooks still try to inject:
 # 1. Tcl/Tk's internal tzdata: Pulled in by the tkinter hook, unused by WABS (3.0MB).

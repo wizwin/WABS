@@ -504,14 +504,17 @@ def get_ocr_engine():
     with _ocr_lock:
         if _ocr_engine is None:
             try:
-                from rapidocr_onnxruntime import RapidOCR
+                import rapidocr_onnxruntime
                 import onnxruntime as ort
                 from rapidocr_onnxruntime.utils import UpdateParameters
+                from rapidocr_onnxruntime import RapidOCR
             except ImportError as e:
                 logging.error(f"Failed to import rapidocr_onnxruntime or onnxruntime: {e}")
                 return None
 
             import os
+            import tempfile
+            from pathlib import Path
             from backend.app.utils.paths import get_bundled_model_path
             from backend.app.config import load_config
             det_path = get_bundled_model_path("paddleOCR_det.onnx")
@@ -521,6 +524,69 @@ def get_ocr_engine():
             if not Path(det_path).exists() or not Path(rec_path).exists() or not Path(dict_path).exists():
                 logging.error(f"OCR model files not found in backend folder. det_path: {det_path}, rec_path: {rec_path}, dict_path: {dict_path}")
                 return None
+
+            # Dynamically handle missing config.yaml in packaged environment
+            try:
+                rapidocr_pkg_dir = Path(os.path.dirname(rapidocr_onnxruntime.__file__))
+                default_config = rapidocr_pkg_dir / "config.yaml"
+            except Exception:
+                rapidocr_pkg_dir = None
+                default_config = None
+
+            if not default_config or not default_config.exists():
+                temp_dir = Path(tempfile.gettempdir()) / "wabs_rapidocr"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                temp_config = temp_dir / "config.yaml"
+                
+                yaml_content = """Global:
+    text_score: 0.5
+    use_angle_cls: false
+    use_text_det: true
+    print_verbose: false
+    min_height: 30
+    width_height_ratio: 8
+
+Det:
+    use_cuda: false
+    module_name: ch_ppocr_v3_det
+    class_name: TextDetector
+    model_path: paddleOCR_det.onnx
+    limit_side_len: 736
+    limit_type: min
+    thresh: 0.3
+    box_thresh: 0.5
+    max_candidates: 1000
+    unclip_ratio: 1.6
+    use_dilation: true
+    score_mode: fast
+
+Cls:
+    use_cuda: false
+    module_name: ch_ppocr_v2_cls
+    class_name: TextClassifier
+    model_path: ch_ppocr_mobile_v2.0_cls_infer.onnx
+    cls_image_shape: [3, 48, 192]
+    cls_batch_num: 6
+    cls_thresh: 0.9
+    label_list: ['0', '180']
+
+Rec:
+    use_cuda: false
+    module_name: ch_ppocr_v3_rec
+    class_name: TextRecognizer
+    model_path: paddleOCR_rec.onnx
+    rec_img_shape: [3, 48, 320]
+    rec_batch_num: 6
+"""
+                try:
+                    temp_config.write_text(yaml_content, encoding="utf-8")
+                    import rapidocr_onnxruntime.rapid_ocr_api
+                    import rapidocr_onnxruntime.utils
+                    rapidocr_onnxruntime.rapid_ocr_api.root_dir = temp_dir
+                    rapidocr_onnxruntime.utils.root_dir = temp_dir
+                    logging.info(f"Recreated missing rapidocr config.yaml at {temp_config} and patched root_dir.")
+                except Exception as write_err:
+                    logging.error(f"Failed to recreate config.yaml at runtime: {write_err}")
             
             # Load settings
             cfg = load_config()
@@ -605,24 +671,57 @@ def get_ocr_engine():
             
             # Apply monkeypatch to fix RapidOCR's UpdateParameters so we can pass custom keys_path and other settings
             try:
-                orig_update_rec = UpdateParameters.update_rec_params
-                def patched_update_rec_params(self, config, rec_dict):
-                    if rec_dict:
-                        # Normalize rec_keys_path to keys_path
-                        if 'rec_keys_path' in rec_dict:
-                            rec_dict['keys_path'] = rec_dict.pop('rec_keys_path')
-                        # Ensure all keys starting with rec_ have their prefix removed
-                        new_rec_dict = {}
-                        for k, v in rec_dict.items():
-                            if k.startswith('rec_'):
-                                new_rec_dict[k.split('rec_')[1]] = v
-                            else:
-                                new_rec_dict[k] = v
-                        rec_dict = new_rec_dict
-                    return orig_update_rec(self, config, rec_dict)
-                UpdateParameters.update_rec_params = patched_update_rec_params
+                if hasattr(UpdateParameters, 'update_rec_params'):
+                    orig_update_rec = UpdateParameters.update_rec_params
+                    def patched_update_rec_params(self, config, rec_dict):
+                        if rec_dict:
+                            # Normalize rec_keys_path to keys_path
+                            if 'rec_keys_path' in rec_dict:
+                                rec_dict['keys_path'] = rec_dict.pop('rec_keys_path')
+                            # Ensure all keys starting with rec_ have their prefix removed
+                            new_rec_dict = {}
+                            for k, v in rec_dict.items():
+                                if k.startswith('rec_'):
+                                    new_rec_dict[k.split('rec_')[1]] = v
+                                else:
+                                    new_rec_dict[k] = v
+                            rec_dict = new_rec_dict
+                        return orig_update_rec(self, config, rec_dict)
+                    UpdateParameters.update_rec_params = patched_update_rec_params
+                else:
+                    # Fallback for older versions where update_rec_params is not a standalone helper
+                    orig_call = UpdateParameters.__call__
+                    def patched_call(self, config, **kwargs):
+                        res_config = orig_call(self, config, **kwargs)
+                        if 'Rec' in res_config:
+                            rec_conf = res_config['Rec']
+                            if 'rec_keys_path' in rec_conf:
+                                rec_conf['keys_path'] = rec_conf.pop('rec_keys_path')
+                            for k in list(rec_conf.keys()):
+                                if k.startswith('rec_'):
+                                    rec_conf[k.split('rec_')[1]] = rec_conf.pop(k)
+                        return res_config
+                    UpdateParameters.__call__ = patched_call
             except Exception as patch_ex:
                 logging.warning(f"Could not monkeypatch rapidocr_onnxruntime UpdateParameters: {patch_ex}")
+
+            # Monkeypatch RapidOCR.init_module to support PyInstaller namespace resolving
+            try:
+                import importlib
+                orig_init_module = RapidOCR.init_module
+                @staticmethod
+                def patched_init_module(module_name, class_name):
+                    try:
+                        module_part = importlib.import_module(module_name)
+                    except ImportError:
+                        try:
+                            module_part = importlib.import_module(f"rapidocr_onnxruntime.{module_name}")
+                        except ImportError:
+                            raise
+                    return getattr(module_part, class_name)
+                RapidOCR.init_module = patched_init_module
+            except Exception as patch_ex:
+                logging.warning(f"Could not monkeypatch RapidOCR.init_module: {patch_ex}")
 
             # Check for available GPU providers in ONNX Runtime
             try:
@@ -975,6 +1074,29 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
             with SessionLocal() as session:
+                # One-time migration/sync: add "ocr" tag to all files that have entries in processed_text
+                try:
+                    query_str = """
+                        SELECT id, tags FROM files 
+                        WHERE id IN (SELECT file_id FROM processed_text)
+                        AND (tags IS NULL OR tags = '' OR (',' || tags || ',') NOT LIKE '%,ocr,%')
+                    """
+                    rows = session.execute(text(query_str)).fetchall()
+                    if rows:
+                        log_operation(f"Syncing OCR tags: Found {len(rows)} files with processed text missing the 'ocr' tag.", is_verbose=True)
+                        mappings = []
+                        for f_id, existing_tags in rows:
+                            tag_list = [t.strip() for t in (existing_tags or "").split(",") if t.strip()]
+                            if "ocr" not in tag_list:
+                                tag_list.append("ocr")
+                                mappings.append({"id": f_id, "tags": ",".join(tag_list)})
+                        if mappings:
+                            session.bulk_update_mappings(FileIndex, mappings)
+                            session.commit()
+                            log_operation(f"Successfully tagged {len(mappings)} existing OCR-processed files with the 'ocr' tag.", is_verbose=True)
+                except Exception as sync_e:
+                    logging.error(f"Failed to sync existing OCR tags: {sync_e}")
+
                 log_operation("[DEBUG-SCANNER] Starting file indexing & scanning loop...", is_verbose=True)
                 # Store lightweight info mapping dynamically in chunks of 1000 to avoid loading millions of rows at startup
                 file_cache = {} if run_index else preloaded_cache
@@ -1529,6 +1651,15 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                         if ocr_results:
                                             extracted_text = " ".join([res[1] for res in ocr_results if res and len(res) > 1])
                                             log_operation(f"OCR extracted {len(extracted_text)} characters from photo {file.name}: '{extracted_text[:100]}...'", is_verbose=True)
+                                            if extracted_text.strip():
+                                                if not db_item:
+                                                    db_item = session.get(FileIndex, db_item_id)
+                                                if db_item:
+                                                    existing_tags = db_item.tags or ""
+                                                    tag_list = [t.strip() for t in existing_tags.split(",") if t.strip()]
+                                                    if "ocr" not in tag_list:
+                                                        tag_list.append("ocr")
+                                                        db_item.tags = ",".join(tag_list)
                                         else:
                                             log_operation(f"OCR engine returned no text for photo: {file.name}", is_verbose=True)
                             elif ext == '.pdf' and fitz is not None:
@@ -1565,6 +1696,14 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                                         if ocr_page_text.strip():
                                                             page_text = ocr_page_text
                                                             log_operation(f"OCR extracted text for PDF page {page_num} of {file.name}: {len(page_text)} chars", is_verbose=True)
+                                                            if not db_item:
+                                                                db_item = session.get(FileIndex, db_item_id)
+                                                            if db_item:
+                                                                existing_tags = db_item.tags or ""
+                                                                tag_list = [t.strip() for t in existing_tags.split(",") if t.strip()]
+                                                                if "ocr" not in tag_list:
+                                                                    tag_list.append("ocr")
+                                                                    db_item.tags = ",".join(tag_list)
                                             except Exception as ocr_err:
                                                 if enable_logging:
                                                     logging.error(f"OCR failed on page {page_num} of {file.name}: {ocr_err}")
@@ -1707,6 +1846,9 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         print(f"CRITICAL: Unified Worker Error: {e}")
         traceback.print_exc()
     finally:
+        face_processed = STATE.get("face_scanner_current", 0)
+        object_processed = STATE.get("object_scanner_current", 0)
+        document_processed = STATE.get("document_scanner_current", 0)
         with app_state.scanner_lock:
             if run_index:
                 is_stopped = STATE.get("stopped", False) or app_state.combined_scanner_stopped
@@ -1745,11 +1887,11 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             import logging
             status_val = STATE.get("status", "Completed")
             if run_face:
-                logging.info(f"Face scanner process ended. Status: {status_val}, processed {STATE.get('face_scanner_current', 0)} files.")
+                logging.info(f"Face scanner process ended. Status: {status_val}, processed {face_processed} files.")
             if run_object:
-                logging.info(f"Object scanner process ended. Status: {status_val}, processed {STATE.get('object_scanner_current', 0)} files.")
+                logging.info(f"Object scanner process ended. Status: {status_val}, processed {object_processed} files.")
             if run_document:
-                logging.info(f"Document text extraction process ended. Status: {status_val}, processed {STATE.get('document_scanner_current', 0)} files.")
+                logging.info(f"Document text extraction process ended. Status: {status_val}, processed {document_processed} files.")
 
 def classify(ext):
     ext = ext.lower()
