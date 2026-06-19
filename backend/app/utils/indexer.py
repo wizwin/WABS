@@ -1093,16 +1093,17 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
             with SessionLocal() as session:
-                # One-time migration/sync: add "ocr" tag to all files that have entries in processed_text
+                # One-time migration/sync: add "ocr" tag to all photos that have entries in processed_text
                 try:
                     query_str = """
                         SELECT id, tags FROM files 
                         WHERE id IN (SELECT file_id FROM processed_text)
+                        AND category = 'photo'
                         AND (tags IS NULL OR tags = '' OR (',' || tags || ',') NOT LIKE '%,ocr,%')
                     """
                     rows = session.execute(text(query_str)).fetchall()
                     if rows:
-                        log_operation(f"Syncing OCR tags: Found {len(rows)} files with processed text missing the 'ocr' tag.", is_verbose=True)
+                        log_operation(f"Syncing OCR tags: Found {len(rows)} photos with processed text missing the 'ocr' tag.", is_verbose=True)
                         mappings = []
                         for f_id, existing_tags in rows:
                             tag_list = [t.strip() for t in (existing_tags or "").split(",") if t.strip()]
@@ -1112,7 +1113,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         if mappings:
                             session.bulk_update_mappings(FileIndex, mappings)
                             session.commit()
-                            log_operation(f"Successfully tagged {len(mappings)} existing OCR-processed files with the 'ocr' tag.", is_verbose=True)
+                            log_operation(f"Successfully tagged {len(mappings)} existing OCR-processed photos with the 'ocr' tag.", is_verbose=True)
                 except Exception as sync_e:
                     logging.error(f"Failed to sync existing OCR tags: {sync_e}")
 
