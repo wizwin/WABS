@@ -1,5 +1,12 @@
 # WABS Changelog
 
+## v1.0.1
+
+### ⚡ Performance & Caching
+*   **Idle ONNX Model Unloading:** Optimized memory footprint by dynamically unloading heavy machine learning models (ONNX models for Face Detection, Face Recognition, Object Classification, and OCR) and removing `onnxruntime` and `rapidocr_onnxruntime` from python's modules cache once the application becomes idle (respecting the idle timeout configured in Settings).
+*   **On-Demand Model Loading:** Guaranteed that no machine learning models or libraries are loaded on application startup. Models are initialized purely on-demand when a scan starts or when face identification is requested.
+*   **Memory Reclamation:** Leveraged python's garbage collector (`gc.collect()`) inside the memory monitor to force immediate reclamation of heap allocations and C++ engine memory buffers back to the operating system.
+
 ## v1.0.0
 
 ### 🚀 Major New Features & Enhancements

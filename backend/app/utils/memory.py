@@ -18,7 +18,13 @@ def unload_heavy_modules():
     unloaded_modules = []
     
     with shared_state.MEMORY_LOCK:
-        modules_to_unload = ["fitz", "docx", "pptx", "openpyxl", "mutagen", "pefile", "filetype"]
+        try:
+            from backend.app.utils.indexer import reset_ocr_engine
+            reset_ocr_engine()
+        except Exception:
+            pass
+
+        modules_to_unload = ["fitz", "docx", "pptx", "openpyxl", "mutagen", "pefile", "filetype", "onnxruntime", "rapidocr_onnxruntime"]
         
         # Safely iterate and remove modules from sys.modules
         for mod in list(sys.modules.keys()):
