@@ -104,11 +104,36 @@ def is_wabs_temp_folder(folder_path: str) -> bool:
     
     return has_models and has_frontend
 
+def is_safe_mei_folder(folder_path: str) -> bool:
+    try:
+        import tempfile
+        temp_dir = os.path.abspath(tempfile.gettempdir())
+        target_dir = os.path.abspath(folder_path)
+        
+        # 1. Must be a subdirectory of the system temp directory
+        if os.path.commonpath([temp_dir, target_dir]) != temp_dir:
+            return False
+            
+        # 2. Must not be the temp directory itself
+        if target_dir == temp_dir:
+            return False
+            
+        # 3. The folder name must start with '_MEI'
+        folder_name = os.path.basename(target_dir)
+        if not folder_name.startswith('_MEI'):
+            return False
+            
+        return True
+    except Exception:
+        return False
+
+
 def clean_old_mei_folders():
     if not getattr(sys, 'frozen', False):
         return
 
     import tempfile
+    from pathlib import Path
     
     temp_path = tempfile.gettempdir()
     current_mei = getattr(sys, '_MEIPASS', None)
@@ -116,29 +141,118 @@ def clean_old_mei_folders():
         return
         
     current_mei = os.path.abspath(current_mei)
-    mei_pattern = os.path.join(temp_path, '_MEI*')
     
+    # Resolve base_dir (project root)
+    base_dir = Path(sys.executable).parent
+    cache_dir = base_dir / "cache"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+        
+    temp_dirs_file = cache_dir / "temp_dirs.txt"
+    
+    # Read existing registered folders
+    registered_folders = set()
+    if temp_dirs_file.exists():
+        try:
+            with open(temp_dirs_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    path = line.strip()
+                    if path:
+                        registered_folders.add(os.path.abspath(path))
+        except Exception:
+            pass
+            
+    # Add current one to the registered list so it can be cleaned up next time if it fails now
+    registered_folders.add(current_mei)
+    
+    # Also find folders matching _MEI* pattern to register them (handles legacy leftovers)
+    mei_pattern = os.path.join(temp_path, '_MEI*')
     for folder in glob.glob(mei_pattern):
         folder = os.path.abspath(folder)
         if folder == current_mei:
             continue
-            
-        # Safety check: ensure this folder belongs specifically to WABS to avoid touching other apps' files
         try:
-            if not is_wabs_temp_folder(folder):
-                continue
+            if is_wabs_temp_folder(folder):
+                registered_folders.add(folder)
         except Exception:
             continue
             
-        if sys.platform != 'win32':
+    # Try to clean up all other folders in the registered list
+    still_present = set()
+    for folder in registered_folders:
+        if folder == current_mei:
+            still_present.add(folder)
+            continue
+            
+        if not is_safe_mei_folder(folder):
+            continue
+            
+        if os.path.exists(folder):
+            if sys.platform != 'win32':
+                try:
+                    if is_folder_in_use_on_linux(folder):
+                        still_present.add(folder)
+                        continue
+                except Exception:
+                    pass
             try:
-                if is_folder_in_use_on_linux(folder):
-                    continue
+                shutil.rmtree(folder)
             except Exception:
-                pass
-                
+                still_present.add(folder)
+        # If it doesn't exist, we don't add it to still_present (it's gone!)
+        
+    # Write updated list back
+    try:
+        with open(temp_dirs_file, "w", encoding="utf-8") as f:
+            for folder in sorted(still_present):
+                f.write(folder + "\n")
+    except Exception:
+        pass
+
+
+def spawn_detached_cleanup():
+    if not getattr(sys, 'frozen', False):
+        return
+        
+    current_mei = getattr(sys, '_MEIPASS', None)
+    if not current_mei:
+        return
+        
+    current_mei = os.path.abspath(current_mei)
+    if not is_safe_mei_folder(current_mei):
+        return
+    
+    # Spawn a detached process to delete the folder after a short delay
+    import subprocess
+    if sys.platform == 'win32':
+        # On Windows, use a ping delay and rmdir
+        cmd = f'ping 127.0.0.1 -n 4 >nul & rmdir /s /q "{current_mei}"'
         try:
-            shutil.rmtree(folder)
+            # DETACHED_PROCESS (0x00000008) runs the process without a console window
+            # CREATE_NEW_PROCESS_GROUP (0x00000200) detaches from parent terminal signals
+            subprocess.Popen(
+                cmd,
+                shell=True,
+                creationflags=0x00000008 | 0x00000200,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL
+            )
+        except Exception:
+            pass
+    else:
+        # On Linux/macOS
+        cmd = f'sleep 3 && rm -rf "{current_mei}"'
+        try:
+            subprocess.Popen(
+                cmd,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL
+            )
         except Exception:
             pass
 
@@ -249,3 +363,9 @@ if __name__ == "__main__":
             server.run()
         except (KeyboardInterrupt, asyncio.CancelledError):
             print("\nWABS Server stopped by user.")
+
+    if getattr(sys, 'frozen', False):
+        try:
+            spawn_detached_cleanup()
+        except Exception:
+            pass

@@ -12,7 +12,7 @@ import platform
 from sqlalchemy import func, text, Integer
 
 from backend.app.database import SessionLocal, FileIndex
-from backend.app.config import load_config, save_config
+from backend.app.config import load_config, save_config, get_thumbnail_dir
 from backend.app.utils.paths import get_ai_db_path
 from backend.app.utils.cache import EXEMPLAR_CACHE
 from backend.app.utils.utils import _resolve_path, parse_tags, find_file_by_path_smart
@@ -353,7 +353,7 @@ def clear_cache():
 
     import logging
     cfg = load_config()
-    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
+    thumb_dir = get_thumbnail_dir()
     if thumb_dir.exists() and thumb_dir.is_dir():
         try:
             shutil.rmtree(thumb_dir)
@@ -508,7 +508,7 @@ def system_cleanup():
 
     missing_ids = []
     deleted_thumbnails_count = 0
-    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
+    thumb_dir = get_thumbnail_dir()
     
     with SessionLocal() as s:
         for r in s.query(FileIndex.id, FileIndex.path).yield_per(1000):

@@ -139,3 +139,20 @@ def save_config(data):
         
     with open(CFG,"w") as f:
         yaml.dump(save_data, f)
+
+def get_thumbnail_dir(category: str = None) -> Path:
+    config = load_config()
+    thumb_path = Path(config.get("thumbnail_path") or "thumbnails")
+    if not thumb_path.is_absolute():
+        thumb_path = BASE / thumb_path
+    
+    thumb_dir = thumb_path / ".wabs_cache"
+    if category:
+        thumb_dir = thumb_dir / category
+        
+    try:
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"Error creating thumbnail directory {thumb_dir}: {e}")
+        
+    return thumb_dir

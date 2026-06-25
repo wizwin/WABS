@@ -14,7 +14,7 @@ from fastapi import APIRouter, Body, HTTPException
 from sqlalchemy import text
 
 # Project Dependencies
-from backend.app.config import load_config, save_config
+from backend.app.config import load_config, save_config, get_thumbnail_dir
 from backend.app.utils.utils import _resolve_path
 import backend.app.state as app_state
 from backend.app.state import STATE
@@ -208,7 +208,7 @@ def indexer_reindex(req: IndexRequest = None):
 
         cfg = load_config()
         # Safely rmtree ONLY our isolated cache directory, ignoring the parent folder entirely
-        thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
+        thumb_dir = get_thumbnail_dir()
         if thumb_dir.exists() and thumb_dir.is_dir():
             try:
                 shutil.rmtree(thumb_dir)

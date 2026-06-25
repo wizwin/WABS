@@ -13,7 +13,7 @@ from sqlalchemy import func, Integer, text
 
 # Project Dependencies
 from backend.app.database import SessionLocal, FileIndex
-from backend.app.config import load_config
+from backend.app.config import load_config, get_thumbnail_dir
 from backend.app.utils.utils import _resolve_path
 from backend.app.utils.media import generate_photo_thumbnail, generate_video_thumbnail, generate_document_thumbnail
 from backend.app.utils.indexer import PLAIN_TEXT_EXTENSIONS
@@ -127,15 +127,15 @@ def preview(item_id:int, theme: str = "dark"):
         if cache_enabled is None:
             cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
         if str(cache_enabled).lower() in ("true", "1", "yes") or (file_path and file_path.suffix.lower() == ".dng"):
-            cached_thumb = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "photos" / f"{item_id}.jpg"
+            cached_thumb = get_thumbnail_dir("photos") / f"{item_id}.jpg"
             if cached_thumb.exists():
                 return FileResponse(str(cached_thumb), media_type="image/jpeg")
     elif file_category == "video":
-        cached_thumb = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "videos" / f"{item_id}.jpg"
+        cached_thumb = get_thumbnail_dir("videos") / f"{item_id}.jpg"
         if cached_thumb.exists():
             return FileResponse(str(cached_thumb), media_type="image/jpeg")
     elif file_category in ["document", "code"] and file_path and file_path.suffix.lower() == ".pdf":
-        cached_thumb = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "documents" / f"{item_id}.jpg"
+        cached_thumb = get_thumbnail_dir("documents") / f"{item_id}.jpg"
         if cached_thumb.exists():
             return FileResponse(str(cached_thumb), media_type="image/jpeg")
 
@@ -156,7 +156,7 @@ def preview(item_id:int, theme: str = "dark"):
                     size_limit_bytes = size_limit_mb * 1024 * 1024
                     
                     if file_path.stat().st_size > size_limit_bytes or is_dng:
-                        thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "photos"
+                        thumb_dir = get_thumbnail_dir("photos")
                         thumb_dir.mkdir(parents=True, exist_ok=True)
                         cached_thumb = thumb_dir / f"{item_id}.jpg"
                         
@@ -174,7 +174,7 @@ def preview(item_id:int, theme: str = "dark"):
                 media_type, _ = mimetypes.guess_type(str(file_path))
                 return FileResponse(str(file_path), media_type=media_type or "application/octet-stream")
         elif file_category == "video":
-            thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "videos"
+            thumb_dir = get_thumbnail_dir("videos")
             thumb_dir.mkdir(parents=True, exist_ok=True)
             
             cached_thumb = thumb_dir / f"{item_id}.jpg"
@@ -187,7 +187,7 @@ def preview(item_id:int, theme: str = "dark"):
                     
         elif file_category in ["document", "code"] or file_path.suffix.lower() in PLAIN_TEXT_EXTENSIONS:
             if file_path.suffix.lower() == ".pdf":
-                thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "documents"
+                thumb_dir = get_thumbnail_dir("documents")
                 thumb_dir.mkdir(parents=True, exist_ok=True)
                 
                 cached_thumb = thumb_dir / f"{item_id}.jpg"

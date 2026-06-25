@@ -14,7 +14,7 @@ def _get_cv2():
         return None
 
 from backend.app.routes.files import preview, _build_item
-from backend.app.config import load_config
+from backend.app.config import load_config, get_thumbnail_dir
 from backend.app.database import SessionLocal, FileIndex
 from backend.app.utils.utils import _resolve_path, parse_tags
 from backend.app.utils.log_utils import log_operation
@@ -206,8 +206,7 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
         file_id, emb_json = face_row
         target_embedding = json.loads(emb_json)
 
-    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
-    thumb_dir.mkdir(parents=True, exist_ok=True)
+    thumb_dir = get_thumbnail_dir("faces")
     cached_face = thumb_dir / f"person_{person_id}.jpg"
     
     if cached_face.exists():
@@ -407,7 +406,7 @@ def set_person_thumbnail(person_id: int, payload: dict = Body(...)):
         cursor.execute("UPDATE people SET thumbnail_file_id = ? WHERE id = ?", (file_id, person_id))
         conn.commit()
         
-    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
+    thumb_dir = get_thumbnail_dir("faces")
     cached_face = thumb_dir / f"person_{person_id}.jpg"
     if cached_face.exists():
         try:
@@ -508,7 +507,7 @@ def auto_suggest_thumbnail(person_id: int):
         conn.commit()
         
     # Clear the old cached thumbnail so it regenerates on next load
-    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
+    thumb_dir = get_thumbnail_dir("faces")
     cached_face = thumb_dir / f"person_{person_id}.jpg"
     if cached_face.exists():
         try:
@@ -566,7 +565,7 @@ def remove_person_photo(person_id: int, payload: dict = Body(...)):
                     f.tags = ",".join(sorted(current_tags))
                     s.commit()
 
-        thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
+        thumb_dir = get_thumbnail_dir("faces")
         cached_face = thumb_dir / f"person_{person_id}.jpg"
         if cached_face.exists():
             try:
@@ -977,7 +976,7 @@ def reclassify_people(payload: dict = Body(...)):
         import logging
         logging.info(f"Started reclassifying {len(person_ids)} unknown profiles.")
     ai_db_path = get_ai_db_path()
-    thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "faces"
+    thumb_dir = get_thumbnail_dir("faces")
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
          
