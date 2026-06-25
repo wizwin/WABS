@@ -7,6 +7,7 @@ import GavelIcon from '@mui/icons-material/Gavel';
 import GitHubIcon from '@mui/icons-material/GitHub';
 
 import { AppIcon } from '../components/ui/AppIcon';
+import { VERSION } from '../States';
 
 export default function About(props) {
   const { page } = props;
@@ -28,7 +29,7 @@ export default function About(props) {
             <div style={{background:'#8b5cf61a', padding:'10px', borderRadius:'10px', color:'#8b5cf6', display:'flex'}}><InfoIcon /></div>
             <div>
             <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Version Info</h3>
-            <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v1.0.0</strong></p>
+            <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Current Release: <strong style={{color: '#f8fafc'}}>v{VERSION}</strong></p>
             </div>
         </div>
 

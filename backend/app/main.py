@@ -229,6 +229,11 @@ def startup_event():
     import logging
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     try:
+        from backend.app.version import __version__
+        logging.info(f"WABS Server v{__version__} starting up...")
+    except Exception:
+        pass
+    try:
         cfg = load_config()
         shared_state.LOGGING_ENABLED = cfg.get("enable_logging", False)
     except Exception:

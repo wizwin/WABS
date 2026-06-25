@@ -36,6 +36,13 @@ def unload_heavy_modules():
                     
         if unloaded_modules:
             gc.collect()
+            try:
+                import ctypes
+                libc = ctypes.CDLL(None)
+                if hasattr(libc, 'malloc_trim'):
+                    libc.malloc_trim(0)
+            except Exception:
+                pass
             
             # Flush SQLite memory for the main database
             db_path_str = cfg.get("database_path") or "archive.db"

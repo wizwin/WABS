@@ -11,7 +11,7 @@ import Tags from './pages/Tags';
 import Settings from './pages/Settings';
 import About from './pages/About';
 
-import { API, dateFormatter, placeholderCache, SettingsContext } from './States';
+import { API, dateFormatter, placeholderCache, SettingsContext, VERSION } from './States';
 import { ActionButton } from './components/ui/ActionButton';
 import { PersonThumb } from './components/ui/PersonThumb';
 import { Sidebar } from './components/ui/Sidebar';
@@ -582,6 +582,7 @@ useEffect(() => {
 }, []);
 
 useEffect(()=>{
+ document.title = `WABS v${VERSION}`;
  explorer.loadFiles()
  loadSettings()
  loadDashboard()
