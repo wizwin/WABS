@@ -230,12 +230,12 @@ def spawn_detached_cleanup():
         # On Windows, use a ping delay and rmdir
         cmd = f'ping 127.0.0.1 -n 4 >nul & rmdir /s /q "{current_mei}"'
         try:
-            # DETACHED_PROCESS (0x00000008) runs the process without a console window
+            # CREATE_NO_WINDOW (0x08000000) completely suppresses the cmd console window
             # CREATE_NEW_PROCESS_GROUP (0x00000200) detaches from parent terminal signals
             subprocess.Popen(
                 cmd,
                 shell=True,
-                creationflags=0x00000008 | 0x00000200,
+                creationflags=0x08000000 | 0x00000200,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL
