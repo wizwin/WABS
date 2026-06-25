@@ -35,14 +35,6 @@ def unload_heavy_modules():
                     break
                     
         if unloaded_modules:
-            gc.collect()
-            try:
-                import ctypes
-                libc = ctypes.CDLL(None)
-                if hasattr(libc, 'malloc_trim'):
-                    libc.malloc_trim(0)
-            except Exception:
-                pass
             
             # Flush SQLite memory for the main database
             db_path_str = cfg.get("database_path") or "archive.db"
@@ -75,6 +67,32 @@ def unload_heavy_modules():
                 logging.info(f"Unloaded idle modules and released memory: {unloaded_modules}")
             else:
                 print(f"Unloaded idle modules and released memory: {unloaded_modules}")
+                
+        # Always run garbage collection and release memory back to the OS when WABS is idle
+        gc.collect()
+        
+        # 1. Linux/glibc memory trimming
+        try:
+            import ctypes
+            libc = ctypes.CDLL(None)
+            if hasattr(libc, 'malloc_trim'):
+                libc.malloc_trim(0)
+        except Exception:
+            pass
+            
+        # 2. Windows working set trimming
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                import os
+                PROCESS_QUERY_INFORMATION = 0x0400
+                PROCESS_SET_QUOTA = 0x0100
+                handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, False, os.getpid())
+                if handle:
+                    ctypes.windll.psapi.EmptyWorkingSet(handle)
+                    ctypes.windll.kernel32.CloseHandle(handle)
+            except Exception:
+                pass
             
     return unloaded_modules
 

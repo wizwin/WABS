@@ -145,8 +145,10 @@ export default function Settings(props) {
                             >
                                 <option value={300}>5 minutes</option>
                                 <option value={600}>10 minutes</option>
+                                <option value={900}>15 minutes</option>
                                 <option value={1800}>30 minutes</option>
                                 <option value={3600}>1 hour</option>
+                                <option value={7200}>2 hours</option>
                             </select>
                         </div>
                     )}

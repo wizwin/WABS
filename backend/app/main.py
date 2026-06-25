@@ -131,6 +131,12 @@ def graceful_os_shutdown():
         if not is_running:
             break
         time.sleep(1)
+        
+    try:
+        from backend.app.utils.memory import unload_heavy_modules
+        unload_heavy_modules()
+    except Exception:
+        pass
 
 if sys.platform == 'win32':
     try:
@@ -228,11 +234,22 @@ app.add_middleware(
 def startup_event():
     import logging
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    __version__ = "Unknown"
     try:
         from backend.app.version import __version__
-        logging.info(f"WABS Server v{__version__} starting up...")
-    except Exception:
-        pass
+    except ImportError:
+        try:
+            from app.version import __version__
+        except ImportError:
+            try:
+                from version import __version__
+            except ImportError:
+                pass
+    try:
+        print(f"WABS Server v{__version__} starting up...", flush=True)
+        logging.getLogger("uvicorn.error").info(f"WABS Server v{__version__} starting up...")
+    except Exception as e:
+        print(f"WABS Startup Version Log Error: {e}", flush=True)
     try:
         cfg = load_config()
         shared_state.LOGGING_ENABLED = cfg.get("enable_logging", False)

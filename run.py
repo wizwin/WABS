@@ -143,6 +143,19 @@ def clean_old_mei_folders():
             pass
 
 if __name__ == "__main__":
+    __version__ = "Unknown"
+    try:
+        from backend.app.version import __version__
+    except ImportError:
+        try:
+            from app.version import __version__
+        except ImportError:
+            try:
+                from version import __version__
+            except ImportError:
+                pass
+    print(f"WABS Server v{__version__} starting up...", flush=True)
+
     # Freeze support is required for PyInstaller bundles to run on Windows
     multiprocessing.freeze_support()
 
