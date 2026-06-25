@@ -130,8 +130,12 @@ def preview(item_id:int, theme: str = "dark"):
             cached_thumb = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "photos" / f"{item_id}.jpg"
             if cached_thumb.exists():
                 return FileResponse(str(cached_thumb), media_type="image/jpeg")
-    elif file_category == "video" or (file_category in ["document", "code"] and file_path.suffix.lower() == ".pdf"):
-        cached_thumb = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / f"{item_id}.jpg"
+    elif file_category == "video":
+        cached_thumb = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "videos" / f"{item_id}.jpg"
+        if cached_thumb.exists():
+            return FileResponse(str(cached_thumb), media_type="image/jpeg")
+    elif file_category in ["document", "code"] and file_path and file_path.suffix.lower() == ".pdf":
+        cached_thumb = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "documents" / f"{item_id}.jpg"
         if cached_thumb.exists():
             return FileResponse(str(cached_thumb), media_type="image/jpeg")
 
@@ -170,7 +174,7 @@ def preview(item_id:int, theme: str = "dark"):
                 media_type, _ = mimetypes.guess_type(str(file_path))
                 return FileResponse(str(file_path), media_type=media_type or "application/octet-stream")
         elif file_category == "video":
-            thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
+            thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "videos"
             thumb_dir.mkdir(parents=True, exist_ok=True)
             
             cached_thumb = thumb_dir / f"{item_id}.jpg"
@@ -183,7 +187,7 @@ def preview(item_id:int, theme: str = "dark"):
                     
         elif file_category in ["document", "code"] or file_path.suffix.lower() in PLAIN_TEXT_EXTENSIONS:
             if file_path.suffix.lower() == ".pdf":
-                thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache"
+                thumb_dir = Path(cfg.get("thumbnail_path") or "thumbnails") / ".wabs_cache" / "documents"
                 thumb_dir.mkdir(parents=True, exist_ok=True)
                 
                 cached_thumb = thumb_dir / f"{item_id}.jpg"
