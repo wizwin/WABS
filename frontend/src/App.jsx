@@ -618,8 +618,8 @@ useEffect(() => {
       if (page === 'people') await peopleState.loadPeople();
       
       pollCount++;
-      // Refresh tags every 3 seconds while scanning to update the UI without causing heavy DB locks
-      if (pollCount % 3 === 0) {
+      // Refresh tags every 3 seconds while object/combined scanning to update the UI without causing heavy DB locks
+      if (pollCount % 3 === 0 && (indexer.object_scanner_running || indexer.combined_scanner_running)) {
         await tagsState.loadTags();
           setTimelineUpdateTick(prev => prev + 1);
       }

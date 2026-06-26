@@ -628,6 +628,10 @@ def rename_person(person_id: int, payload: dict = Body(...)):
         new_name = "Unknown Person"
 
     cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"User renaming person profile {person_id} to '{new_name}'.")
+
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
@@ -684,6 +688,18 @@ def rename_person(person_id: int, payload: dict = Body(...)):
                 if mappings:
                     s.bulk_update_mappings(FileIndex, mappings)
                     s.commit()
+
+    if existing_person:
+        # Clean up thumbnail of the merged-away profile
+        from backend.app.routes.system import system_cleanup
+        system_cleanup(clean_files=False, clean_thumbnails=False, delete_person_ids=[person_id])
+
+    if cfg.get("enable_logging"):
+        import logging
+        if existing_person:
+            logging.info(f"Successfully merged person profile {person_id} (old name: '{old_name}') into existing profile '{new_name}' (ID: {target_id}).")
+        else:
+            logging.info(f"Successfully renamed person profile {person_id} (old name: '{old_name}') to '{new_name}'.")
             
     return {"success": True, "name": new_name}
 
@@ -693,6 +709,10 @@ def delete_person(person_id: int):
     Deletes a person profile, clears their face embeddings, and purges their tags from all files.
     """
     cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"User started deleting person profile {person_id}.")
+
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
@@ -734,6 +754,14 @@ def delete_person(person_id: int):
                     s.bulk_update_mappings(FileIndex, mappings)
                     s.commit()
             
+    # Clean up thumbnail
+    from backend.app.routes.system import system_cleanup
+    system_cleanup(clean_files=False, clean_thumbnails=False, delete_person_ids=[person_id])
+
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Successfully deleted person profile {person_id} (old name: '{old_name}').")
+
     return {"success": True, "deleted_id": person_id}
 
 @router.post("/people/merge", dependencies=[Depends(lock_data_operation)])
@@ -748,7 +776,7 @@ def merge_people(payload: dict = Body(...)):
     cfg = load_config()
     if cfg.get("enable_logging"):
         import logging
-        logging.info(f"Started merging {len(person_ids)} profiles.")
+        logging.info(f"User initiated merging of {len(person_ids)} profiles.")
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
@@ -778,6 +806,11 @@ def merge_people(payload: dict = Body(...)):
             
         EXEMPLAR_CACHE.pop(primary_id, None)
         conn.commit()
+
+    if ids_to_merge:
+        # Clean up thumbnails of the merged-away profiles
+        from backend.app.routes.system import system_cleanup
+        system_cleanup(clean_files=False, clean_thumbnails=False, delete_person_ids=ids_to_merge)
         
     if cfg.get("enable_logging"):
         import logging
@@ -799,7 +832,7 @@ def cluster_unknowns(payload: dict = Body(...)):
     cfg = load_config()
     if cfg.get("enable_logging"):
         import logging
-        logging.info("Started clustering unknown profiles.")
+        logging.info("User initiated clustering of unknown profiles.")
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
          raise HTTPException(status_code=404, detail="Database not found")
@@ -952,6 +985,10 @@ def cluster_unknowns(payload: dict = Body(...)):
                     })
                     
         conn.commit()
+
+    if merged_away:
+        from backend.app.routes.system import system_cleanup
+        system_cleanup(clean_files=False, clean_thumbnails=False, delete_person_ids=list(merged_away))
         
     if cfg.get("enable_logging"):
         import logging

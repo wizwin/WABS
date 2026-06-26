@@ -3,14 +3,44 @@
 ## v1.0.1
 
 ### ⚡ Performance & Caching
+*   **Compiled ImageNet Mapping:** Converted the ImageNet class mapping from an external JSON file to a compiled Python static dictionary (`imagenet_mapping_data.py`). This allows WABS to load the mapping instantly via Python bytecode compilation (`.pyc`), completely bypassing disk reading and JSON string parsing at runtime, and avoiding spec file payload bloating.
+*   **On-Demand Lazy Loading & Memory Release:** Implemented lazy loading of the ImageNet mapping so it is imported dynamically only when an active object scan is running. Integrated it with WABS's idle memory release routine (`unload_heavy_modules`), which clears the cache and removes the compiled module from Python's internal import registry (`sys.modules`) when WABS goes idle.
 *   **Idle ONNX Model Unloading:** Optimized WABS's memory footprint by dynamically unloading heavy machine learning models (ONNX models for Face Detection, Face Recognition, Object Classification, and OCR) and removing `onnxruntime` and `rapidocr_onnxruntime` from python's modules cache once the application becomes idle (respecting the idle timeout configured in Settings).
 *   **On-Demand Model Loading:** Guaranteed that no machine learning models or libraries are loaded on application startup. Models are initialized purely on-demand when a scan starts or when face identification is requested.
 *   **Memory Reclamation:** Leveraged python's garbage collector (`gc.collect()`) and dynamic C++ heap trimming (`malloc_trim`) to force immediate reclamation of heap allocations and C++ engine memory buffers back to the operating system.
 *   **Extended Memory Management Options:** Added **15 minutes** and **2 hours** options to the Memory Management idle timeout dropdown list in Settings.
+*   **Removed OpenCL DNN Backend Fallback:** Disabled the OpenCV OpenCL DNN target (`DNN_TARGET_OPENCL`) for face and object detection, defaulting directly to the CPU backend (with CUDA remaining for NVIDIA GPUs). This resolves massive scanning freezes and CPU/GPU lockups (where processing a single image could take up to 24+ seconds) caused by dynamic OpenCL convolution kernel compilations on images of varying sizes.
+*   **Face Scanner Size Filtering:** Automatically filters out and skips face detection scans for small images and icons (dimensions `< 100px` in width or height) to prevent false-positive face detections and speed up scan times.
+*   **Single-Decode Scanner Optimization:** Optimized the unified scanner loop to ensure each file is opened and decoded exactly once per scan step, saving redundant disk I/O and CPU cycles across Face, Object, and OCR pipelines.
 
 ### 🐞 Bug Fixes & Refinements
+*   **Face-Aware Animal Thresholding:** Elevated the classification threshold for animal/pet categories (such as `animal`, `mammal`, `pet`, `dog`, `cat`) to a strict minimum of `0.45` if a human face is present in the image, preventing false-positive animal tags on photos of people.
+*   **Scanner Pipeline Ordering Swap:** Adjusted the scanner execution order to run face detection before object classification. This allows the object classifier to instantly read existing face records from the database or fall back to a fast 3ms YuNet check if face scanning is disabled.
+*   **Aggregated Tag Suppression:** Suppressed broad, noisy generic category tags (such as `clothing`, `apparel`, `household`, `object`) from high-level mapping outputs to keep detected metadata clean and relevant.
+*   **Improved Object Tag Detection Accuracy:** Implemented **probability aggregation** in the object scanning process. Sums the probabilities of all ImageNet subclasses belonging to the same high-level category (e.g., summing 118 dog breeds to `dog`, `animal`, and `pet`), resolving split-probability softmax issues. Added a **1.5% subclass noise floor threshold** to prevent low-probability uniform noise from aggregating into false-positive broad categories (like `animal` or `household`) on text/document screenshots and noise images.
+*   **Hybrid Specific & High-Level Tagging:** Retains high-confidence specific tags (e.g., `object:golden_retriever`) alongside broad high-level tags when individual subclass confidence exceeds the user's sensitivity threshold.
+*   **Transparent Image Compositing:** Implemented transparent-to-white background compositing for PNG, GIF, and WebP files inside the initial PIL metadata pass. This stops transparent icons from being misclassified by the object scanner (e.g., preventing a transparent hexagon from being identified as a "spatula").
+*   **Aspect Ratio-Preserving Letterboxing:** Integrated aspect-ratio-preserving letterboxing resize onto a white 224x224 canvas for the object classifier, significantly improving classification accuracy for non-square images.
+*   **Fixed UnboundLocalError for OCR:** Fixed a bug where `ocr_enabled` was referenced before assignment when standard OpenCV decoding was bypassed by transparent image loading.
+*   **Verbose Log Timestamps & Timings:** Added datetime timestamps to verbose console log outputs and included log entries to track and print decode performance timings for scanners.
+*   **Cosmetic Shutdown Traceback Suppression:** Added custom logging filters that silence verbose tracebacks caused by standard `KeyboardInterrupt` and `asyncio.CancelledError` exceptions in Uvicorn loggers during terminal Ctrl-C shutdown.
+*   **Pystray Dock Error Traceback Silence:** Suppressed the cosmetic `AssertionError: Failed to dock icon` traceback originating from `pystray`'s X11/Xorg backend on Linux/Ubuntu when the tray window is destroyed.
+*   **Safe System Tray Icon Stop:** Handled `KeyboardInterrupt` exceptions silently in `stop_tray_icon()` during X11/Xlib display flushes on exit, preventing unhandled PyInstaller script crashes.
+*   **Automatic Tray Icon Exit on Server Shutdown:** Connected WABS's `@app.on_event("shutdown")` hook to stop the system tray icon automatically, resolving terminal hangs on Linux/Ubuntu when shutting down via the Web UI `/shutdown` endpoint.
 *   **Graceful Shutdown Cleanup:** Added file handle unloading during WABS shutdown, resolving Windows/Linux file lock issues that previously blocked Python from cleaning up temporary files.
 *   **Startup Version Print:** Exposes the running WABS version immediately on boot with robust directory fallback imports to support both production and various development environments.
+
+### 🛡️ Safety & System Cleanliness
+*   **Atomic Directory Renaming on Exit:** Replaced the legacy `temp_dirs.txt` cache registry and the runtime `wabs_active_lock.txt` lock file with an atomic folder-renaming strategy on shutdown (renaming `_MEIxxxxx` to `_MEIxxxxx_to_delete` first to check if DLLs are locked before deleting, ensuring folders are either 100% cleanly deleted or left 100% intact for subsequent startup cleanup).
+*   **Orphaned DLL-Only Temp Folder Purger:** Added an automatic cleanup scanner on startup (`is_leftover_dll_only_folder`) that scans for and purges legacy `_MEI` temp folders containing only standard C-runtime DLLs (`msvcp140.dll`, etc.), freeing up disk space safely while strictly preserving other applications' temp folders.
+*   **Strict Temp Directory Deletion Constraints:** Reinforced folder deletion paths (`is_safe_mei_folder`) to guarantee they are strictly subdirectories of the system's root temp directory, protecting the system from accidental file deletions.
+
+### 🧹 Database Cleanup & Optimization
+*   **Orphaned AI Records Purging:** Enhanced the database cleanup routine to delete orphaned records in `faces`, `processed_files`, and `processed_objects` tables inside the sidecar `ai_metadata.db` that reference deleted/missing files.
+*   **Orphaned Text Search Cleanup:** Clears orphaned records from `processed_text` and `file_text_fts` text-indexing tables whose `file_id`s do not exist in the main database.
+*   **Empty Profiles & Cached Thumbnails Deletion:** Automatically deletes empty people profiles (profiles with zero remaining face detections) and removes their cached face thumbnail file (`person_{person_id}.jpg`) from the disk.
+*   **Broken Cover Photos Reset:** Resets `thumbnail_file_id` to `NULL` for people profiles whose selected cover photo refers to a deleted file, allowing them to fall back to a valid cover face.
+*   **SQLite Database Vacuuming:** Runs SQLite `VACUUM` on both the main database (`archive.db`) and the AI database (`ai_metadata.db`) at the end of the cleanup routine to reclaim physical disk space and optimize queries.
 
 ## v1.0.0
 

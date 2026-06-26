@@ -1,9 +1,14 @@
 import multiprocessing
 import os
 import sys
-import asyncio
-import shutil
-import glob
+# Restore original library paths to prevent PyInstaller conflicts with system GUI libraries
+if sys.platform != "win32" and getattr(sys, 'frozen', False):
+    for var in ["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"]:
+        orig = var + "_ORIG"
+        if orig in os.environ:
+            os.environ[var] = os.environ[orig]
+        else:
+            os.environ.pop(var, None)
 
 # Prevent thread spinning and busy-waiting in background thread pools (OpenMP, OpenBLAS)
 os.environ["OMP_WAIT_POLICY"] = "passive"
@@ -104,6 +109,36 @@ def is_wabs_temp_folder(folder_path: str) -> bool:
     
     return has_models and has_frontend
 
+def is_leftover_dll_only_folder(folder_path: str) -> bool:
+    try:
+        items = os.listdir(folder_path)
+        if not items:
+            return True
+            
+        for item in items:
+            item_path = os.path.join(folder_path, item)
+            if os.path.isdir(item_path):
+                return False
+                
+        allowed_files = {
+            'msvcp140.dll',
+            'vcruntime140.dll',
+            'vcruntime140_1.dll',
+            'vcruntime140_2.dll',
+            'python3.dll',
+            'python310.dll',
+            'python311.dll',
+            'python312.dll'
+        }
+        
+        for item in items:
+            if item.lower() not in (f.lower() for f in allowed_files):
+                return False
+                
+        return True
+    except Exception:
+        return False
+
 def is_safe_mei_folder(folder_path: str) -> bool:
     try:
         import tempfile
@@ -127,13 +162,11 @@ def is_safe_mei_folder(folder_path: str) -> bool:
     except Exception:
         return False
 
-
 def clean_old_mei_folders():
     if not getattr(sys, 'frozen', False):
         return
 
     import tempfile
-    from pathlib import Path
     
     temp_path = tempfile.gettempdir()
     current_mei = getattr(sys, '_MEIPASS', None)
@@ -142,75 +175,28 @@ def clean_old_mei_folders():
         
     current_mei = os.path.abspath(current_mei)
     
-    # Resolve base_dir (project root)
-    base_dir = Path(sys.executable).parent
-    cache_dir = base_dir / "cache"
-    try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-        
-    temp_dirs_file = cache_dir / "temp_dirs.txt"
-    
-    # Read existing registered folders
-    registered_folders = set()
-    if temp_dirs_file.exists():
-        try:
-            with open(temp_dirs_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    path = line.strip()
-                    if path:
-                        registered_folders.add(os.path.abspath(path))
-        except Exception:
-            pass
-            
-    # Add current one to the registered list so it can be cleaned up next time if it fails now
-    registered_folders.add(current_mei)
-    
-    # Also find folders matching _MEI* pattern to register them (handles legacy leftovers)
+    # Scan for folders matching _MEI* pattern
     mei_pattern = os.path.join(temp_path, '_MEI*')
     for folder in glob.glob(mei_pattern):
         folder = os.path.abspath(folder)
         if folder == current_mei:
             continue
-        try:
-            if is_wabs_temp_folder(folder):
-                registered_folders.add(folder)
-        except Exception:
-            continue
-            
-    # Try to clean up all other folders in the registered list
-    still_present = set()
-    for folder in registered_folders:
-        if folder == current_mei:
-            still_present.add(folder)
-            continue
             
         if not is_safe_mei_folder(folder):
             continue
             
-        if os.path.exists(folder):
-            if sys.platform != 'win32':
-                try:
-                    if is_folder_in_use_on_linux(folder):
-                        still_present.add(folder)
-                        continue
-                except Exception:
-                    pass
-            try:
-                shutil.rmtree(folder)
-            except Exception:
-                still_present.add(folder)
-        # If it doesn't exist, we don't add it to still_present (it's gone!)
-        
-    # Write updated list back
-    try:
-        with open(temp_dirs_file, "w", encoding="utf-8") as f:
-            for folder in sorted(still_present):
-                f.write(folder + "\n")
-    except Exception:
-        pass
-
+        try:
+            if is_wabs_temp_folder(folder) or is_leftover_dll_only_folder(folder):
+                if os.path.exists(folder):
+                    if sys.platform != 'win32':
+                        try:
+                            if is_folder_in_use_on_linux(folder):
+                                continue
+                        except Exception:
+                            pass
+                    shutil.rmtree(folder)
+        except Exception:
+            pass
 
 def spawn_detached_cleanup():
     if not getattr(sys, 'frozen', False):
@@ -224,11 +210,28 @@ def spawn_detached_cleanup():
     if not is_safe_mei_folder(current_mei):
         return
     
-    # Spawn a detached process to delete the folder after a short delay
     import subprocess
     if sys.platform == 'win32':
-        # On Windows, use a ping delay and rmdir
-        cmd = f'ping 127.0.0.1 -n 4 >nul & rmdir /s /q "{current_mei}"'
+        # On Windows, try to rename the folder first to ensure it's not locked.
+        # If it's locked, wait and retry. If/when we can rename it, delete the renamed folder.
+        # If it is still locked after 10 retries, do nothing (keeps it intact so startup cleans it up).
+        parent_dir = os.path.dirname(current_mei)
+        folder_name = os.path.basename(current_mei)
+        target_name = f"{folder_name}_to_delete"
+        target_path = os.path.join(parent_dir, target_name)
+        
+        if not is_safe_mei_folder(target_path):
+            return
+            
+        cmd = (
+            f'for /L %%i in (1,1,10) do ('
+            f'ren "{current_mei}" "{target_name}" && ('
+            f'rmdir /s /q "{target_path}" & exit'
+            f') || ('
+            f'ping 127.0.0.1 -n 2 >nul'
+            f')'
+            f')'
+        )
         try:
             # CREATE_NO_WINDOW (0x08000000) completely suppresses the cmd console window
             # CREATE_NEW_PROCESS_GROUP (0x00000200) detaches from parent terminal signals
@@ -313,8 +316,23 @@ if __name__ == "__main__":
                     return False
             return True
 
+    class SuppressPystrayDockErrorFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            if record.exc_info:
+                exc_type, exc_value, _ = record.exc_info
+                if exc_type is not None:
+                    if issubclass(exc_type, (KeyboardInterrupt, asyncio.CancelledError)):
+                        return False
+                    if issubclass(exc_type, AssertionError) and "Failed to dock icon" in str(record.msg):
+                        return False
+            if "Failed to dock icon" in record.getMessage():
+                return False
+            return True
+
     for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         logging.getLogger(logger_name).addFilter(SuppressShutdownNoiseFilter())
+
+    logging.getLogger("pystray").addFilter(SuppressPystrayDockErrorFilter())
 
     # Check if system tray icon should be run
     tray_available = False

@@ -106,6 +106,30 @@ STOP_WORDS = frozenset({
     "my", "me", "am", "i", "he", "she", "his", "hers", "him", "her", "us", "you", "yours"
 })
 
+IMAGENET_MAPPING = None
+
+def load_imagenet_mapping():
+    global IMAGENET_MAPPING
+    if IMAGENET_MAPPING is None:
+        try:
+            # Try compiled python dict for maximum load speed
+            from backend.app.utils.imagenet_mapping_data import IMAGENET_TO_COMMON
+            IMAGENET_MAPPING = IMAGENET_TO_COMMON
+        except Exception as e:
+            print(f"Error loading ImageNet mapping: {e}")
+            IMAGENET_MAPPING = {}
+    return IMAGENET_MAPPING
+
+def unload_imagenet_mapping():
+    global IMAGENET_MAPPING
+    IMAGENET_MAPPING = None
+    import sys
+    # De-register the compiled mapping module from sys.modules to release memory
+    for target in ["backend.app.utils.imagenet_mapping_data", "backend.app.utils.imagenet_mapping_data."]:
+        for mod in list(sys.modules.keys()):
+            if mod == target or mod.startswith(target):
+                del sys.modules[mod]
+
 # OPTIMIZATION: Order matters. Most common patterns (URLs, emails, filenames) 
 # are placed first to speed up regex evaluation by matching earlier.
 LOG_EXCLUDED_PATTERN = re.compile(
@@ -842,6 +866,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
 
         # --- Object Setup ---
         net, classes, object_threshold = None, None, 0.15
+        imagenet_mapping = {}
         if run_object:
             model_path = get_bundled_model_path("mobilenetv2-small.onnx")
             classes_path = get_bundled_model_path("imagenet_classes.txt")
@@ -864,6 +889,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         pass
             with open(classes_path, 'rt') as f:
                 classes = [line.strip() for line in f.readlines()]
+            # Load mapping dynamically on-demand
+            imagenet_mapping = load_imagenet_mapping()
             object_sensitivity = cfg.get("object_sensitivity", "medium")
             object_threshold = 0.10 if object_sensitivity == "high" else 0.30 if object_sensitivity == "low" else 0.15
 
@@ -874,13 +901,12 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         new_embs = []
         new_ids = []
         face_threshold, cluster_threshold = 0.70, 0.55
-        if run_face:
+        # Load YuNet detector if face scanning or object scanning is enabled (for human presence checks)
+        if run_face or run_object:
             yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
-            sface_path = get_bundled_model_path("face_recognition_sface_2021dec.onnx")
-            
             backend_id, target_id = get_cv2_dnn_backends()
 
-            if Path(yunet_path).exists() and Path(sface_path).exists():
+            if Path(yunet_path).exists():
                 try:
                     detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320), 0.9, 0.3, 5000, backend_id, target_id)
                     # Test detection to verify backend stability
@@ -893,9 +919,17 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                         detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320), 0.9, 0.3, 5000, backend_id, target_id)
                     except Exception:
                         detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320))
+                
                 face_sensitivity = cfg.get("face_sensitivity", "medium")
                 face_threshold = 0.55 if face_sensitivity == "high" else 0.85 if face_sensitivity == "low" else 0.70
                 detector.setScoreThreshold(face_threshold)
+
+        # Load SFace Recognizer only if face scanning is enabled
+        if run_face:
+            sface_path = get_bundled_model_path("face_recognition_sface_2021dec.onnx")
+            backend_id, target_id = get_cv2_dnn_backends()
+
+            if Path(sface_path).exists():
                 try:
                     recognizer = cv2.FaceRecognizerSF.create(sface_path, "", backend_id, target_id)
                 except Exception:
@@ -1369,16 +1403,30 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     # --- 3. OPTIMIZATION: Read image ONCE from disk for ML models & OCR ---
                     if (needs_face or needs_object or (needs_text and category == 'photo')) and img is None:
                         try:
-                            # Read dimensions and EXIF orientation first using PIL to optimize image decoding
+                            # OPTIMIZATION: Always open and decode the file exactly once to feed all active scanners (Face, Object, OCR) to prevent disk I/O and processing bottlenecks.
                             from PIL import Image, ImageOps
+                            start_decode_time = time.perf_counter()
                             width, height = 0, 0
                             orientation = None
+                            ocr_enabled = cfg.get("ocr_enabled", False)
                             try:
                                 with Image.open(file) as pil_img:
                                     width, height = pil_img.size
                                     exif = pil_img.getexif()
                                     if exif:
                                         orientation = exif.get(274)
+                                    
+                                    # If the image has transparency (PNG/GIF/WebP etc.), composite it on white immediately.
+                                    # This avoids double disk reads and uses PIL's fast composite on white.
+                                    if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
+                                        bg = Image.new("RGB", pil_img.size, (255, 255, 255))
+                                        if pil_img.mode == 'P':
+                                            pil_img = pil_img.convert('RGBA')
+                                        mask = pil_img.split()[3] if pil_img.mode == 'RGBA' else pil_img.split()[1]
+                                        bg.paste(pil_img, mask=mask)
+                                        bg = ImageOps.exif_transpose(bg)
+                                        img = cv2.cvtColor(np.array(bg), cv2.COLOR_RGB2BGR)
+                                        decode_scale = 1.0
                             except Exception:
                                 pass
                             
@@ -1389,63 +1437,47 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     needs_face = False
                                 
                                 if not needs_face and not needs_object and not needs_text:
+                                    elapsed_decode = (time.perf_counter() - start_decode_time) * 1000
+                                    log_operation(f"[DEBUG-SCANNER] Checked and skipped tiny file: {file.name} (dimensions={width}x{height}) in {elapsed_decode:.3f} ms", is_verbose=True)
                                     processed_count += 1
                                     if processed_count % 500 == 0:
                                         conn.commit()
                                         session.commit()
                                     continue
 
-                            img_array = np.fromfile(str(file), np.uint8)
-                            ocr_enabled = cfg.get("ocr_enabled", False)
-                            
-                            # If JPEG and very large, use scale-on-decode flags
-                            if width > 0 and height > 0 and file.suffix.lower() in ('.jpg', '.jpeg'):
-                                max_dim = max(width, height)
-                                if ocr_enabled:
-                                    # OCR needs higher resolution, only downscale by 1/2 if image is extremely large (>= 3000px)
-                                    if max_dim >= 3000:
-                                        img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_2)
-                                        decode_scale = 0.5
-                                else:
-                                    # OCR disabled: aggressive downscaling for face and object classification only
-                                    if max_dim >= 3200:
-                                        img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_4)
-                                        decode_scale = 0.25
-                                    elif max_dim >= 1600:
-                                        img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_2)
-                                        decode_scale = 0.5
-                            
+                            # If not already loaded (i.e. didn't have transparency), proceed with fast OpenCV decode
                             if img is None:
-                                # For formats that potentially contain transparency, load using PIL with white background
-                                if file.suffix.lower() in ('.png', '.gif', '.webp'):
-                                    try:
-                                        with Image.open(file) as pil_img:
-                                            pil_img = ImageOps.exif_transpose(pil_img)
-                                            if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
-                                                bg = Image.new("RGB", pil_img.size, (255, 255, 255))
-                                                if pil_img.mode == 'P':
-                                                    pil_img = pil_img.convert('RGBA')
-                                                mask = pil_img.split()[3] if pil_img.mode == 'RGBA' else pil_img.split()[1]
-                                                bg.paste(pil_img, mask=mask)
-                                                pil_img = bg
-                                            else:
-                                                pil_img = pil_img.convert('RGB')
-                                            img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-                                            decode_scale = 1.0
-                                    except Exception:
-                                        pass
-
-                            if img is None:
-                                img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                                img_array = np.fromfile(str(file), np.uint8)
+                                ocr_enabled = cfg.get("ocr_enabled", False)
                                 
-                            # Rotate image using native OpenCV based on EXIF orientation tag if imdecode succeeded
-                            if img is not None and orientation in (3, 6, 8):
-                                if orientation == 3:
-                                    img = cv2.rotate(img, cv2.ROTATE_180)
-                                elif orientation == 6:
-                                    img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
-                                elif orientation == 8:
-                                    img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                                # If JPEG and very large, use scale-on-decode flags
+                                if width > 0 and height > 0 and file.suffix.lower() in ('.jpg', '.jpeg'):
+                                    max_dim = max(width, height)
+                                    if ocr_enabled:
+                                        # OCR needs higher resolution, only downscale by 1/2 if image is extremely large (>= 3000px)
+                                        if max_dim >= 3000:
+                                            img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_2)
+                                            decode_scale = 0.5
+                                    else:
+                                        # OCR disabled: aggressive downscaling for face and object classification only
+                                        if max_dim >= 3200:
+                                            img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_4)
+                                            decode_scale = 0.25
+                                        elif max_dim >= 1600:
+                                            img = cv2.imdecode(img_array, cv2.IMREAD_REDUCED_COLOR_2)
+                                            decode_scale = 0.5
+                                
+                                if img is None:
+                                    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                                    
+                                # Rotate image using native OpenCV based on EXIF orientation tag if imdecode succeeded
+                                if img is not None and orientation in (3, 6, 8):
+                                    if orientation == 3:
+                                        img = cv2.rotate(img, cv2.ROTATE_180)
+                                    elif orientation == 6:
+                                        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+                                    elif orientation == 8:
+                                        img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
                             if img is None:
                                 try:
@@ -1477,11 +1509,21 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     
                                     if not needs_face and not needs_object and not needs_text:
                                         img = None
+                                        elapsed_decode = (time.perf_counter() - start_decode_time) * 1000
+                                        log_operation(f"[DEBUG-SCANNER] Decoded and skipped tiny file: {file.name} (dimensions={orig_w}x{orig_h}) in {elapsed_decode:.3f} ms", is_verbose=True)
                                         processed_count += 1
                                         if processed_count % 500 == 0:
                                             conn.commit()
                                             session.commit()
                                         continue
+
+                            # Log decoding performance
+                            if img is not None:
+                                elapsed_decode = (time.perf_counter() - start_decode_time) * 1000
+                                log_operation(f"[DEBUG-SCANNER] Decoded file: {file.name} (dimensions={width or img.shape[1]}x{height or img.shape[0]}) in {elapsed_decode:.3f} ms", is_verbose=True)
+                            else:
+                                elapsed_decode = (time.perf_counter() - start_decode_time) * 1000
+                                log_operation(f"[DEBUG-SCANNER] Failed to decode file: {file.name} in {elapsed_decode:.3f} ms", is_verbose=True)
 
                             # Early downscaling strategy when OCR is enabled
                             if img is not None and ocr_enabled:
@@ -1504,60 +1546,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                 session.commit()
                             continue
 
-                    # --- 4. Run Object Classifier ---
-                    if needs_object and net is not None and img is not None:
-                        try:
-                            log_operation(f"Starting object classification for file: {file.name}", is_verbose=True)
-                            # Letterbox resize to preserve aspect ratio on a white canvas
-                            h, w = img.shape[:2]
-                            target_size = 224
-                            scale = min(target_size / w, target_size / h)
-                            new_w, new_h = int(w * scale), int(h * scale)
-                            resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
-                            
-                            o_img = np.full((target_size, target_size, 3), 255, dtype=np.uint8)
-                            dx = (target_size - new_w) // 2
-                            dy = (target_size - new_h) // 2
-                            o_img[dy:dy+new_h, dx:dx+new_w] = resized
-
-                            o_img = cv2.cvtColor(o_img, cv2.COLOR_BGR2RGB)
-                            o_img = o_img.astype(np.float32) / 255.0
-                            o_img -= np.array([0.485, 0.456, 0.406])
-                            o_img /= np.array([0.229, 0.224, 0.225])
-                            o_img = o_img.transpose(2, 0, 1)
-                            o_img = np.expand_dims(o_img, axis=0)
-                            o_img = np.ascontiguousarray(o_img)
-
-                            net.setInput(o_img)
-                            preds = net.forward().flatten()
-                            exp_preds = np.exp(preds - np.max(preds))
-                            probs = exp_preds / np.sum(exp_preds)
-                            
-                            classIds = np.argsort(probs)[-5:][::-1]
-                            raw_preds = [(classes[cid].split(',')[0].strip(), float(probs[cid])) for cid in classIds]
-                            log_operation(f"Object classifier top-5 predictions for {file.name}: {raw_preds}", is_verbose=True)
-                            
-                            new_tags = []
-                            for classId in classIds:
-                                if probs[classId] > object_threshold:
-                                    label = classes[classId].split(',')[0].strip().lower().replace(" ", "_")
-                                    new_tags.append(f"object:{label}")
-                                    
-                            if new_tags:
-                                current_tags_set = parse_tags(db_item.tags)
-                                for tag in new_tags:
-                                    current_tags_set.add(tag)
-                                db_item.tags = ",".join(sorted(current_tags_set))
-                                log_operation(f"Classified objects {new_tags} for file: {file.name}", user_logs_enabled=enable_logging, is_verbose=True)
-                            else:
-                                log_operation(f"No objects detected above threshold {object_threshold} for file: {file.name}", is_verbose=True)
-                        except Exception as e:
-                            print(f"ERROR: Failed to classify {file.name}: {e}")
-                            
-                        cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item_id,))
-                        object_processed_ids.add(db_item_id)
-
-                    # --- 5. Run Face Detector ---
+                    # --- 4. Run Face Detector (Moved up to detect people before running object classification) ---
                     if needs_face and detector is not None and img is not None:
                         try:
                             log_operation(f"Starting face detection for file: {file.name}", is_verbose=True)
@@ -1675,6 +1664,110 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             
                         cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item_id,))
                         face_processed_ids.add(db_item_id)
+
+                    # --- 5. Run Object Classifier ---
+                    if needs_object and net is not None and img is not None:
+                        try:
+                            log_operation(f"Starting object classification for file: {file.name}", is_verbose=True)
+                            # Letterbox resize to preserve aspect ratio on a white canvas
+                            h, w = img.shape[:2]
+                            target_size = 224
+                            scale = min(target_size / w, target_size / h)
+                            new_w, new_h = int(w * scale), int(h * scale)
+                            resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
+                            
+                            o_img = np.full((target_size, target_size, 3), 255, dtype=np.uint8)
+                            dx = (target_size - new_w) // 2
+                            dy = (target_size - new_h) // 2
+                            o_img[dy:dy+new_h, dx:dx+new_w] = resized
+
+                            o_img = cv2.cvtColor(o_img, cv2.COLOR_BGR2RGB)
+                            o_img = o_img.astype(np.float32) / 255.0
+                            o_img -= np.array([0.485, 0.456, 0.406])
+                            o_img /= np.array([0.229, 0.224, 0.225])
+                            o_img = o_img.transpose(2, 0, 1)
+                            o_img = np.expand_dims(o_img, axis=0)
+                            o_img = np.ascontiguousarray(o_img)
+
+                            net.setInput(o_img)
+                            preds = net.forward().flatten()
+                            exp_preds = np.exp(preds - np.max(preds))
+                            probs = exp_preds / np.sum(exp_preds)
+                            
+                            classIds = np.argsort(probs)[-5:][::-1]
+                            raw_preds = [(classes[cid].split(',')[0].strip(), float(probs[cid])) for cid in classIds]
+                            log_operation(f"Object classifier top-5 predictions for {file.name}: {raw_preds}", is_verbose=True)
+                            
+                            new_tags = set()
+                            
+                            # Check if the photo has any faces (detected in this pass or already in DB)
+                            has_face = False
+                            if db_item_id is not None:
+                                cursor.execute("SELECT 1 FROM faces WHERE file_id = ?", (db_item_id,))
+                                if cursor.fetchone() is not None:
+                                    has_face = True
+                                    
+                            # If no face is in DB, and YuNet detector is loaded, run a quick face check
+                            if not has_face and detector is not None and img is not None:
+                                try:
+                                    h_img, w_img = img.shape[:2]
+                                    scale = 320.0 / max(h_img, w_img) if max(h_img, w_img) > 320 else 1.0
+                                    new_w, new_h = int(w_img * scale), int(h_img * scale)
+                                    det_img = cv2.resize(img, (new_w, new_h))
+                                    detector.setInputSize((new_w, new_h))
+                                    success, faces = detector.detect(det_img)
+                                    if success and faces is not None and len(faces) > 0:
+                                        has_face = True
+                                except Exception:
+                                    pass
+
+                            # 1. Aggregate high-level category probabilities if mapping loaded
+                            if imagenet_mapping:
+                                high_level_probs = {}
+                                for cid in range(len(probs)):
+                                    prob = float(probs[cid])
+                                    # Filter out low-probability subclass noise (e.g., flat noise floor of confused models)
+                                    if prob <= 0.015:
+                                        continue
+                                    spec_raw = classes[cid].split(',')[0].strip()
+                                    spec_clean = spec_raw.lower().replace(" ", "_")
+                                    mapped_tags = imagenet_mapping.get(spec_clean, [])
+                                    for tag in mapped_tags:
+                                        high_level_probs[tag] = high_level_probs.get(tag, 0.0) + prob
+                                        
+                                # Add high-level tags exceeding threshold
+                                for tag, prob in high_level_probs.items():
+                                    # Apply a strict threshold for animal/pet categories if humans/faces are present in the image
+                                    req_threshold = max(object_threshold, 0.45) if (tag in ("animal", "mammal", "pet", "dog", "cat") and has_face) else object_threshold
+                                    if prob > req_threshold:
+                                        new_tags.add(f"object:{tag}")
+                                        
+                            # 2. Add specific tags exceeding threshold
+                            for cid in classIds:
+                                prob = probs[cid]
+                                spec_raw = classes[cid].split(',')[0].strip()
+                                spec_clean = spec_raw.lower().replace(" ", "_")
+                                mapped_tags = imagenet_mapping.get(spec_clean, []) if imagenet_mapping else []
+                                
+                                is_animal = "animal" in mapped_tags
+                                req_threshold = max(object_threshold, 0.45) if (is_animal and has_face) else object_threshold
+                                
+                                if prob > req_threshold:
+                                    new_tags.add(f"object:{spec_clean}")
+                                    
+                            if new_tags:
+                                current_tags_set = parse_tags(db_item.tags)
+                                for tag in new_tags:
+                                    current_tags_set.add(tag)
+                                db_item.tags = ",".join(sorted(current_tags_set))
+                                log_operation(f"Classified objects {list(new_tags)} for file: {file.name}", user_logs_enabled=enable_logging, is_verbose=True)
+                            else:
+                                log_operation(f"No objects detected above threshold for file: {file.name}", is_verbose=True)
+                        except Exception as e:
+                            print(f"ERROR: Failed to classify {file.name}: {e}")
+                            
+                        cursor.execute("INSERT OR IGNORE INTO processed_objects (file_id) VALUES (?)", (db_item_id,))
+                        object_processed_ids.add(db_item_id)
 
                     # --- 6. FTS Text Extraction (PDFs, TXT, MD, photos, etc.) ---
                     if needs_text:

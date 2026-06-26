@@ -470,12 +470,16 @@ def backup_databases(payload: dict = Body(...)):
         raise HTTPException(status_code=500, detail=f"Backup failed: {e}")
 
 @router.post("/system/cleanup", dependencies=[Depends(lock_data_operation)])
-def system_cleanup():
+def system_cleanup(clean_files: bool = True, clean_thumbnails: bool = True, delete_person_ids: list = None):
     """
     Performs database cleanup, unlinks orphaned thumbnails, and purges orphaned AI records.
     Special code: Protects backup directories that are currently offline from being purged.
     """
     cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"User started system cleanup (clean_files={clean_files}, clean_thumbnails={clean_thumbnails}, delete_person_ids={delete_person_ids}).")
+
     ai_db_path = get_ai_db_path()
     db_path_str = cfg.get("database_path") or "archive.db"
     main_db_path = Path(db_path_str)
@@ -510,57 +514,219 @@ def system_cleanup():
     deleted_thumbnails_count = 0
     thumb_dir = get_thumbnail_dir()
     
-    with SessionLocal() as s:
-        for r in s.query(FileIndex.id, FileIndex.path).yield_per(1000):
-            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
-                raise HTTPException(status_code=400, detail="Operation cancelled")
-            fid, path_str = r[0], r[1]
-            file_path = Path(path_str)
-            resolved_file_path = _resolve_path(file_path)
-            
-            # Check if this file belongs to any active backup location
-            belongs_to_active_config = False
-            is_parent_offline = False
-            
-            # Check offline roots first to protect them
-            for root in offline_roots:
-                if is_path_matching_ignoring_drive(root, file_path):
-                    belongs_to_active_config = True
-                    is_parent_offline = True
-                    break
-                    
-            # If not matched to offline roots, check online roots
-            if not is_parent_offline:
-                for root in online_roots:
-                    if is_path_matching_ignoring_drive(root, file_path):
-                        belongs_to_active_config = True
-                        break
-
-            # Safety evaluation:
-            # 1. If the parent root is offline/unplugged, protect the file: DO NOT delete it!
-            if is_parent_offline:
-                continue
-                
-            # 2. If it belongs to an online active location but the file itself is missing, delete it.
-            # 3. If it does NOT belong to any active backup location (i.e. removed from settings), delete it.
-            if belongs_to_active_config:
-                if not resolved_file_path.exists():
-                    missing_ids.append(fid)
-            else:
-                # Removed from config - clean it up safely
-                missing_ids.append(fid)
-                
-        if missing_ids:
-            for i in range(0, len(missing_ids), 900):
+    if clean_files:
+        with SessionLocal() as s:
+            for r in s.query(FileIndex.id, FileIndex.path).yield_per(1000):
                 if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
                     raise HTTPException(status_code=400, detail="Operation cancelled")
-                chunk = missing_ids[i:i + 900]
-                s.query(FileIndex).filter(FileIndex.id.in_(chunk)).delete(synchronize_session=False)
-                s.execute(text(f"DELETE FROM processed_text WHERE file_id IN ({','.join(map(str, chunk))})"))
-                s.execute(text(f"DELETE FROM file_text_fts WHERE file_id IN ({','.join(map(str, chunk))})"))
+                fid, path_str = r[0], r[1]
+                file_path = Path(path_str)
+                resolved_file_path = _resolve_path(file_path)
+                
+                # Check if this file belongs to any active backup location
+                belongs_to_active_config = False
+                is_parent_offline = False
+                
+                # Check offline roots first to protect them
+                for root in offline_roots:
+                    if is_path_matching_ignoring_drive(root, file_path):
+                        belongs_to_active_config = True
+                        is_parent_offline = True
+                        break
+                        
+                # If not matched to offline roots, check online roots
+                if not is_parent_offline:
+                    for root in online_roots:
+                        if is_path_matching_ignoring_drive(root, file_path):
+                            belongs_to_active_config = True
+                            break
+
+                # Safety evaluation:
+                # 1. If the parent root is offline/unplugged, protect the file: DO NOT delete it!
+                if is_parent_offline:
+                    continue
+                    
+                # 2. If it belongs to an online active location but the file itself is missing, delete it.
+                # 3. If it does NOT belong to any active backup location (i.e. removed from settings), delete it.
+                if belongs_to_active_config:
+                    if not resolved_file_path.exists():
+                        missing_ids.append(fid)
+                else:
+                    # Removed from config - clean it up safely
+                    missing_ids.append(fid)
+                    
+            if missing_ids:
+                for i in range(0, len(missing_ids), 900):
+                    if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                        raise HTTPException(status_code=400, detail="Operation cancelled")
+                    chunk = missing_ids[i:i + 900]
+                    s.query(FileIndex).filter(FileIndex.id.in_(chunk)).delete(synchronize_session=False)
+                    s.execute(text(f"DELETE FROM processed_text WHERE file_id IN ({','.join(map(str, chunk))})"))
+                    s.execute(text(f"DELETE FROM file_text_fts WHERE file_id IN ({','.join(map(str, chunk))})"))
+                s.commit()
+
+            # Clean any pre-existing orphaned text search records
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
+            s.execute(text("DELETE FROM processed_text WHERE NOT EXISTS (SELECT 1 FROM files WHERE files.id = processed_text.file_id)"))
+            s.execute(text("DELETE FROM file_text_fts WHERE NOT EXISTS (SELECT 1 FROM files WHERE files.id = file_text_fts.file_id)"))
             s.commit()
 
-        valid_file_ids = {str(r[0]) for r in s.query(FileIndex.id).all()}
+        # Clean AI metadata database records and profile thumbnails if they are orphaned
+        if ai_db_path.exists():
+            try:
+                # 1. Fetch all distinct file_ids from the AI database tables
+                faces_fids = set()
+                pf_fids = set()
+                po_fids = set()
+
+                with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;")
+                    cursor = conn.cursor()
+                    
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='faces'")
+                    if cursor.fetchone():
+                        cursor.execute("SELECT DISTINCT file_id FROM faces")
+                        faces_fids = {r[0] for r in cursor.fetchall()}
+                    
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='processed_files'")
+                    if cursor.fetchone():
+                        cursor.execute("SELECT file_id FROM processed_files")
+                        pf_fids = {r[0] for r in cursor.fetchall()}
+                    
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='processed_objects'")
+                    if cursor.fetchone():
+                        cursor.execute("SELECT file_id FROM processed_objects")
+                        po_fids = {r[0] for r in cursor.fetchall()}
+
+                all_ai_fids = faces_fids.union(pf_fids).union(po_fids)
+
+                # 2. Check which of these file_ids still exist in the main database
+                if all_ai_fids:
+                    all_ai_fids_list = list(all_ai_fids)
+                    existing_fids = set()
+                    with SessionLocal() as s:
+                        for i in range(0, len(all_ai_fids_list), 900):
+                            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                                raise HTTPException(status_code=400, detail="Operation cancelled")
+                            chunk = all_ai_fids_list[i:i+900]
+                            rows = s.query(FileIndex.id).filter(FileIndex.id.in_(chunk)).all()
+                            existing_fids.update(r[0] for r in rows)
+                    
+                    orphaned_fids = all_ai_fids - existing_fids
+                    
+                    # 3. Delete orphaned file_ids from the AI database
+                    if orphaned_fids:
+                        orphaned_list = list(orphaned_fids)
+                        with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                            conn.execute("PRAGMA journal_mode=WAL;")
+                            cursor = conn.cursor()
+                            for i in range(0, len(orphaned_list), 900):
+                                if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                                    raise HTTPException(status_code=400, detail="Operation cancelled")
+                                chunk = orphaned_list[i:i+900]
+                                placeholders = ",".join("?" * len(chunk))
+                                
+                                cursor.execute(f"DELETE FROM faces WHERE file_id IN ({placeholders})", chunk)
+                                cursor.execute(f"DELETE FROM processed_files WHERE file_id IN ({placeholders})", chunk)
+                                cursor.execute(f"DELETE FROM processed_objects WHERE file_id IN ({placeholders})", chunk)
+                            conn.commit()
+
+                # 4. Find and delete people profiles that no longer have any faces
+                with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;")
+                    cursor = conn.cursor()
+                    
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='people'")
+                    if cursor.fetchone():
+                        cursor.execute("""
+                            SELECT id, name FROM people 
+                            WHERE id NOT IN (SELECT DISTINCT person_id FROM faces)
+                        """)
+                        empty_people = cursor.fetchall()
+                        
+                        if empty_people:
+                            empty_pids = [r[0] for r in empty_people]
+                            for i in range(0, len(empty_pids), 900):
+                                if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                                    raise HTTPException(status_code=400, detail="Operation cancelled")
+                                chunk = empty_pids[i:i+900]
+                                placeholders = ",".join("?" * len(chunk))
+                                cursor.execute(f"DELETE FROM people WHERE id IN ({placeholders})", chunk)
+                                for pid in chunk:
+                                    EXEMPLAR_CACHE.pop(pid, None)
+                            conn.commit()
+                            
+                            # Clean up physical thumbnail pictures for these empty profiles
+                            faces_thumb_dir = get_thumbnail_dir("faces")
+                            if faces_thumb_dir.exists():
+                                for r in empty_people:
+                                    pid = r[0]
+                                    thumb_path = faces_thumb_dir / f"person_{pid}.jpg"
+                                    if thumb_path.exists():
+                                        try:
+                                            thumb_path.unlink()
+                                            deleted_thumbnails_count += 1
+                                        except Exception:
+                                            pass
+
+                # 5. Fix broken thumbnail_file_id pointers for remaining people
+                with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;")
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='people'")
+                    if cursor.fetchone():
+                        cursor.execute("SELECT id, thumbnail_file_id FROM people WHERE thumbnail_file_id IS NOT NULL")
+                        people_thumbs = cursor.fetchall()
+                        if people_thumbs:
+                            thumb_fids = {r[1] for r in people_thumbs}
+                            thumb_fids_list = list(thumb_fids)
+                            existing_thumb_fids = set()
+                            with SessionLocal() as s:
+                                for i in range(0, len(thumb_fids_list), 900):
+                                    if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                                        raise HTTPException(status_code=400, detail="Operation cancelled")
+                                    chunk = thumb_fids_list[i:i+900]
+                                    rows = s.query(FileIndex.id).filter(FileIndex.id.in_(chunk)).all()
+                                    existing_thumb_fids.update(r[0] for r in rows)
+                            
+                            orphaned_thumb_fids = thumb_fids - existing_thumb_fids
+                            if orphaned_thumb_fids:
+                                orphaned_thumb_list = list(orphaned_thumb_fids)
+                                for i in range(0, len(orphaned_thumb_list), 900):
+                                    if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                                        raise HTTPException(status_code=400, detail="Operation cancelled")
+                                    chunk = orphaned_thumb_list[i:i+900]
+                                    placeholders = ",".join("?" * len(chunk))
+                                    cursor.execute(f"UPDATE people SET thumbnail_file_id = NULL WHERE thumbnail_file_id IN ({placeholders})", chunk)
+                                conn.commit()
+
+            except Exception as e:
+                if cfg.get("enable_logging"):
+                    import logging
+                    logging.error(f"Error during AI database cleanup: {e}")
+
+        # 6. Optimize and vacuum SQLite databases
+        try:
+            with sqlite3.connect(main_db_path, timeout=15) as conn:
+                conn.execute("VACUUM")
+        except Exception as e:
+            if cfg.get("enable_logging"):
+                import logging
+                logging.warning(f"Failed to vacuum main database: {e}")
+
+        if ai_db_path.exists():
+            try:
+                with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                    conn.execute("VACUUM")
+            except Exception as e:
+                if cfg.get("enable_logging"):
+                    import logging
+                    logging.warning(f"Failed to vacuum AI database: {e}")
+
+    if clean_thumbnails:
+        with SessionLocal() as s:
+            valid_file_ids = {str(r[0]) for r in s.query(FileIndex.id).all()}
 
         if thumb_dir.exists():
             for f in thumb_dir.rglob('*.jpg'):
@@ -573,6 +739,22 @@ def system_cleanup():
                     except Exception:
                         pass
 
+    if delete_person_ids:
+        faces_thumb_dir = get_thumbnail_dir("faces")
+        if faces_thumb_dir.exists():
+            for pid in delete_person_ids:
+                thumb_path = faces_thumb_dir / f"person_{pid}.jpg"
+                if thumb_path.exists():
+                    try:
+                        thumb_path.unlink()
+                        deleted_thumbnails_count += 1
+                    except Exception:
+                        pass
+
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"System cleanup completed. Removed files: {len(missing_ids)}, Removed thumbnails: {deleted_thumbnails_count}.")
+
     return {"status": "success", "removed_files": len(missing_ids), "removed_thumbnails": deleted_thumbnails_count, "message": "Cleanup and optimization complete."}
 
 @router.post("/system/purge-unknowns", dependencies=[Depends(lock_data_operation)])
@@ -582,6 +764,10 @@ def purge_unknowns(payload: dict = Body(...)):
     """
     threshold = int(payload.get("threshold", 3))
     cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"User started purging unknown profiles (threshold < {threshold}).")
+
     ai_db_path = get_ai_db_path()
     
     if not ai_db_path.exists():
@@ -611,11 +797,11 @@ def purge_unknowns(payload: dict = Body(...)):
                 cursor.execute(f"DELETE FROM faces WHERE person_id IN ({placeholders})", chunk)
                 cursor.execute(f"DELETE FROM people WHERE id IN ({placeholders})", chunk)
                 for pid in chunk:
-                    EXEMPLAR_CACHE.pop(pid)
+                    EXEMPLAR_CACHE.pop(pid, None)
             purged_count = len(ids_to_delete)
             conn.commit()
             
-    system_cleanup()
+    system_cleanup(clean_files=False, clean_thumbnails=False, delete_person_ids=ids_to_delete)
     if cfg.get("enable_logging"):
         import logging
         logging.info(f"Purged {purged_count} small unknown profiles to reclaim space.")

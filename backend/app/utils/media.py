@@ -18,11 +18,6 @@ def get_cv2_dnn_backends():
         pass
     if has_cuda:
         return getattr(cv2.dnn, 'DNN_BACKEND_CUDA', 0), getattr(cv2.dnn, 'DNN_TARGET_CUDA', 0)
-    try:
-        if cv2 is not None and cv2.ocl.haveOpenCL():
-            return getattr(cv2.dnn, 'DNN_BACKEND_OPENCV', 0), getattr(cv2.dnn, 'DNN_TARGET_OPENCL', 0)
-    except Exception:
-        pass
     return getattr(cv2.dnn, 'DNN_BACKEND_DEFAULT', 0), getattr(cv2.dnn, 'DNN_TARGET_CPU', 0)
 
 def generate_photo_thumbnail(file_path: Path, cached_thumb: Path) -> bool:

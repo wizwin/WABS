@@ -17,3 +17,4 @@ openpyxl
 rapidocr-onnxruntime==1.2.3
 onnxruntime==1.26.0
 pystray
+pygobject; sys_platform != 'win32'

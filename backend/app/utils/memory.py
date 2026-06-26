@@ -19,8 +19,9 @@ def unload_heavy_modules():
     
     with shared_state.MEMORY_LOCK:
         try:
-            from backend.app.utils.indexer import reset_ocr_engine
+            from backend.app.utils.indexer import reset_ocr_engine, unload_imagenet_mapping
             reset_ocr_engine()
+            unload_imagenet_mapping()
         except Exception:
             pass
 

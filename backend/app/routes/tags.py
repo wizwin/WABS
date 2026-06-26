@@ -83,6 +83,11 @@ def clear_all_object_tags():
     """
     Purges all AI-generated object: tags across the entire file index.
     """
+    cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info("User started purging all AI object tags.")
+
     with SessionLocal() as s:
         file_ids = [r[0] for r in s.query(FileIndex.id).filter(FileIndex.tags.like('%object:%')).all()]
         chunk_size = 1000
@@ -102,6 +107,9 @@ def clear_all_object_tags():
             if mappings:
                 s.bulk_update_mappings(FileIndex, mappings)
                 s.commit()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Successfully cleared all object tags from {len(file_ids)} files.")
     return {"status": "success", "message": "All object tags have been cleared."}
 
 @router.delete("/tags/objects/{tag_name}", dependencies=[Depends(lock_data_operation)])
@@ -109,6 +117,11 @@ def delete_object_tag_globally(tag_name: str):
     """
     Deletes a specific tag globally from all files in the archive.
     """
+    cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"User started deleting object tag '{tag_name}' globally.")
+
     tag_to_delete = tag_name
     if not tag_to_delete.startswith("object:"):
         tag_to_delete = f"object:{tag_to_delete}"
@@ -132,6 +145,9 @@ def delete_object_tag_globally(tag_name: str):
             if mappings:
                 s.bulk_update_mappings(FileIndex, mappings)
                 s.commit()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"Successfully deleted object tag '{tag_to_delete}' globally from {len(file_ids)} files.")
     return {"status": "success", "deleted_tag": tag_to_delete}
 
 @router.get("/tags/objects")

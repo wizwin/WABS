@@ -289,6 +289,10 @@ def delete_files(paths: list[str] = Body(..., embed=True)):
     Special code: Enforces Read-Only protections for specific backup locations.
     """
     cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"User initiated deletion of {len(paths)} files.")
+
     if cfg.get("read_only_mode", True):
         raise HTTPException(status_code=403, detail="Read-Only Mode is enabled. Deletion is blocked.")
 
@@ -333,6 +337,11 @@ def copy_files(paths: list[str] = Body(...), destination: str = Body(...)):
     """
     Copies multiple files to a selected destination directory.
     """
+    cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"User initiated copy of {len(paths)} files to destination: '{destination}'.")
+
     dest_path = Path(destination)
     if not dest_path.exists() or not dest_path.is_dir():
         raise HTTPException(status_code=400, detail="Invalid destination directory")
@@ -363,6 +372,10 @@ def move_files(paths: list[str] = Body(...), destination: str = Body(...)):
     Special code: Enforces Read-Only protections to block movements out of protected backup locations.
     """
     cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info(f"User initiated move of {len(paths)} files to destination: '{destination}'.")
+
     if cfg.get("read_only_mode", True):
         raise HTTPException(status_code=403, detail="Read-Only Mode is enabled. Moving files is blocked.")
 

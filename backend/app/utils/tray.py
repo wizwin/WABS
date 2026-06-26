@@ -107,6 +107,8 @@ def stop_tray_icon():
         try:
             _tray_icon.stop()
             print("System tray icon stopped.")
+        except KeyboardInterrupt:
+            pass
         except BaseException as e:
             print(f"Could not stop system tray: {e}")
         _tray_icon = None

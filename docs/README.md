@@ -107,6 +107,24 @@ WABS uses **Hardware-Bound Encryption** to protect your OpenAI API key from plai
 
 If you move or copy your `config.yaml` file to a different computer (or change major hardware components), the API key will intentionally fail to decrypt to prevent unauthorized access. The application will not crash; you will simply need to re-enter your API key in the Settings menu on the new machine.
 
+### Linux System Tray Menu Troubleshooting
+On modern Linux/Ubuntu distributions using GNOME Shell (especially under Wayland), the system tray menu options may not display or respond to clicks if `pystray` falls back to the legacy `xlib` backend.
+
+To resolve this, you need to ensure the AppIndicator libraries and PyGObject bindings are installed on your system and available to your Python environment:
+
+1. **Install system-wide packages:**
+   ```bash
+   sudo apt update
+   sudo apt install python3-gi gir1.2-appindicator3-0.1 libgirepository1.0-dev libcairo2-dev
+   ```
+
+2. **Install bindings in your Python environment:**
+   If you are running WABS inside a virtual environment (`venv`), activate the venv and install `pygobject`:
+   ```bash
+   pip install pygobject
+   ```
+   *(Alternatively, you can recreate your virtual environment with the `--system-site-packages` flag so it inherits the system-wide `python3-gi` package: `python3 -m venv --system-site-packages venv`).*
+
 ### Limiting CPU Usage (Optional)
 By default, the AI scanners (Face and Object detection) will try to use 100% of your available CPU cores to process files as fast as possible. If you want to run WABS in the background without it slowing down your PC or running your Raspberry Pi too hot, you can limit the number of CPU cores it uses by launching it from the terminal/command prompt with specific environment variables:
 
