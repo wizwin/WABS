@@ -259,6 +259,37 @@ def spawn_detached_cleanup():
         except Exception:
             pass
 
+_MEI_LOCKED_FILES = []
+
+def lock_mei_files():
+    if not getattr(sys, 'frozen', False):
+        return
+        
+    current_mei = getattr(sys, '_MEIPASS', None)
+    if not current_mei:
+        return
+        
+    current_mei = os.path.abspath(current_mei)
+    if not is_safe_mei_folder(current_mei):
+        return
+        
+    # Walk sys._MEIPASS recursively and lock static files (onnx models, frontends, txts)
+    # on Windows by keeping open read handles.
+    locked_count = 0
+    for root, dirs, files in os.walk(current_mei):
+        for file in files:
+            ext = os.path.splitext(file)[1].lower()
+            if ext in ('.onnx', '.txt', '.html', '.js', '.css', '.json', '.png', '.jpg', '.jpeg', '.svg', '.ico', '.yaml'):
+                filepath = os.path.join(root, file)
+                try:
+                    f = open(filepath, 'rb')
+                    _MEI_LOCKED_FILES.append(f)
+                    locked_count += 1
+                except Exception:
+                    pass
+    if locked_count > 0:
+        print(f"Successfully locked {locked_count} static assets in temporary folder to prevent deletion.", flush=True)
+
 if __name__ == "__main__":
     __version__ = "Unknown"
     try:
@@ -281,6 +312,10 @@ if __name__ == "__main__":
             clean_old_mei_folders()
         except Exception:
             pass
+        try:
+            lock_mei_files()
+        except Exception as e:
+            print(f"Failed to lock temporary files: {e}", flush=True)
     
     show_info_popup = '--help' in sys.argv
     open_browser_flag = '--no-browser' not in sys.argv

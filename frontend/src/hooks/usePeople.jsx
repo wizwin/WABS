@@ -977,13 +977,14 @@ export function usePeople({
 
   const visibleSimilar = useMemo(() => {
     if (!sortedSimilarUnknowns) return [];
-    return sortedSimilarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id));
+    const hidden = new Set(settings.hidden_people || []);
+    return sortedSimilarUnknowns.filter(p => !hidden.has(p.id) && !(p.name && hidden.has(p.name)));
   }, [sortedSimilarUnknowns, settings.hidden_people]);
 
   const namedPeopleBase = useMemo(() => {
     if (!Array.isArray(people)) return [];
     const hidden = new Set(settings.hidden_people || []);
-    return people.filter(p => !(p.name || '').startsWith('Unknown Person') && !hidden.has(p.id));
+    return people.filter(p => !(p.name || '').startsWith('Unknown Person') && !hidden.has(p.id) && !(p.name && hidden.has(p.name)));
   }, [people, settings.hidden_people]);
 
   const filteredNamedPeople = useMemo(() => {
@@ -995,7 +996,7 @@ export function usePeople({
   const filteredUnknownPeople = useMemo(() => {
     if (!Array.isArray(people)) return [];
     const hidden = new Set(settings.hidden_people || []);
-    return people.filter(p => (p.name || '').startsWith('Unknown Person') && !hidden.has(p.id));
+    return people.filter(p => (p.name || '').startsWith('Unknown Person') && !hidden.has(p.id) && !(p.name && hidden.has(p.name)));
   }, [people, settings.hidden_people]);
 
   const globalPeopleMap = useMemo(() => {
@@ -1013,8 +1014,8 @@ export function usePeople({
   const sortedNamedPeopleForUI = useMemo(() => {
     const pinned = new Set(settings.pinned_people || []);
     return [...filteredNamedPeople].sort((a, b) => {
-      const aPinned = pinned.has(a.id);
-      const bPinned = pinned.has(b.id);
+      const aPinned = pinned.has(a.id) || (a.name && pinned.has(a.name));
+      const bPinned = pinned.has(b.id) || (b.name && pinned.has(b.name));
       if (aPinned && !bPinned) return -1;
       if (!aPinned && bPinned) return 1;
       if (peopleSortBy === 'name') {

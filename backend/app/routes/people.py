@@ -14,7 +14,7 @@ def _get_cv2():
         return None
 
 from backend.app.routes.files import preview, _build_item
-from backend.app.config import load_config, get_thumbnail_dir
+from backend.app.config import load_config, save_config, get_thumbnail_dir
 from backend.app.database import SessionLocal, FileIndex
 from backend.app.utils.utils import _resolve_path, parse_tags
 from backend.app.utils.log_utils import log_operation
@@ -38,6 +38,57 @@ def _cosine_similarity(vec1, vec2):
     if norm_1 == 0 or norm_2 == 0:
         return 0.0
     return float(np.dot(v1, v2) / (norm_1 * norm_2))
+
+def _sync_people_preferences(old_identifiers: list, new_identifier=None, action="rename"):
+    cfg = load_config()
+    modified = False
+    
+    for list_key in ["pinned_people", "hidden_people"]:
+        items = cfg.get(list_key)
+        if not isinstance(items, list):
+            continue
+            
+        new_items = []
+        has_old = False
+        
+        for x in items:
+            match = False
+            for old in old_identifiers:
+                if x == old or str(x) == str(old):
+                    match = True
+                    break
+            if match:
+                has_old = True
+            else:
+                new_items.append(x)
+                
+        if action == "rename":
+            if has_old:
+                if new_identifier is not None and new_identifier not in new_items:
+                    new_items.append(new_identifier)
+                unique_items = []
+                for x in new_items:
+                    if x not in unique_items:
+                        unique_items.append(x)
+                cfg[list_key] = unique_items
+                modified = True
+        elif action == "delete":
+            if has_old:
+                cfg[list_key] = new_items
+                modified = True
+        elif action == "merge":
+            if has_old:
+                if new_identifier is not None and new_identifier not in new_items:
+                    new_items.append(new_identifier)
+                unique_items = []
+                for x in new_items:
+                    if x not in unique_items:
+                        unique_items.append(x)
+                cfg[list_key] = unique_items
+                modified = True
+                
+    if modified:
+        save_config(cfg)
 
 @router.get("/people")
 def get_people(min_unknown_photos: int = 1):
@@ -242,7 +293,7 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
 
         if not Path(yunet_path).exists() or not Path(sface_path).exists():
             print("Face recognition models not found. Ensure .onnx files are in the backend folder.")
-            return
+            return preview(file_id, theme)
 
         backend_id, target_id = get_cv2_dnn_backends()
 
@@ -652,8 +703,12 @@ def rename_person(person_id: int, payload: dict = Body(...)):
         cursor.execute("SELECT id FROM people WHERE name COLLATE NOCASE = ? AND id != ?", (new_name, person_id))
         existing_person = cursor.fetchone()
         
+        target_name = None
         if existing_person:
             target_id = existing_person[0]
+            cursor.execute("SELECT name FROM people WHERE id = ?", (target_id,))
+            target_name_row = cursor.fetchone()
+            target_name = target_name_row[0] if target_name_row else ""
             # Invalidate both caches if a merge happens
             EXEMPLAR_CACHE.pop(target_id, None)
             # Auto-Merge: Reassign all faces to the existing person, then delete the duplicate
@@ -666,6 +721,14 @@ def rename_person(person_id: int, payload: dict = Body(...)):
             
         EXEMPLAR_CACHE.pop(person_id, None)
         conn.commit()
+        
+    # Sync preferences (pinned/hidden lists)
+    if existing_person:
+        new_ident = target_name if (target_name and not target_name.startswith("Unknown Person")) else target_id
+        _sync_people_preferences([person_id, old_name], new_ident, action="merge")
+    else:
+        new_ident = new_name if (new_name and not new_name.startswith("Unknown Person")) else person_id
+        _sync_people_preferences([person_id, old_name], new_ident, action="rename")
         
     if file_ids:
         with SessionLocal() as s:
@@ -734,6 +797,8 @@ def delete_person(person_id: int):
         cursor.execute("DELETE FROM people WHERE id = ?", (person_id,))
         conn.commit()
         
+    _sync_people_preferences([person_id, old_name], action="delete")
+        
     # Clean up any tags from the main index
     if file_ids and old_name and not old_name.startswith("Unknown Person"):
         with SessionLocal() as s:
@@ -794,7 +859,15 @@ def merge_people(payload: dict = Body(...)):
              
         people_rows.sort(key=lambda p: (0 if p[1] and not p[1].startswith("Unknown Person") else 1, p[0]))
         primary_id = people_rows[0][0]
+        primary_name = people_rows[0][1]
         ids_to_merge = [p[0] for p in people_rows if p[0] != primary_id]
+        
+        old_identifiers = []
+        for old_id, old_name in people_rows:
+            if old_id != primary_id:
+                old_identifiers.append(old_id)
+                if old_name:
+                    old_identifiers.append(old_name)
         
         for old_id in ids_to_merge:
             if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
@@ -806,6 +879,10 @@ def merge_people(payload: dict = Body(...)):
             
         EXEMPLAR_CACHE.pop(primary_id, None)
         conn.commit()
+        
+    # Sync preferences (merge profiles in pinned/hidden lists)
+    primary_ident = primary_name if (primary_name and not primary_name.startswith("Unknown Person")) else primary_id
+    _sync_people_preferences(old_identifiers, primary_ident, action="merge")
 
     if ids_to_merge:
         # Clean up thumbnails of the merged-away profiles
@@ -1204,6 +1281,8 @@ def scan_faces():
     cv2 = _get_cv2()
     if cv2 is None:
         raise HTTPException(status_code=500, detail="OpenCV is required for face recognition.")
+    from backend.app.utils.paths import check_models_exist
+    check_models_exist("face")
     global face_scanner_thread
     wait_for_stopping_scanners()
     with app_state.scanner_lock:

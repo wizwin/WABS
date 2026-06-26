@@ -266,7 +266,8 @@ export default function Person(props) {
                     Merge {checkedSimilar.size} Selected
                 </ActionButton>
                 <ActionButton disabled={isTaskActive} className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => {
-                    const visibleSimilar = similarUnknowns.filter(p => !(settings.hidden_people || []).includes(p.id));
+                    const hidden = settings.hidden_people || [];
+                    const visibleSimilar = similarUnknowns.filter(p => !hidden.includes(p.id) && !(p.name && hidden.includes(p.name)));
                     if (checkedSimilar.size === visibleSimilar.length && visibleSimilar.length > 0) setCheckedSimilar(new Set());
                     else setCheckedSimilar(new Set(visibleSimilar.map(p => p.id)));
                 }}>

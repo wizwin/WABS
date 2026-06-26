@@ -151,7 +151,7 @@ const handleSearchChange = (e) => {
     } else if (cleanWord.startsWith('person:')) {
       const searchName = cleanWord.replace('person:', '').replace(/_/g, ' ');
       const suggestions = (Array.isArray(peopleState.people) ? peopleState.people : [])
-        .filter(p => p.name && !p.name.startsWith('Unknown Person') && p.name.toLowerCase().includes(searchName) && !(settings.hidden_people || []).includes(p.id))
+        .filter(p => p.name && !p.name.startsWith('Unknown Person') && p.name.toLowerCase().includes(searchName) && !(settings.hidden_people || []).includes(p.id) && !(settings.hidden_people || []).includes(p.name))
         .map(p => isAndPrefix ? `+person:"${p.name}"` : isNotPrefix ? `-person:"${p.name}"` : `person:"${p.name}"`)
         .slice(0, 8);
       if (suggestions.length > 0) {
@@ -474,15 +474,29 @@ const toggleDetails = () => {
   updateUIPreferences({ show_details: val });
 };
 
-const togglePinPerson = (e, id) => {
+const togglePinPerson = (e, target) => {
   e.stopPropagation();
   const currentPinned = settings.pinned_people || [];
   let next;
-  if (currentPinned.includes(id)) {
-      next = currentPinned.filter(x => x !== id);
+  
+  let identifier;
+  let isMatch;
+  
+  if (target && typeof target === 'object') {
+    const name = target.name;
+    const id = target.id;
+    identifier = (name && !name.startsWith('Unknown Person')) ? name : id;
+    isMatch = (x) => x === id || (name && !name.startsWith('Unknown Person') && x === name);
+  } else {
+    identifier = target;
+    isMatch = (x) => x === target;
+  }
+  
+  if (currentPinned.some(isMatch)) {
+      next = currentPinned.filter(x => !isMatch(x));
       showToastMessage(`Profile removed from favorites.`);
   } else {
-      next = [...currentPinned, id];
+      next = [...currentPinned, identifier];
       showToastMessage(`Profile pinned to favorites.`);
   }
   updateUIPreferences({ pinned_people: next });
@@ -1049,8 +1063,25 @@ export default function App() {
   showTimeline={showTimeline}
   toggleDetails={toggleDetails}
   showDetails={showDetails}
-  page={page}
 />
+
+{indexer.system_warning && (
+  <div className="floating-panel preserve-colors" style={{
+    background: '#ef4444',
+    color: '#ffffff',
+    padding: '12px 20px',
+    margin: '16px 24px 0 24px',
+    borderRadius: '8px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    fontSize: '14px',
+    fontWeight: 'bold',
+  }}>
+    <span style={{ fontSize: '18px' }}>⚠️</span>
+    <span style={{ flex: 1 }}>{indexer.system_warning}</span>
+  </div>
+)}
 
 {page === 'dashboard' && <Dashboard {...appState} />}
 

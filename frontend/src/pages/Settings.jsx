@@ -748,14 +748,20 @@ export default function Settings(props) {
                     {(!settings.hidden_people || settings.hidden_people.length === 0) && (
                     <span style={{ color: '#64748b', fontSize: '13px' }}>No hidden people.</span>
                     )}
-                    {(settings.hidden_people || []).map(id => {
-                    const p = globalPeopleMap.get(id);
-                    const name = p ? p.name : `Person #${id}`;
+                    {(settings.hidden_people || []).map(item => {
+                    let p = null;
+                    if (typeof item === 'number') {
+                        p = globalPeopleMap.get(item);
+                    } else if (typeof item === 'string') {
+                        p = Array.from(globalPeopleMap.values()).find(x => x.name === item);
+                    }
+                    const name = p ? p.name : (typeof item === 'string' ? item : `Person #${item}`);
+                    const key = typeof item === 'string' ? `name-${item}` : `id-${item}`;
                     return (
-                        <div key={id} style={{ background: '#0f172a', border: '1px solid #334155', padding: '6px 12px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#cbd5e1' }}>
+                        <div key={key} style={{ background: '#0f172a', border: '1px solid #334155', padding: '6px 12px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#cbd5e1' }}>
                         {name}
                         <ActionButton className="btn btn-secondary" style={{ padding: '2px 6px', background: 'transparent', border: 'none', color: '#ef4444' }} onClick={() => {
-                            const next = (settings.hidden_people || []).filter(x => x !== id);
+                            const next = (settings.hidden_people || []).filter(x => x !== item);
                             updateUIPreferences({ hidden_people: next });
                         }}>Unhide</ActionButton>
                         </div>

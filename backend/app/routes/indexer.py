@@ -81,6 +81,19 @@ def indexer_status():
     status["face_scanner_stopped"] = STATE.get("face_scanner_stopped", False)
     status["combined_scanner_running"] = app_state.combined_scanner_running
     status["combined_scanner_stopped"] = app_state.combined_scanner_stopped
+
+    import sys
+    if getattr(sys, 'frozen', False):
+        from backend.app.utils.paths import get_bundled_model_path
+        import os
+        missing = []
+        for model in ["face_detection_yunet_2023mar.onnx", "face_recognition_sface_2021dec.onnx", "mobilenetv2-small.onnx"]:
+            path = get_bundled_model_path(model)
+            if not os.path.exists(path):
+                missing.append(model)
+        if missing:
+            status["system_warning"] = "Warning: Critical AI model files were deleted from the system temp folder. Please restart WABS to restore them."
+
     return status
 
 @router.post("/indexer/start")
@@ -91,6 +104,15 @@ def indexer_start(req: IndexRequest = None):
     cv2 = _get_cv2()
     if cv2 is None and (req.tag or req.face or req.document):
         raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
+
+    from backend.app.utils.paths import check_models_exist
+    if req.face:
+        check_models_exist("face")
+    if req.tag:
+        check_models_exist("object")
+    if req.document:
+        check_models_exist("document")
+
     wait_for_stopping_scanners()
     with app_state.scanner_lock:
         if STATE.get("running") or app_state.combined_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running or STATE.get("data_operation_running") or STATE.get("hasher_running"):
@@ -161,6 +183,15 @@ def indexer_update(req: IndexRequest = None):
     cv2 = _get_cv2()
     if cv2 is None and (req.tag or req.face or req.document):
         raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
+
+    from backend.app.utils.paths import check_models_exist
+    if req.face:
+        check_models_exist("face")
+    if req.tag:
+        check_models_exist("object")
+    if req.document:
+        check_models_exist("document")
+
     wait_for_stopping_scanners()
     with app_state.scanner_lock:
         if STATE.get("running") or app_state.combined_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running or STATE.get("data_operation_running") or STATE.get("hasher_running"):
@@ -188,6 +219,15 @@ def indexer_reindex(req: IndexRequest = None):
     cv2 = _get_cv2()
     if cv2 is None and (req.tag or req.face or req.document):
         raise HTTPException(status_code=500, detail="OpenCV is required for AI recognition.")
+
+    from backend.app.utils.paths import check_models_exist
+    if req.face:
+        check_models_exist("face")
+    if req.tag:
+        check_models_exist("object")
+    if req.document:
+        check_models_exist("document")
+
     wait_for_stopping_scanners()
     with app_state.scanner_lock:
         if STATE.get("running") or app_state.combined_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.document_scanner_running or STATE.get("data_operation_running") or STATE.get("hasher_running"):

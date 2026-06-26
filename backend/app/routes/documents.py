@@ -16,6 +16,8 @@ document_scanner_thread = None
 @router.post("/scan-documents")
 def scan_documents():
     global document_scanner_thread
+    from backend.app.utils.paths import check_models_exist
+    check_models_exist("document")
     wait_for_stopping_scanners()
     with app_state.scanner_lock:
         if app_state.document_scanner_running or app_state.face_scanner_running or app_state.object_scanner_running or app_state.combined_scanner_running or STATE.get("running") or STATE.get("data_operation_running") or STATE.get("hasher_running"):

@@ -83,7 +83,24 @@ def stats():
                             hidden_people = cfg.get("ui_preferences", {}).get("hidden_people", [])
                         if not isinstance(hidden_people, list):
                             hidden_people = []
-                        hidden_ids = [str(pid) for pid in hidden_people if str(pid).isdigit()]
+                            
+                        hidden_ids = set()
+                        hidden_names = []
+                        for pid in hidden_people:
+                            if isinstance(pid, (int, float)) or (isinstance(pid, str) and pid.isdigit()):
+                                hidden_ids.add(str(int(float(pid))))
+                            elif isinstance(pid, str):
+                                hidden_names.append(pid)
+                                
+                        if hidden_names:
+                            placeholders = ",".join("?" for _ in hidden_names)
+                            try:
+                                cursor.execute(f"SELECT id FROM people WHERE name IN ({placeholders})", hidden_names)
+                                for r in cursor.fetchall():
+                                    hidden_ids.add(str(r[0]))
+                            except Exception:
+                                pass
+                                
                         hidden_clause = f" AND people.id NOT IN ({','.join(hidden_ids)})" if hidden_ids else ""
                         
                         cursor.execute(f"SELECT COUNT(DISTINCT people.id) FROM faces JOIN people ON faces.person_id = people.id WHERE people.name NOT LIKE 'Unknown Person%' {hidden_clause}")

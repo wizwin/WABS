@@ -193,18 +193,24 @@ export default function People(props) {
                     ✕
                     </div>
                     <div 
-                    onClick={(e) => { e.stopPropagation(); const next = [...(settings.hidden_people || []), p.id]; updateUIPreferences({ hidden_people: next }); showToastMessage(`${p.name || 'Person'} hidden from UI.`); }}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        const identifier = (p.name && !p.name.startsWith('Unknown Person')) ? p.name : p.id;
+                        const next = [...(settings.hidden_people || []), identifier];
+                        updateUIPreferences({ hidden_people: next });
+                        showToastMessage(`${p.name || 'Person'} hidden from UI.`);
+                    }}
                     style={{position: 'absolute', top: '8px', right: '42px', background: 'rgba(148, 163, 184, 0.2)', color: '#94a3b8', width: '26px', height: '26px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', zIndex: 10}}
                     title="Hide Person (Keep faces to prevent rescanning)"
                     >
                     <VisibilityOffIcon style={{ fontSize: '15px' }} />
                     </div>
                     <div 
-                    onClick={(e) => togglePinPerson(e, p.id)}
-                    style={{position: 'absolute', top: '8px', right: '76px', background: (settings.pinned_people || []).includes(p.id) ? 'rgba(245, 158, 11, 0.2)' : 'rgba(148, 163, 184, 0.2)', color: (settings.pinned_people || []).includes(p.id) ? '#f59e0b' : '#94a3b8', width: '26px', height: '26px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', zIndex: 10}}
-                    title={(settings.pinned_people || []).includes(p.id) ? "Unpin Person" : "Pin Person"}
+                    onClick={(e) => togglePinPerson(e, p)}
+                    style={{position: 'absolute', top: '8px', right: '76px', background: ((settings.pinned_people || []).includes(p.id) || (p.name && (settings.pinned_people || []).includes(p.name))) ? 'rgba(245, 158, 11, 0.2)' : 'rgba(148, 163, 184, 0.2)', color: ((settings.pinned_people || []).includes(p.id) || (p.name && (settings.pinned_people || []).includes(p.name))) ? '#f59e0b' : '#94a3b8', width: '26px', height: '26px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', zIndex: 10}}
+                    title={((settings.pinned_people || []).includes(p.id) || (p.name && (settings.pinned_people || []).includes(p.name))) ? "Unpin Person" : "Pin Person"}
                     >
-                    {(settings.pinned_people || []).includes(p.id) ? <StarIcon style={{ fontSize: '15px' }} /> : <StarBorderIcon style={{ fontSize: '15px' }} />}
+                    {((settings.pinned_people || []).includes(p.id) || (p.name && (settings.pinned_people || []).includes(p.name))) ? <StarIcon style={{ fontSize: '15px' }} /> : <StarBorderIcon style={{ fontSize: '15px' }} />}
                     </div>
                     <div style={{width:'100%', height:'150px', background:'#1e293b', borderRadius:'12px', display:'flex', alignItems:'center', justifyContent:'center', overflow: 'hidden'}}>
                         <PersonThumb url={getPersonThumbUrl(p)} size={60} />
