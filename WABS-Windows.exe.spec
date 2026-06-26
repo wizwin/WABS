@@ -29,7 +29,8 @@ a = Analysis(
         'rapidocr_onnxruntime.rapid_ocr_api',
         'rapidocr_onnxruntime.ch_ppocr_v3_det',
         'rapidocr_onnxruntime.ch_ppocr_v3_rec',
-        'rapidocr_onnxruntime.ch_ppocr_v2_cls'
+        'rapidocr_onnxruntime.ch_ppocr_v2_cls',
+        'multipart'
     ],
     hookspath=[],
     hooksconfig={},
