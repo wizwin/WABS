@@ -229,6 +229,10 @@ def _evaluate_image_faces(file_path, yunet_path: str):
         except Exception:
             pass
 
+        # Filter out very small images/icons from face scans (e.g., width < 100 or height < 100)
+        if width > 0 and height > 0 and (width < 100 or height < 100):
+            return []
+
         img_array = np.fromfile(str(file_path), np.uint8)
         img = None
         
@@ -247,6 +251,14 @@ def _evaluate_image_faces(file_path, yunet_path: str):
 
         if img is None:
             return []
+
+        # Check original dimensions again if PIL failed to read them
+        if img is not None and (width == 0 or height == 0):
+            h_dec, w_dec = img.shape[:2]
+            orig_w = int(w_dec / decode_scale)
+            orig_h = int(h_dec / decode_scale)
+            if orig_w < 100 or orig_h < 100:
+                return []
         
         dec_h, dec_w = img.shape[:2]
         target_dim = 800

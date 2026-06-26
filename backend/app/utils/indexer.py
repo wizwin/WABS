@@ -1382,6 +1382,19 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             except Exception:
                                 pass
                             
+                            # Filter out very small images/icons from face scans only (e.g., width < 100 or height < 100)
+                            if width > 0 and height > 0 and (width < 100 or height < 100):
+                                if needs_face:
+                                    cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item_id,))
+                                    needs_face = False
+                                
+                                if not needs_face and not needs_object and not needs_text:
+                                    processed_count += 1
+                                    if processed_count % 500 == 0:
+                                        conn.commit()
+                                        session.commit()
+                                    continue
+
                             img_array = np.fromfile(str(file), np.uint8)
                             ocr_enabled = cfg.get("ocr_enabled", False)
                             
@@ -1403,6 +1416,26 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                         decode_scale = 0.5
                             
                             if img is None:
+                                # For formats that potentially contain transparency, load using PIL with white background
+                                if file.suffix.lower() in ('.png', '.gif', '.webp'):
+                                    try:
+                                        with Image.open(file) as pil_img:
+                                            pil_img = ImageOps.exif_transpose(pil_img)
+                                            if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
+                                                bg = Image.new("RGB", pil_img.size, (255, 255, 255))
+                                                if pil_img.mode == 'P':
+                                                    pil_img = pil_img.convert('RGBA')
+                                                mask = pil_img.split()[3] if pil_img.mode == 'RGBA' else pil_img.split()[1]
+                                                bg.paste(pil_img, mask=mask)
+                                                pil_img = bg
+                                            else:
+                                                pil_img = pil_img.convert('RGB')
+                                            img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+                                            decode_scale = 1.0
+                                    except Exception:
+                                        pass
+
+                            if img is None:
                                 img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                                 
                             # Rotate image using native OpenCV based on EXIF orientation tag if imdecode succeeded
@@ -1418,13 +1451,38 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                 try:
                                     with Image.open(file) as pil_img:
                                         pil_img = ImageOps.exif_transpose(pil_img)
-                                        if pil_img.mode != 'RGB':
+                                        if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
+                                            bg = Image.new("RGB", pil_img.size, (255, 255, 255))
+                                            if pil_img.mode == 'P':
+                                                pil_img = pil_img.convert('RGBA')
+                                            mask = pil_img.split()[3] if pil_img.mode == 'RGBA' else pil_img.split()[1]
+                                            bg.paste(pil_img, mask=mask)
+                                            pil_img = bg
+                                        else:
                                             pil_img = pil_img.convert('RGB')
                                         img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
                                         decode_scale = 1.0
                                 except Exception:
                                     pass
                                     
+                            # Check original dimensions again if PIL failed to read them
+                            if img is not None and (width == 0 or height == 0):
+                                h_dec, w_dec = img.shape[:2]
+                                orig_w = int(w_dec / decode_scale)
+                                orig_h = int(h_dec / decode_scale)
+                                if orig_w < 100 or orig_h < 100:
+                                    if needs_face:
+                                        cursor.execute("INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)", (db_item_id,))
+                                        needs_face = False
+                                    
+                                    if not needs_face and not needs_object and not needs_text:
+                                        img = None
+                                        processed_count += 1
+                                        if processed_count % 500 == 0:
+                                            conn.commit()
+                                            session.commit()
+                                        continue
+
                             # Early downscaling strategy when OCR is enabled
                             if img is not None and ocr_enabled:
                                 h, w = img.shape[:2]
@@ -1450,7 +1508,18 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     if needs_object and net is not None and img is not None:
                         try:
                             log_operation(f"Starting object classification for file: {file.name}", is_verbose=True)
-                            o_img = cv2.resize(img, (224, 224))
+                            # Letterbox resize to preserve aspect ratio on a white canvas
+                            h, w = img.shape[:2]
+                            target_size = 224
+                            scale = min(target_size / w, target_size / h)
+                            new_w, new_h = int(w * scale), int(h * scale)
+                            resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
+                            
+                            o_img = np.full((target_size, target_size, 3), 255, dtype=np.uint8)
+                            dx = (target_size - new_w) // 2
+                            dy = (target_size - new_h) // 2
+                            o_img[dy:dy+new_h, dx:dx+new_w] = resized
+
                             o_img = cv2.cvtColor(o_img, cv2.COLOR_BGR2RGB)
                             o_img = o_img.astype(np.float32) / 255.0
                             o_img -= np.array([0.485, 0.456, 0.406])
