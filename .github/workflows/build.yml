@@ -94,7 +94,7 @@ jobs:
           pyinstaller WABS-Windows.exe.spec
 
       - name: Code Sign Windows Binary
-        if: runner.os == 'Windows' && secrets.SIGNING_CERT_BASE64 != ''
+        if: runner.os == 'Windows' && env.SIGNING_CERT_BASE64 != ''
         shell: pwsh
         env:
           SIGNING_CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
