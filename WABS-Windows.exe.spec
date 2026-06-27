@@ -50,6 +50,28 @@ a = Analysis(
 a.datas = [d for d in a.datas if 'tzdata' not in str(d[0]).lower() and 'tzdata' not in str(d[1]).lower() and 'pyarrow' not in str(d[0]).lower() and 'pyarrow' not in str(d[1]).lower()]
 a.binaries = [b for b in a.binaries if 'pyarrow' not in str(b[0]).lower() and 'pyarrow' not in str(b[1]).lower()]
 
+# Exclude conflicting system and GUI libraries on Linux to resolve dynamic loader/symbol mismatch errors (e.g. fontconfig/glib conflicts)
+if sys.platform.startswith('linux') or sys.platform.startswith('freebsd'):
+    excluded_linux_libs = {
+        'libfontconfig.so',
+        'libfreetype.so',
+        'libharfbuzz.so',
+        'libglib-2.0.so',
+        'libgobject-2.0.so',
+        'libgio-2.0.so',
+        'libgmodule-2.0.so',
+        'libgthread-2.0.so',
+        'libdrm.so',
+        'libxcb.so',
+        'libX11.so',
+        'libpng16.so',
+        'libz.so'
+    }
+    a.binaries = [
+        b for b in a.binaries 
+        if not any(lib in os.path.basename(b[0]).lower() for lib in excluded_linux_libs)
+    ]
+
 pyz = PYZ(a.pure)
 
 # On Windows, set the application icon if present.

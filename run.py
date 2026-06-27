@@ -2,13 +2,19 @@ import multiprocessing
 import os
 import sys
 # Restore original library paths to prevent PyInstaller conflicts with system GUI libraries
-if sys.platform != "win32" and getattr(sys, 'frozen', False):
+if sys.platform != "win32" and getattr(sys, 'frozen', False) and not os.environ.get("WABS_REEXECUTED"):
+    env = os.environ.copy()
     for var in ["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"]:
         orig = var + "_ORIG"
-        if orig in os.environ:
-            os.environ[var] = os.environ[orig]
+        if orig in env:
+            env[var] = env[orig]
         else:
-            os.environ.pop(var, None)
+            env.pop(var, None)
+    env["WABS_REEXECUTED"] = "1"
+    try:
+        os.execve(sys.executable, sys.argv, env)
+    except Exception as e:
+        sys.stderr.write(f"Failed to re-execute with clean library path: {e}\n")
 
 # Prevent thread spinning and busy-waiting in background thread pools (OpenMP, OpenBLAS)
 os.environ["OMP_WAIT_POLICY"] = "passive"

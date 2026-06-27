@@ -1063,6 +1063,7 @@ export default function App() {
   showTimeline={showTimeline}
   toggleDetails={toggleDetails}
   showDetails={showDetails}
+  page={page}
 />
 
 {indexer.system_warning && (
