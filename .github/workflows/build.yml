@@ -93,6 +93,30 @@ jobs:
         run: |
           pyinstaller WABS-Windows.exe.spec
 
+      - name: Code Sign Windows Binary
+        if: runner.os == 'Windows' && secrets.SIGNING_CERT_BASE64 != ''
+        shell: pwsh
+        env:
+          SIGNING_CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          # Decode base64 certificate to a temporary PFX file
+          $certPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), [System.IO.Path]::GetRandomFileName() + ".pfx")
+          [System.IO.File]::WriteAllBytes($certPath, [System.Convert]::FromBase64String($env:SIGNING_CERT_BASE64))
+          
+          # Find signtool.exe in Windows Kits
+          $signtool = (Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits" -Filter "signtool.exe" -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+          
+          if ($signtool) {
+              Write-Host "Signing executable: dist/${{ matrix.artifact_name }}"
+              & $signtool sign /f $certPath /p $env:SIGNING_CERT_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 dist/${{ matrix.artifact_name }}
+          } else {
+              Write-Error "signtool.exe not found in Windows Kits."
+              exit 1
+          }
+          
+          Remove-Item $certPath -Force
+
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') # Only runs if triggered by a tag

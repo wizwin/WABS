@@ -220,6 +220,15 @@ def settings():
 
 @router.post("/settings", dependencies=[Depends(lock_data_operation)])
 def save(data:dict):
+    if "photo_thumbnail_size_limit_mb" in data:
+        try:
+            val = float(data["photo_thumbnail_size_limit_mb"])
+            if val < 0.1:
+                data["photo_thumbnail_size_limit_mb"] = 0.1
+            else:
+                data["photo_thumbnail_size_limit_mb"] = val
+        except (ValueError, TypeError):
+            data["photo_thumbnail_size_limit_mb"] = 0.1
 
     save_config(data)
     shared_state.LOGGING_ENABLED = data.get("enable_logging", False)

@@ -153,6 +153,8 @@ def preview(item_id:int, theme: str = "dark"):
                     if limit_val is None:
                         limit_val = ui_prefs.get("photo_thumbnail_size_limit_mb", 5)
                     size_limit_mb = float(limit_val)
+                    if size_limit_mb < 0.1:
+                        size_limit_mb = 0.1
                     size_limit_bytes = size_limit_mb * 1024 * 1024
                     
                     if file_path.stat().st_size > size_limit_bytes or is_dng:

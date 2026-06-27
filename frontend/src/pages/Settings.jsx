@@ -336,9 +336,18 @@ export default function Settings(props) {
                     <input
                     className='setting'
                     type='number'
+                    min='0.1'
+                    step='0.1'
                     style={{ marginBottom: 0, width: '80px', padding: '4px 8px', fontSize: '14px' }}
                     value={settings.photo_thumbnail_size_limit_mb !== undefined ? settings.photo_thumbnail_size_limit_mb : (settings.ui_preferences?.photo_thumbnail_size_limit_mb !== undefined ? settings.ui_preferences.photo_thumbnail_size_limit_mb : 5)}
-                            onChange={(e)=>updateUIPreferences({ photo_thumbnail_size_limit_mb: e.target.value === '' ? '' : parseFloat(e.target.value) })}
+                    onChange={(e)=>updateUIPreferences({ photo_thumbnail_size_limit_mb: e.target.value === '' ? '' : parseFloat(e.target.value) })}
+                    onBlur={(e) => {
+                        let parsed = parseFloat(e.target.value);
+                        if (isNaN(parsed) || parsed < 0.1) {
+                            parsed = 0.1;
+                        }
+                        updateUIPreferences({ photo_thumbnail_size_limit_mb: parsed });
+                    }}
                     />
                 </div>
                 )}

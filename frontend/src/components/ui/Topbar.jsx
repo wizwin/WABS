@@ -32,7 +32,11 @@ export function Topbar({
           value={query}
           onChange={handleSearchChange}
           onKeyDown={handleKeyDown}
-          style={{ flex: 1, margin: 0, paddingRight: '70px' }}
+          style={{
+            flex: 1,
+            margin: 0,
+            paddingRight: (page === 'explorer' || page === 'search' || page === 'person_files') ? (query ? '100px' : '72px') : (query ? '72px' : '40px')
+          }}
         />
         {suggestionsData.type !== 'none' && suggestionsData.suggestions.length > 0 && (
           <div className="floating-panel" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: '70px', background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', padding: '12px', zIndex: 90, boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)' }}>
@@ -76,6 +80,16 @@ export function Topbar({
           >
             <HelpIcon fontSize="small" />
           </ActionButton>
+          {(page === 'explorer' || page === 'search' || page === 'person_files') && (
+            <ActionButton
+              className=""
+              onClick={toggleDetails}
+              style={{ background: 'transparent', border: 'none', color: showDetails ? '#3b82f6' : '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '4px' }}
+              title="Toggle Details"
+            >
+              <InfoIcon fontSize="small" />
+            </ActionButton>
+          )}
         </div>
         {showSearchHelp && (
           <div className="floating-panel" style={{ position: 'absolute', top: 'calc(100% + 8px)', right: '0', background: '#1e293b', border: '1px solid #334155', padding: '16px', zIndex: 100, borderRadius: '12px', width: '320px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)', color: '#cbd5e1', fontSize: '13px' }}>
@@ -104,14 +118,6 @@ export function Topbar({
             title="Toggle Timeline"
           >
             <ViewTimelineIcon />
-          </ActionButton>
-          <ActionButton
-            className=""
-            onClick={toggleDetails}
-            style={{ padding: '8px', background: '#172033', border: 'none', borderRadius: '8px', color: showDetails ? '#3b82f6' : '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-            title="Toggle Details"
-          >
-            <InfoIcon />
           </ActionButton>
         </div>
       )}

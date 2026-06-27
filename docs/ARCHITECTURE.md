@@ -92,3 +92,8 @@ To make the contents of PDFs, documents, code files, and photos searchable witho
   - **Strong Identifiers (Emails, URLs, Hashtags):** Capped at the **top 50** unique items (boosted by `100,000` to rank first). Any remaining ones are completely excluded/ignored from the index.
   - **Multi-Word Proper Nouns / Products:** Capped at the **top 100** unique items (boosted by `1,000`).
   - **Context Keywords:** All other normal keywords are stored with their raw frequency counts. Since boosted items are capped at 150 total, at least **150 slots** (out of the 300 default) are guaranteed for context words, ensuring the document is always searchable by its text context.
+
+### 9. Code Signing & Executable Packaging (Future TODO)
+For Windows distribution, standalone executables require a digital signature to bypass **Windows Smart App Control (SAC)** and **SmartScreen** blocks.
+* **Current Implementation:** WABS integrates `signtool.exe` in both local build scripts (`scripts/build_windows.ps1`) and GitHub Actions CI (`build.yml`), which signs the executable using a base64-encoded certificate from private secrets. If the certificate is not configured, the signing steps are gracefully skipped.
+* **Future Action / TODO:** Obtain a publicly-trusted IV/OV or EV Code Signing Certificate from a Microsoft-trusted Certificate Authority (CA) to sign official releases. This will establish permanent brand reputation and completely eliminate safety warnings for new users.

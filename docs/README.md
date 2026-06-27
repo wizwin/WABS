@@ -26,6 +26,9 @@ Head over to the **Releases** page and download the latest standalone executable
 
 ### 2. Run
 Place the downloaded file anywhere on your computer and double-click to run it. No installation required!
+
+*(Note: On Windows, "Smart App Control" or "SmartScreen" may block the application from executing because it is unsigned. To bypass this, right-click the downloaded `WABS-Windows.exe` file -> select **Properties** -> check **Unblock** at the bottom of the General tab -> click **Apply** / **OK**).*
+
 *(Note: On Linux, you may need to make the file executable first by running `chmod +x WABS-Linux` in your terminal)*
 
 ### 3. Access
