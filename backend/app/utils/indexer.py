@@ -386,6 +386,33 @@ def curate_exemplars_in_memory(faces_list: list, file_dates: dict) -> list:
 
     return [sorted_faces[idx] for idx in all_selected_indices[:15]]
 
+def find_best_face_match(emb_np_norm, cluster_matrix_norm, cluster_ids_list, new_embs_matrix, new_ids, threshold) -> tuple:
+    """
+    Compares a face embedding against preloaded clusters and newly created in-memory clusters.
+    Returns (best_match_id, best_sim).
+    """
+    import numpy as np
+    best_match_id = None
+    best_sim = -1.0
+    
+    if cluster_matrix_norm is not None:
+        similarities = np.dot(cluster_matrix_norm, emb_np_norm)
+        max_idx = np.argmax(similarities)
+        max_sim = similarities[max_idx]
+        best_sim = float(max_sim)
+        if max_sim >= threshold:
+            best_match_id = cluster_ids_list[max_idx]
+            
+    if new_embs_matrix is not None:
+        new_similarities = np.dot(new_embs_matrix, emb_np_norm)
+        max_new_idx = np.argmax(new_similarities)
+        max_new_sim = new_similarities[max_new_idx]
+        if max_new_sim >= threshold and max_new_sim > best_sim:
+            best_match_id = new_ids[max_new_idx]
+            best_sim = float(max_new_sim)
+            
+    return best_match_id, best_sim
+
 def get_or_create_exemplars(person_id: int, conn_or_cursor) -> list:
     """
     Curates and caches up to 15 representative face exemplars for a person profile.
@@ -1564,6 +1591,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             log_operation(f"Face detector found {num_detected} face(s) in {file.name}", is_verbose=True)
 
                             if faces is not None:
+                                candidates = []
                                 for face_idx, face in enumerate(faces):
                                     if shared_state.APP_SHUTTING_DOWN or STATE.get("face_scanner_stopped") or app_state.combined_scanner_stopped or STATE.get("stopped"):
                                         break
@@ -1571,31 +1599,45 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                     face_feature = recognizer.feature(face_align)
                                     embedding = face_feature[0].tolist()
 
-                                    best_match_id = None
-                                    best_sim = -1.0
-                                    
                                     emb_np = np.array(embedding, dtype=np.float32)
                                     emb_norm = np.linalg.norm(emb_np)
                                     emb_np_norm = emb_np / emb_norm if emb_norm > 0 else emb_np
-                                    
-                                    if cluster_matrix_norm is not None:
-                                        similarities = np.dot(cluster_matrix_norm, emb_np_norm)
-                                        max_idx = np.argmax(similarities)
-                                        max_sim = similarities[max_idx]
-                                        
-                                        best_sim = float(max_sim)
-                                        best_match_id_candidate = cluster_ids_list[max_idx]
-                                        log_operation(f"Comparing face #{face_idx} in {file.name} against {len(clusters)} clusters: best similarity {best_sim:.4f} with person_id {best_match_id_candidate}", is_verbose=True)
-                                        if max_sim > cluster_threshold:
-                                            best_match_id = best_match_id_candidate
+
+                                    best_match_id, best_sim = find_best_face_match(
+                                        emb_np_norm, cluster_matrix_norm, cluster_ids_list, new_embs_matrix, new_ids, cluster_threshold
+                                    )
+                                    log_operation(f"Comparing face #{face_idx} in {file.name} against active scanner clusters: best similarity {best_sim:.4f} with person_id {best_match_id}", is_verbose=True)
                                             
-                                    if new_embs_matrix is not None:
-                                        new_similarities = np.dot(new_embs_matrix, emb_np_norm)
-                                        max_new_idx = np.argmax(new_similarities)
-                                        max_new_sim = new_similarities[max_new_idx]
-                                        if max_new_sim > cluster_threshold and max_new_sim > best_sim:
-                                            best_match_id = new_ids[max_new_idx]
-                                            best_sim = float(max_new_sim)
+                                    candidates.append({
+                                        "face_idx": face_idx,
+                                        "embedding": embedding,
+                                        "emb_np_norm": emb_np_norm,
+                                        "best_match_id": best_match_id,
+                                        "best_sim": best_sim
+                                    })
+                                
+                                # Sort candidates by best_sim descending to process best/strongest matches first
+                                candidates.sort(key=lambda x: x["best_sim"], reverse=True)
+                                
+                                assigned_person_ids = set()
+                                for cand in candidates:
+                                    if shared_state.APP_SHUTTING_DOWN or STATE.get("face_scanner_stopped") or app_state.combined_scanner_stopped or STATE.get("stopped"):
+                                        break
+                                        
+                                    face_idx = cand["face_idx"]
+                                    embedding = cand["embedding"]
+                                    emb_np_norm = cand["emb_np_norm"]
+                                    best_match_id = cand["best_match_id"]
+                                    best_sim = cand["best_sim"]
+                                    
+                                    # Prevent duplicate person assignment in the same photo
+                                    if best_match_id is not None:
+                                        if best_match_id in assigned_person_ids:
+                                            log_operation(f"Face #{face_idx} in {file.name}: best match person_id {best_match_id} already assigned to another face in this image. Mismatch prevention: treating as new person.", is_verbose=True)
+                                            best_match_id = None
+                                            best_sim = -1.0
+                                        else:
+                                            assigned_person_ids.add(best_match_id)
                                             
                                     if best_match_id is None:
                                         while True:
@@ -1611,15 +1653,18 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                         else:
                                             new_embs_matrix = np.vstack([new_embs_matrix, emb_np_norm])
                                         new_ids.append(best_match_id)
+                                        assigned_person_ids.add(best_match_id)
                                     else:
                                         log_operation(f"Face #{face_idx} in {file.name}: Matched existing person_id: {best_match_id} (sim: {best_sim:.4f})", is_verbose=True)
                                         if len(clusters[best_match_id]) < 15:
                                             clusters[best_match_id].append(embedding)
-                                            if new_embs_matrix is None:
-                                                new_embs_matrix = np.array([emb_np_norm], dtype=np.float32)
-                                            else:
-                                                new_embs_matrix = np.vstack([new_embs_matrix, emb_np_norm])
-                                            new_ids.append(best_match_id)
+                                            # Mitigate cluster drift: Only add to active scanner exemplar cache if it matches with high confidence (> 0.70)
+                                            if best_sim > 0.70:
+                                                if new_embs_matrix is None:
+                                                    new_embs_matrix = np.array([emb_np_norm], dtype=np.float32)
+                                                else:
+                                                    new_embs_matrix = np.vstack([new_embs_matrix, emb_np_norm])
+                                                new_ids.append(best_match_id)
                                     cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
                                                     (best_match_id, db_item_id, json.dumps(embedding)))
                                     log_operation(f"Detected and mapped face for file: {file.name} to person_id: {best_match_id}", user_logs_enabled=enable_logging, is_verbose=True)

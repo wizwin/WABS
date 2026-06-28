@@ -21,7 +21,7 @@ from backend.app.utils.log_utils import log_operation
 from backend.app.utils.media import _evaluate_image_faces, get_cv2_dnn_backends
 import backend.app.state as app_state
 from backend.app.state import STATE
-from backend.app.utils.indexer import _process_unified_scanners, get_or_create_exemplars
+from backend.app.utils.indexer import _process_unified_scanners, get_or_create_exemplars, find_best_face_match
 from backend.app.utils.cache import EXEMPLAR_CACHE
 from backend.app.utils.paths import get_bundled_model_path, get_ai_db_path
 import backend.app.shared_state as shared_state
@@ -1232,17 +1232,20 @@ def reclassify_people(payload: dict = Body(...)):
         reclassified_count = 0
         files_to_tag = {}
         affected_person_ids = set()
-        new_embs = []
+        new_embs_matrix = None
         new_ids = []
         
         cursor.execute("SELECT id, name FROM people WHERE name NOT LIKE 'Unknown Person%'")
         named_people_map = {r[0]: r[1] for r in cursor.fetchall()}
         
+        candidates = []
         for face_id, file_id, emb_json, old_pid in faces_to_reclassify:
             if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
                 raise HTTPException(status_code=400, detail="Operation cancelled")
-            embedding = json.loads(emb_json)
-            # Sanity check against corrupted or empty JSON embeddings to prevent matrix math crashes
+            try:
+                embedding = json.loads(emb_json)
+            except Exception:
+                continue
             if not embedding:
                 continue
             emb_np = np.array(embedding, dtype=np.float32)
@@ -1259,14 +1262,46 @@ def reclassify_people(payload: dict = Body(...)):
                 if max_sim >= threshold:
                     best_match_id = cluster_ids_list[max_idx]
                     
-            if new_embs:
-                new_similarities = [np.dot(ne, emb_np_norm) for ne in new_embs]
-                max_new_idx = np.argmax(new_similarities)
-                max_new_sim = new_similarities[max_new_idx]
-                if max_new_sim >= threshold and max_new_sim > max_sim:
-                    best_match_id = new_ids[max_new_idx]
-                    max_sim = max_new_sim
-                    
+            candidates.append({
+                "face_id": face_id,
+                "file_id": file_id,
+                "emb_json": emb_json,
+                "embedding": embedding,
+                "emb_np_norm": emb_np_norm,
+                "best_match_id": best_match_id,
+                "max_sim": max_sim
+            })
+
+        # Sort candidates by max_sim descending to process the strongest preloaded matches first
+        candidates.sort(key=lambda x: x["max_sim"], reverse=True)
+
+        assigned_person_ids_by_file = {}
+        for cand in candidates:
+            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                raise HTTPException(status_code=400, detail="Operation cancelled")
+                
+            face_id = cand["face_id"]
+            file_id = cand["file_id"]
+            emb_json = cand["emb_json"]
+            embedding = cand["embedding"]
+            emb_np_norm = cand["emb_np_norm"]
+            best_match_id = cand["best_match_id"]
+            max_sim = cand["max_sim"]
+
+            # Evaluate against dynamically created groups in this run
+            best_match_id, max_sim = find_best_face_match(
+                emb_np_norm, cluster_matrix_norm, cluster_ids_list, new_embs_matrix, new_ids, threshold
+            )
+
+            # Prevent duplicate person assignment in the same photo
+            if best_match_id is not None:
+                assigned_set = assigned_person_ids_by_file.setdefault(file_id, set())
+                if best_match_id in assigned_set:
+                    best_match_id = None
+                    max_sim = 0.0
+                else:
+                    assigned_set.add(best_match_id)
+
             if best_match_id is None:
                 while True:
                     p_count += 1
@@ -1275,14 +1310,23 @@ def reclassify_people(payload: dict = Body(...)):
                         best_match_id = cursor.lastrowid
                         break
                 clusters[best_match_id] = [embedding]
-                new_embs.append(emb_np_norm)
+                if new_embs_matrix is None:
+                    new_embs_matrix = np.array([emb_np_norm], dtype=np.float32)
+                else:
+                    new_embs_matrix = np.vstack([new_embs_matrix, emb_np_norm])
                 new_ids.append(best_match_id)
+                assigned_person_ids_by_file.setdefault(file_id, set()).add(best_match_id)
             else:
                 if len(clusters[best_match_id]) < 15:
                     clusters[best_match_id].append(embedding)
-                    new_embs.append(emb_np_norm)
-                    new_ids.append(best_match_id)
-                    
+                    # Mitigate cluster drift: Only add to active scanner exemplar cache if it matches with high confidence (> 0.70)
+                    if max_sim > 0.70:
+                        if new_embs_matrix is None:
+                            new_embs_matrix = np.array([emb_np_norm], dtype=np.float32)
+                        else:
+                            new_embs_matrix = np.vstack([new_embs_matrix, emb_np_norm])
+                        new_ids.append(best_match_id)
+                        
             cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
                             (best_match_id, file_id, emb_json))
             reclassified_count += 1
