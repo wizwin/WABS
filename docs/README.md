@@ -57,6 +57,12 @@ Once the Face Scanner identifies faces, it groups them under automatic profiles 
    * **Cluster Selected:** Compares only the selected unknown profiles against other unknowns and merges matches.
    * **Reclassify Selected:** Dissolves only the selected unknown profiles' collections, re-evaluating each face against all named/known persons and other unknowns. This is extremely useful if you just named a person (e.g., `Mary`) and want to check if a few specific unknown profiles contain her faces.
 
+4. **Merging Duplicate Unknowns (Resolving split profiles):**
+   * If a face scan finishes and you see multiple separate "Unknown Person" profiles that are actually the same person, you can merge them easily:
+     * **If they are all unnamed:** Use **Cluster All Unknowns** to compare all unknown profiles against each other in bulk and merge duplicates automatically.
+     * **If you have already named one of them (e.g., `John Doe`):** Go to `John Doe`'s profile page and click **Find Similar Unknowns** (or **Find Similar Faces**) in the Details pane. WABS will scan the remaining unknown profiles and let you merge them with one click.
+     * **Adjusting Sensitivity:** If some duplicates still won't merge, expand the **AI Actions** panel on the People page and lower the **Similarity Threshold** slider slightly (e.g., to `50%` or `52%`) to be more lenient with side-profiles, shadows, or hats.
+
 ### Clearing AI Data & Text Manually
 If you want to completely reset the AI's detected faces, people, and object tags, you can manually clear the AI database (or the text extraction cache):
 1. **Stop** the WABS application (close the terminal/command prompt window).

@@ -244,8 +244,32 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
                 return preview(thumb_file_id)
             
         if not face_row:
-            cursor.execute("SELECT file_id, embedding_json FROM faces WHERE person_id = ? AND embedding_json != '[]' ORDER BY id DESC LIMIT 1", (person_id,))
-            face_row = cursor.fetchone()
+            cursor.execute("SELECT file_id, embedding_json FROM faces WHERE person_id = ? AND embedding_json != '[]'", (person_id,))
+            rows = cursor.fetchall()
+            if rows:
+                if len(rows) > 1:
+                    # Find the centroid face in-memory using NumPy
+                    parsed_faces = []
+                    for fid, emb_json in rows:
+                        try:
+                            emb = json.loads(emb_json)
+                            if emb and len(emb) == 128:
+                                parsed_faces.append((fid, emb))
+                        except Exception:
+                            continue
+                    if parsed_faces:
+                        import numpy as np
+                        embs = np.array([f[1] for f in parsed_faces], dtype=np.float32)
+                        norms = np.linalg.norm(embs, axis=1, keepdims=True)
+                        embs_norm = embs / np.where(norms == 0, 1, norms)
+                        mean_emb = np.mean(embs_norm, axis=0)
+                        mean_norm = np.linalg.norm(mean_emb)
+                        mean_emb_norm = mean_emb / (mean_norm if mean_norm > 0 else 1.0)
+                        similarities = np.dot(embs_norm, mean_emb_norm)
+                        centroid_idx = int(np.argmax(similarities))
+                        face_row = (parsed_faces[centroid_idx][0], json.dumps(parsed_faces[centroid_idx][1]))
+                if not face_row and rows:
+                    face_row = rows[0]
             
         if not face_row:
             # If they only have manual tags without embeddings, fallback to the full uncropped photo
@@ -372,7 +396,7 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
                 if best_sim > 0.98:
                     break
 
-            if best_face_align is not None and best_sim >= 0.40:
+            if best_face_align is not None and best_sim >= 0.65:
                 is_success, buffer = cv2.imencode(".jpg", best_face_align)
                 if is_success:
                     with open(str(cached_face), "wb") as f:
@@ -918,11 +942,9 @@ def cluster_unknowns(payload: dict = Body(...)):
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         
-        # NOTE: Do NOT use get_or_create_exemplars here. Loading directly from DB in-memory is
-        # critical for performance at scale (e.g. 30,000 profiles). get_or_create_exemplars is only for on-demand UI.
         # Fetch ONLY Unknown People embeddings to cluster them together
         cursor.execute("""
-            SELECT p.id, p.name, f.embedding_json
+            SELECT p.id, p.name, f.file_id, f.embedding_json
             FROM people p
             JOIN faces f ON p.id = f.person_id
             WHERE p.name LIKE 'Unknown Person%' AND f.embedding_json != '[]'
@@ -934,27 +956,40 @@ def cluster_unknowns(payload: dict = Body(...)):
             
         import numpy as np
         
-        person_embs = {}
+        person_embs_raw = {}
         person_names = {}
+        file_ids_needed = set()
         
-        # OOM PREVENTION: Cap the maximum number of embeddings per cluster.
-        # Unknown profiles are highly cohesive. 15 faces perfectly represent the cluster's variations
-        # and completely prevent massive O(N^2) memory spikes during the matrix dot product.
-        MAX_EMBS_PER_PERSON = 15
-        
-        for pid, pname, emb_json in all_rows:
+        for pid, pname, file_id, emb_json in all_rows:
             if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
                 raise HTTPException(status_code=400, detail="Operation cancelled")
-            if pid not in person_embs:
-                person_embs[pid] = []
-            if len(person_embs[pid]) < MAX_EMBS_PER_PERSON:
-                try:
-                    emb = json.loads(emb_json)
-                    if emb and len(emb) == 128:
-                        person_embs[pid].append(emb)
-                except Exception:
-                    continue
+            if pid not in person_embs_raw:
+                person_embs_raw[pid] = []
+            try:
+                emb = json.loads(emb_json)
+                if emb and len(emb) == 128:
+                    person_embs_raw[pid].append((file_id, emb))
+                    file_ids_needed.add(file_id)
+            except Exception:
+                continue
             person_names[pid] = pname
+
+        # Fetch modified dates in bulk
+        file_dates = {}
+        file_ids_list = list(file_ids_needed)
+        log_operation(f"[DEBUG-SCANNER] Fetching modified dates for {len(file_ids_list)} files for unknown clustering...", is_verbose=True)
+        with SessionLocal() as s:
+            for i in range(0, len(file_ids_list), 900):
+                chunk = file_ids_list[i:i+900]
+                chunk_info = s.query(FileIndex.id, FileIndex.modified).filter(FileIndex.id.in_(chunk)).all()
+                for fid, modified in chunk_info:
+                    file_dates[fid] = str(modified or "")
+
+        from backend.app.utils.indexer import curate_exemplars_in_memory
+        person_embs = {}
+        log_operation(f"[DEBUG-SCANNER] Curating {len(person_embs_raw)} unknown face clusters in-memory...", is_verbose=True)
+        for pid, faces_list in person_embs_raw.items():
+            person_embs[pid] = curate_exemplars_in_memory(faces_list, file_dates)
             
         # Sort all PIDs by number of faces DESC so smaller clusters merge into larger ones
         sorted_pids = sorted(person_embs.keys(), key=lambda k: len(person_embs[k]), reverse=True)
@@ -1121,25 +1156,43 @@ def reclassify_people(payload: dict = Body(...)):
         # 2. Fetch the exemplar embeddings for all OTHER profiles (Named and Unselected Unknowns)
         # NOTE: Do NOT use get_or_create_exemplars in a loop here. Loading directly from DB in-memory is
         # critical for performance at scale (e.g. 30,000 profiles). get_or_create_exemplars is only for on-demand UI.
-        cursor.execute("SELECT person_id, embedding_json FROM faces WHERE embedding_json != '[]'")
+        cursor.execute("SELECT person_id, file_id, embedding_json FROM faces WHERE embedding_json != '[]'")
         all_faces_rows = cursor.fetchall()
         
         target_ids_set = set(person_ids)
-        clusters = {}
-        for pid, emb_json in all_faces_rows:
+        clusters_raw = {}
+        file_ids_needed = set()
+        for pid, file_id, emb_json in all_faces_rows:
             if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
                 raise HTTPException(status_code=400, detail="Operation cancelled")
             if pid in target_ids_set:
                 continue
-            if pid not in clusters:
-                clusters[pid] = []
-            if len(clusters[pid]) < 15:
-                try:
-                    emb = json.loads(emb_json)
-                    if emb and len(emb) == 128:
-                        clusters[pid].append(emb)
-                except Exception:
-                    continue
+            if pid not in clusters_raw:
+                clusters_raw[pid] = []
+            try:
+                emb = json.loads(emb_json)
+                if emb and len(emb) == 128:
+                    clusters_raw[pid].append((file_id, emb))
+                    file_ids_needed.add(file_id)
+            except Exception:
+                continue
+
+        # Fetch modified dates in bulk
+        file_dates = {}
+        file_ids_list = list(file_ids_needed)
+        log_operation(f"[DEBUG-SCANNER] Fetching modified dates for {len(file_ids_list)} files for reclassification...", is_verbose=True)
+        with SessionLocal() as s:
+            for i in range(0, len(file_ids_list), 900):
+                chunk = file_ids_list[i:i+900]
+                chunk_info = s.query(FileIndex.id, FileIndex.modified).filter(FileIndex.id.in_(chunk)).all()
+                for fid, modified in chunk_info:
+                    file_dates[fid] = str(modified or "")
+
+        from backend.app.utils.indexer import curate_exemplars_in_memory
+        clusters = {}
+        log_operation(f"[DEBUG-SCANNER] Curating {len(clusters_raw)} face clusters in-memory for reclassification...", is_verbose=True)
+        for pid, faces_list in clusters_raw.items():
+            clusters[pid] = curate_exemplars_in_memory(faces_list, file_dates)
             
         # 3. Delete the old targeted profiles and their faces
         for pid in target_person_ids:

@@ -321,10 +321,75 @@ def extract_top_keywords(text_data: str, max_words: int = None, is_log: bool = F
 
 worker = None
 
+def curate_exemplars_in_memory(faces_list: list, file_dates: dict) -> list:
+    """
+    Performs 100% in-memory numpy curation on a list of (file_id, embedding) tuples.
+    """
+    import numpy as np
+    if not faces_list:
+        return []
+    if len(faces_list) <= 15:
+        return [emb for _, emb in faces_list]
+        
+    # Sort faces chronologically based on the file modified date
+    sorted_faces = []
+    # Sort by date, fallback to empty string
+    for fid, emb in sorted(faces_list, key=lambda x: file_dates.get(x[0], "")):
+        sorted_faces.append(emb)
+        
+    embeddings = np.array(sorted_faces, dtype=np.float32)
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    embeddings_norm = embeddings / np.where(norms == 0, 1, norms)
+
+    # A. Centroid (closest to the mean embedding)
+    mean_emb = np.mean(embeddings_norm, axis=0)
+    mean_norm = np.linalg.norm(mean_emb)
+    mean_emb_norm = mean_emb / (mean_norm if mean_norm > 0 else 1.0)
+    similarities = np.dot(embeddings_norm, mean_emb_norm)
+    centroid_idx = int(np.argmax(similarities))
+
+    # B. Typical representations (top 8 closest to the mean, excluding centroid)
+    sorted_by_sim = np.argsort(similarities)[::-1]
+    typical_indices = [int(idx) for idx in sorted_by_sim if idx != centroid_idx][:8]
+
+    # C. Diverse boundary faces (up to 6, using Furthest Point Sampling)
+    selected_set = set([centroid_idx] + typical_indices)
+    boundary_indices = []
+    
+    median_sim = np.median(similarities)
+    candidates = [i for i in range(len(embeddings)) if i not in selected_set and similarities[i] < median_sim]
+    if len(candidates) < 6:
+        candidates = [i for i in range(len(embeddings)) if i not in selected_set]
+
+    if candidates:
+        selected_indices = [centroid_idx] + typical_indices
+        for _ in range(min(6, len(candidates))):
+            cand_matrix = embeddings_norm[candidates]
+            sel_matrix = embeddings_norm[selected_indices]
+            sims = np.dot(cand_matrix, sel_matrix.T)
+            max_sims = np.max(sims, axis=1)
+            best_cand_idx = np.argmin(max_sims)
+            best_face_idx = candidates[best_cand_idx]
+            boundary_indices.append(int(best_face_idx))
+            selected_indices.append(int(best_face_idx))
+            candidates.pop(best_cand_idx)
+
+    # D. Timeline-distributed chronological faces (up to 10, evenly spaced)
+    indices = np.linspace(0, len(embeddings) - 1, 10, dtype=int)
+    timeline_indices = list(dict.fromkeys(indices))
+
+    # Combine in priority order
+    all_selected_indices = []
+    for idx in [centroid_idx] + typical_indices + boundary_indices + timeline_indices:
+        if idx not in all_selected_indices:
+            all_selected_indices.append(idx)
+
+    return [sorted_faces[idx] for idx in all_selected_indices[:15]]
+
 def get_or_create_exemplars(person_id: int, conn_or_cursor) -> list:
     """
     Curates and caches up to 15 representative face exemplars for a person profile.
-    Special code: Uses a fast (under 5ms) in-memory numpy curation to select timeline, centroid, and boundary faces, with a 0ms SQL bypass for small profiles (<= 15 faces).
+    Uses a fast (under 5ms) in-memory numpy curation to select timeline, centroid, and boundary faces, with a 0ms SQL bypass for small profiles (<= 15 faces).
     """
     from backend.app.state import STATE
     import backend.app.state as app_state
@@ -359,160 +424,31 @@ def get_or_create_exemplars(person_id: int, conn_or_cursor) -> list:
         EXEMPLAR_CACHE.put(person_id, {"count": current_face_count, "embeddings": known_embeddings})
         return known_embeddings
 
-    # Curate reference embeddings dynamically
-    from backend.app.utils.log_utils import log_operation
-    log_operation(f"[DEBUG-SCANNER] Curating exemplars for person {person_id} with {current_face_count} faces (Disk path)...", is_verbose=True)
-    file_id_to_embs = {}
+    # For profiles > 15 faces, perform in-memory numpy curation
+    log_operation(f"[DEBUG-SCANNER] Curating exemplars in-memory for person {person_id} with {current_face_count} faces...", is_verbose=True)
+    faces_list = []
+    file_ids = set()
     for face_id, file_id, emb_json in known_rows:
-        if file_id not in file_id_to_embs:
-            file_id_to_embs[file_id] = []
         try:
             emb = json.loads(emb_json)
             if emb and len(emb) == 128:
-                file_id_to_embs[file_id].append(emb)
+                faces_list.append((file_id, emb))
+                file_ids.add(file_id)
         except Exception:
             continue
-            
-    import numpy as np
-    import concurrent.futures
-    from backend.app.utils.media import _evaluate_image_faces
-    from backend.app.utils.paths import get_bundled_model_path
-    
-    file_ids = list(file_id_to_embs.keys())
+
+    file_ids = list(file_ids)
+    file_dates = {}
     with SessionLocal() as s:
-        files_info = []
         for i in range(0, len(file_ids), 900):
             chunk = file_ids[i:i+900]
-            chunk_info = s.query(FileIndex.id, FileIndex.modified, FileIndex.path).filter(FileIndex.id.in_(chunk)).all()
-            files_info.extend(chunk_info)
-            
-    files_info.sort(key=lambda x: str(x.modified or ""))
-    
-    selected_file_ids = set()
-    yunet_path = get_bundled_model_path("face_detection_yunet_2023mar.onnx")
-    
-    # Sample at most 30 files timeline-distributed to allow up to 2 batches of 15
-    sampled_files = []
-    if len(files_info) > 30:
-        seen_indices = set()
-        for i in range(30):
-            idx = int(round(i * (len(files_info) - 1) / 29.0))
-            if idx not in seen_indices:
-                seen_indices.add(idx)
-                sampled_files.append(files_info[idx])
-    else:
-        sampled_files = files_info
-        
-    analyzed_files = []
-    is_scan_active = app_state.face_scanner_running or app_state.combined_scanner_running
-    
-    # Process in batches of 15
-    import math
-    num_batches = math.ceil(len(sampled_files) / 15)
-    batches = [[] for _ in range(num_batches)]
-    for idx, f_item in enumerate(sampled_files):
-        batch_idx = idx % num_batches
-        batches[batch_idx].append(f_item)
-        
-    for batch_idx, batch in enumerate(batches):
-        if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
-            return []
-            
-        log_operation(f"[DEBUG-SCANNER] Curation batch {batch_idx + 1}/{num_batches} for person {person_id}: evaluating {len(batch)} files...", is_verbose=True)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {}
-            for f_item in batch:
-                if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
-                    break
-                file_path = _resolve_path(Path(f_item.path))
-                if file_path.exists():
-                    futures[executor.submit(_evaluate_image_faces, file_path, yunet_path)] = f_item
-                    
-            for future in concurrent.futures.as_completed(futures):
-                if (is_scan_active and (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped)) or STATE.get("cancel_data_operation"):
-                    break
-                f_item = futures[future]
-                try:
-                    metrics = future.result()
-                    if metrics:
-                        best_metric = max(metrics, key=lambda x: x["score"])
-                        analyzed_files.append({
-                            "file_id": f_item.id,
-                            "date": str(f_item.modified or ""),
-                            "area": best_metric["area"],
-                            "sharpness": best_metric["sharpness"]
-                        })
-                except Exception:
-                    continue
-                    
-        # Check if we have accumulated at least 15 sharp/non-blurry files so far.
-        # Laplacian variance threshold of 80.0 is used as standard for non-blurry faces.
-        sharp_count = sum(1 for x in analyzed_files if x["sharpness"] >= 80.0)
-        if sharp_count >= 15:
-            log_operation(f"[DEBUG-SCANNER] Found {sharp_count} sharp exemplars (threshold 80.0) for person {person_id}. Curation early breakout.", is_verbose=True)
-            break
+            chunk_info = s.query(FileIndex.id, FileIndex.modified).filter(FileIndex.id.in_(chunk)).all()
+            for fid, modified in chunk_info:
+                file_dates[fid] = str(modified or "")
 
-    if analyzed_files:
-        # Sort analyzed files by sharpness descending
-        analyzed_files.sort(key=lambda x: x["sharpness"], reverse=True)
-        # Discard bottom 25% blurriest files (keep at least 25 files if available)
-        non_blurry_count = max(25, int(len(analyzed_files) * 0.75))
-        non_blurry = analyzed_files[:non_blurry_count]
-        blurry_files = analyzed_files[non_blurry_count:]
-        
-        if non_blurry:
-            # Sort non_blurry by date (chronological) ascending
-            non_blurry.sort(key=lambda x: x["date"])
-            
-            # Select up to 5 oldest
-            oldest = non_blurry[:5]
-            # Select up to 5 newest
-            newest = non_blurry[-5:] if len(non_blurry) > 5 else []
-            
-            # Select up to 5 middle files
-            mid_idx = len(non_blurry) // 2
-            start_mid = max(0, mid_idx - 2)
-            end_mid = min(len(non_blurry), mid_idx + 3)
-            middle = non_blurry[start_mid:end_mid]
-            
-            for item in oldest + newest + middle:
-                selected_file_ids.add(item["file_id"])
-                
-            # Sort non_blurry by area (scale) ascending
-            non_blurry.sort(key=lambda x: x["area"])
-            
-            # Select up to 5 smallest
-            smallest = non_blurry[:5]
-            # Select up to 5 largest
-            largest = non_blurry[-5:] if len(non_blurry) > 5 else []
-            
-            for item in smallest + largest:
-                selected_file_ids.add(item["file_id"])
-                
-            # Backfill from non_blurry (sorted by sharpness descending) if we have fewer than 15 unique files
-            if len(selected_file_ids) < 15:
-                non_blurry.sort(key=lambda x: x["sharpness"], reverse=True)
-                for item in non_blurry:
-                    if len(selected_file_ids) >= 15:
-                        break
-                    selected_file_ids.add(item["file_id"])
-                    
-            # Backfill from blurry_files (sorted by sharpness descending) if we still have fewer than 15 unique files
-            if len(selected_file_ids) < 15 and blurry_files:
-                blurry_files.sort(key=lambda x: x["sharpness"], reverse=True)
-                for item in blurry_files:
-                    if len(selected_file_ids) >= 15:
-                        break
-                    selected_file_ids.add(item["file_id"])
-            
-    selected_embeddings = []
-    for fid in selected_file_ids:
-        if fid in file_id_to_embs:
-            selected_embeddings.extend(file_id_to_embs[fid])
-            
-    known_embeddings = selected_embeddings[:15]
-    EXEMPLAR_CACHE.put(person_id, {"count": current_face_count, "embeddings": known_embeddings})
-    return known_embeddings
+    curated_embeddings = curate_exemplars_in_memory(faces_list, file_dates)
+    EXEMPLAR_CACHE.put(person_id, {"count": current_face_count, "embeddings": curated_embeddings})
+    return curated_embeddings
 
 
 _ocr_engine = None
@@ -898,7 +834,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
         detector, recognizer, clusters, p_count = None, None, {}, 0
         cluster_matrix_norm = None
         cluster_ids_list = []
-        new_embs = []
+        new_embs_matrix = None
         new_ids = []
         face_threshold, cluster_threshold = 0.70, 0.55
         # Load YuNet detector if face scanning or object scanning is enabled (for human presence checks)
@@ -990,37 +926,60 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                 cursor.execute("SELECT file_id FROM processed_files")
                 face_processed_ids = set(r[0] for r in cursor.fetchall())
 
+                cursor.execute("SELECT COUNT(*) FROM faces")
+                if cursor.fetchone()[0] == 0:
+                    log_operation("[DEBUG-SCANNER] Database faces table is empty. Purging orphaned face thumbnail cache files...", is_verbose=True)
+                    from backend.app.config import get_thumbnail_dir
+                    try:
+                        thumb_dir = get_thumbnail_dir("faces")
+                        if thumb_dir.exists():
+                            for f in thumb_dir.glob("person_*.jpg"):
+                                try:
+                                    f.unlink()
+                                except Exception:
+                                    pass
+                    except Exception as e:
+                        log_operation(f"[DEBUG-SCANNER] Error purging face cache: {e}", is_verbose=True)
+
                 log_operation("[DEBUG-SCANNER] Loading all face records in a single query...", is_verbose=True)
-                cursor.execute("SELECT person_id, embedding_json FROM faces WHERE embedding_json != '[]' ORDER BY person_id")
+                cursor.execute("SELECT person_id, file_id, embedding_json FROM faces WHERE embedding_json != '[]' ORDER BY person_id")
                 all_faces_rows = cursor.fetchall()
                 
                 log_operation(f"[DEBUG-SCANNER] Grouping {len(all_faces_rows)} face records by person_id...", is_verbose=True)
                 faces_by_person = {}
-                for pid, emb_json in all_faces_rows:
+                file_ids_needed = set()
+                for pid, file_id, emb_json in all_faces_rows:
                     if pid not in faces_by_person:
                         faces_by_person[pid] = []
-                    faces_by_person[pid].append(emb_json)
+                    try:
+                        emb = json.loads(emb_json)
+                        if emb and len(emb) == 128:
+                            faces_by_person[pid].append((file_id, emb))
+                            file_ids_needed.add(file_id)
+                    except Exception:
+                        continue
                 
-                # NOTE: Do NOT use get_or_create_exemplars here. Loading directly from DB in-memory is
-                # critical for startup speed at scale (e.g. 30,000 profiles). get_or_create_exemplars is only for on-demand UI.
-                log_operation(f"[DEBUG-SCANNER] Loading initial face embeddings for {len(faces_by_person)} people clusters...", is_verbose=True)
-                for c_idx, (p_id, emb_jsons) in enumerate(faces_by_person.items()):
+                # Fetch dates for those file IDs in bulk
+                file_dates = {}
+                file_ids_list = list(file_ids_needed)
+                log_operation(f"[DEBUG-SCANNER] Fetching dates for {len(file_ids_list)} files...", is_verbose=True)
+                with SessionLocal() as s:
+                    for i in range(0, len(file_ids_list), 900):
+                        chunk = file_ids_list[i:i+900]
+                        chunk_info = s.query(FileIndex.id, FileIndex.modified).filter(FileIndex.id.in_(chunk)).all()
+                        for fid, modified in chunk_info:
+                            file_dates[fid] = str(modified or "")
+
+                log_operation(f"[DEBUG-SCANNER] Curating exemplars for {len(faces_by_person)} people clusters...", is_verbose=True)
+                for c_idx, (p_id, faces_list) in enumerate(faces_by_person.items()):
                     if STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped:
                         break
                         
                     if c_idx > 0 and c_idx % 5000 == 0:
-                        log_operation(f"[DEBUG-SCANNER] Loaded embeddings for {c_idx} / {len(faces_by_person)} people clusters...", is_verbose=True)
+                        log_operation(f"[DEBUG-SCANNER] Curated {c_idx} / {len(faces_by_person)} people clusters...", is_verbose=True)
                         
-                    parsed_embs = []
-                    for emb_json in emb_jsons[:15]:
-                        try:
-                            emb = json.loads(emb_json)
-                            if emb and len(emb) == 128:
-                                parsed_embs.append(emb)
-                        except Exception:
-                            continue
-                    clusters[p_id] = parsed_embs
-                log_operation("[DEBUG-SCANNER] Face embedding preloading completed.", is_verbose=True)
+                    clusters[p_id] = curate_exemplars_in_memory(faces_list, file_dates)
+                log_operation("[DEBUG-SCANNER] Face embedding preloading and curation completed.", is_verbose=True)
 
                 cursor.execute("SELECT MAX(id) FROM people")
                 p_row = cursor.fetchone()
@@ -1630,8 +1589,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                         if max_sim > cluster_threshold:
                                             best_match_id = best_match_id_candidate
                                             
-                                    if new_embs:
-                                        new_embs_matrix = np.vstack(new_embs)
+                                    if new_embs_matrix is not None:
                                         new_similarities = np.dot(new_embs_matrix, emb_np_norm)
                                         max_new_idx = np.argmax(new_similarities)
                                         max_new_sim = new_similarities[max_new_idx]
@@ -1648,13 +1606,19 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                                                 break
                                         log_operation(f"Face #{face_idx} in {file.name}: similarity below threshold ({best_sim:.4f} vs threshold {cluster_threshold}). Mapped to new person_id: {best_match_id}", is_verbose=True)
                                         clusters[best_match_id] = [embedding]
-                                        new_embs.append(emb_np_norm)
+                                        if new_embs_matrix is None:
+                                            new_embs_matrix = np.array([emb_np_norm], dtype=np.float32)
+                                        else:
+                                            new_embs_matrix = np.vstack([new_embs_matrix, emb_np_norm])
                                         new_ids.append(best_match_id)
                                     else:
                                         log_operation(f"Face #{face_idx} in {file.name}: Matched existing person_id: {best_match_id} (sim: {best_sim:.4f})", is_verbose=True)
                                         if len(clusters[best_match_id]) < 15:
                                             clusters[best_match_id].append(embedding)
-                                            new_embs.append(emb_np_norm)
+                                            if new_embs_matrix is None:
+                                                new_embs_matrix = np.array([emb_np_norm], dtype=np.float32)
+                                            else:
+                                                new_embs_matrix = np.vstack([new_embs_matrix, emb_np_norm])
                                             new_ids.append(best_match_id)
                                     cursor.execute("INSERT OR IGNORE INTO faces (person_id, file_id, embedding_json) VALUES (?, ?, ?)",
                                                     (best_match_id, db_item_id, json.dumps(embedding)))
