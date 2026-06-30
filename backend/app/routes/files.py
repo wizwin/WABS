@@ -15,7 +15,7 @@ from sqlalchemy import func, Integer, text
 from backend.app.database import SessionLocal, FileIndex
 from backend.app.config import load_config, get_thumbnail_dir
 from backend.app.utils.utils import _resolve_path
-from backend.app.utils.media import generate_photo_thumbnail, generate_video_thumbnail, generate_document_thumbnail
+from backend.app.utils.media import generate_photo_thumbnail, generate_video_thumbnail, generate_document_thumbnail, generate_audio_thumbnail
 from backend.app.utils.indexer import PLAIN_TEXT_EXTENSIONS
 from backend.app.utils.validators import check_no_scanners_running, lock_data_operation
 import backend.app.shared_state as shared_state
@@ -134,6 +134,10 @@ def preview(item_id:int, theme: str = "dark"):
         cached_thumb = get_thumbnail_dir("videos") / f"{item_id}.jpg"
         if cached_thumb.exists():
             return FileResponse(str(cached_thumb), media_type="image/jpeg")
+    elif file_category == "audio":
+        cached_thumb = get_thumbnail_dir("audio") / f"{item_id}.jpg"
+        if cached_thumb.exists():
+            return FileResponse(str(cached_thumb), media_type="image/jpeg")
     elif file_category in ["document", "code"] and file_path and file_path.suffix.lower() == ".pdf":
         cached_thumb = get_thumbnail_dir("documents") / f"{item_id}.jpg"
         if cached_thumb.exists():
@@ -184,6 +188,18 @@ def preview(item_id:int, theme: str = "dark"):
                 return FileResponse(str(cached_thumb), media_type="image/jpeg")
             
             success = generate_video_thumbnail(file_path, cached_thumb)
+            if success and cached_thumb.exists():
+                return FileResponse(str(cached_thumb), media_type="image/jpeg")
+                    
+        elif file_category == "audio":
+            thumb_dir = get_thumbnail_dir("audio")
+            thumb_dir.mkdir(parents=True, exist_ok=True)
+            
+            cached_thumb = thumb_dir / f"{item_id}.jpg"
+            if cached_thumb.exists():
+                return FileResponse(str(cached_thumb), media_type="image/jpeg")
+            
+            success = generate_audio_thumbnail(file_path, cached_thumb)
             if success and cached_thumb.exists():
                 return FileResponse(str(cached_thumb), media_type="image/jpeg")
                     

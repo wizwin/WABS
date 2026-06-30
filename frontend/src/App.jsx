@@ -707,6 +707,10 @@ function renderThumb(item){
    return getOfflinePlaceholder(label, currentTheme === 'light' ? '#e2e8f0' : '#111827', currentTheme === 'light' ? '#334155' : '#ffffff');
  }
 
+ if(item.category==='audio'){
+   return getOfflinePlaceholder(label, currentTheme === 'light' ? '#f5f3ff' : '#1e1b4b', currentTheme === 'light' ? '#4338ca' : '#a5b4fc');
+ }
+
  if(item.category==='document'){
    return getOfflinePlaceholder(label, currentTheme === 'light' ? '#f8fafc' : '#172033', currentTheme === 'light' ? '#0f172a' : '#ffffff');
  }

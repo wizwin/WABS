@@ -1,5 +1,13 @@
 # WABS Changelog
 
+## v1.0.2
+
+### 🚀 Major New Features & Enhancements
+*   **Audio Album Art Extraction:** Integrated cover/album art extraction from audio files using the `mutagen` metadata library. Supported formats include MP3 (ID3 tags via `APIC` frames), MP4/M4A (`covr` tag), FLAC and OGG (via the `pictures` attribute or base64-encoded `metadata_block_picture` in Vorbis comments), and WMA/ASF (`WM/Picture` tags).
+*   **Audio Thumbnail Caching:** Automatically scales and saves extracted cover art as a 400x400 JPEG inside the `audio` subdirectory of WABS's cache folder (i.e. `.wabs_cache/audio`), keeping the cache structured.
+*   **Dynamic Audio Preview Serving:** Updated the `/preview/{item_id}` endpoint to serve the cached JPEG cover art when requested, falling back to a text SVG if no cover art exists.
+*   **Indigo Audio Fallback Placeholders:** Added custom indigo-themed placeholders (`#f5f3ff` for light theme, `#1e1b4b` for dark theme) in the frontend Explorer layout to represent audio files without cover art, rather than using a generic offline placeholder.
+
 ## v1.0.1
 
 ### ⚡ Performance & Caching

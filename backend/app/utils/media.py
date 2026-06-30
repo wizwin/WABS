@@ -303,3 +303,120 @@ def _evaluate_image_faces(file_path, yunet_path: str):
         return results
     except Exception:
         return []
+
+
+def extract_audio_cover_art(file_path: Path) -> bytes | None:
+    try:
+        import mutagen
+        audio = mutagen.File(str(file_path))
+        if audio is None:
+            return None
+        
+        # 1. MP3 / ID3 tags (APIC frames)
+        if hasattr(audio, 'tags') and audio.tags:
+            for key in audio.tags.keys():
+                if key.startswith("APIC"):
+                    apic = audio.tags[key]
+                    if hasattr(apic, 'data') and apic.data:
+                        return apic.data
+            
+            # WMA (ASF) uses "WM/Picture"
+            if "WM/Picture" in audio.tags:
+                wmpicture = audio.tags["WM/Picture"]
+                if isinstance(wmpicture, list) and len(wmpicture) > 0:
+                    pic = wmpicture[0]
+                    if hasattr(pic, 'data') and pic.data:
+                        return pic.data
+                    elif isinstance(pic, bytes):
+                        return pic
+                elif hasattr(wmpicture, 'data') and wmpicture.data:
+                    return wmpicture.data
+                elif isinstance(wmpicture, bytes):
+                    return wmpicture
+        
+        # 2. MP4 / M4A (covr)
+        if 'covr' in audio:
+            covr = audio['covr']
+            if isinstance(covr, list) and len(covr) > 0:
+                pic = covr[0]
+                if isinstance(pic, bytes):
+                    return pic
+                elif hasattr(pic, 'data'):
+                    return pic.data
+                else:
+                    return bytes(pic)
+            elif isinstance(covr, bytes):
+                return covr
+        
+        # 3. FLAC / OGG (audio.pictures)
+        if hasattr(audio, 'pictures') and audio.pictures:
+            for pic in audio.pictures:
+                if hasattr(pic, 'data') and pic.data:
+                    return pic.data
+                
+        # 4. Vorbis Comments with metadata_block_picture
+        if hasattr(audio, 'tags') and audio.tags:
+            if 'metadata_block_picture' in audio.tags:
+                import base64
+                from mutagen.flac import Picture
+                pic_data_b64 = audio.tags['metadata_block_picture']
+                if isinstance(pic_data_b64, list) and len(pic_data_b64) > 0:
+                    pic_data_b64 = pic_data_b64[0]
+                try:
+                    pic_data = base64.b64decode(pic_data_b64)
+                    picture = Picture(pic_data)
+                    return picture.data
+                except Exception:
+                    pass
+                    
+    except Exception as e:
+        print(f"Error extracting cover art from {file_path}: {e}")
+    return None
+
+
+def generate_audio_thumbnail(file_path: Path, cached_thumb: Path) -> bool:
+    import io
+    try:
+        img_bytes = extract_audio_cover_art(file_path)
+        if not img_bytes:
+            return False
+            
+        success = False
+        try:
+            import cv2
+            import numpy as np
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is not None:
+                height, width = img.shape[:2]
+                scaling_factor = min(400 / width, 400 / height)
+                if scaling_factor < 1.0:
+                    new_size = (int(width * scaling_factor), int(height * scaling_factor))
+                    resized_img = cv2.resize(img, new_size, interpolation=cv2.INTER_AREA)
+                else:
+                    resized_img = img
+                    
+                is_success, buffer = cv2.imencode(".jpg", resized_img)
+                if is_success:
+                    with open(str(cached_thumb), "wb") as f:
+                        f.write(buffer.tobytes())
+                    success = True
+        except Exception as e:
+            print(f"OpenCV audio cache failed for {file_path.name}: {e}")
+            
+        if not success:
+            try:
+                from PIL import Image
+                pil_img = Image.open(io.BytesIO(img_bytes))
+                if pil_img.mode != 'RGB':
+                    pil_img = pil_img.convert('RGB')
+                pil_img.thumbnail((400, 400), Image.Resampling.LANCZOS)
+                pil_img.save(str(cached_thumb), "JPEG", quality=85)
+                success = True
+            except Exception as e:
+                print(f"Pillow audio cache fallback failed for {file_path.name}: {e}")
+                
+        return success
+    except Exception as e:
+        print(f"ERROR: Audio thumbnail generation failed for {file_path.name}: {e}")
+    return False
