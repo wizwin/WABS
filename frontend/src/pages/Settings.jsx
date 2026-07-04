@@ -33,7 +33,7 @@ export default function Settings(props) {
 
             {/* Tab Navigation */}
             <div style={{ display: 'flex', gap: '10px', borderBottom: '1px solid #334155', paddingBottom: '10px', marginBottom: '24px', flexWrap: 'wrap' }}>
-            {['general', 'data', 'ui', 'ai', 'locations', 'search'].map(tab => (
+            {['general', 'locations', 'data', 'ui', 'ai', 'search'].map(tab => (
                 <button 
                 key={tab}
                 onClick={() => setSettingsTab(tab)}
@@ -45,10 +45,10 @@ export default function Settings(props) {
                 }}
                 >
                 {tab === 'general' ? 'General' : 
+                tab === 'locations' ? 'Backups' : 
                 tab === 'data' ? 'Data Management' : 
                 tab === 'ui' ? 'UI Preferences' : 
-                tab === 'ai' ? 'AI & Vision' : 
-                tab === 'locations' ? 'Backups' : 'Smart Searches'}
+                tab === 'ai' ? 'AI & Vision' : 'Smart Searches'}
                 </button>
             ))}
             </div>

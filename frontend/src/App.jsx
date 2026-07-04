@@ -258,7 +258,15 @@ async function saveSettings(){
    payload.database_path = cleanPath ? (cleanPath + separator + dbFilename) : dbFilename;
  }
  await axios.post(`${API}/settings`, payload)
- showToastMessage('Settings Saved');
+ const hasBackup = settings.backup_configs && settings.backup_configs.some(c => c.backup_path && c.backup_path.trim() !== '');
+ if (hasBackup) {
+   showToastMessage('Settings Saved');
+ } else {
+   showToastMessage('Settings saved. Please configure a backup location.', {
+     label: 'Configure',
+     onClick: () => setSettingsTab('locations')
+   });
+ }
  await loadDashboard();
  // After saving settings, reload content if on explorer or search page
  if (page === 'explorer') {
