@@ -14,7 +14,8 @@ export default function Settings(props) {
     exportTags, importTags, clearCache, showSidebar, toggleSidebar, showTimeline, toggleTimeline,
     showDetails, toggleDetails, aiSearchPrompt, setAiSearchPrompt, generateSearchWithAI,
     generatingSearch, testingAI, testAIConnection, globalPeopleMap, choosePathForConfig,
-    abortPeopleDataOpRef, abortTagsDataOpRef, cancelAiAction
+    abortPeopleDataOpRef, abortTagsDataOpRef, cancelAiAction,
+    exportVirtualFolders, importVirtualFolders, exportAllWabs, importAllWabs
   } = props;
 
   return (
@@ -33,7 +34,7 @@ export default function Settings(props) {
 
             {/* Tab Navigation */}
             <div style={{ display: 'flex', gap: '10px', borderBottom: '1px solid #334155', paddingBottom: '10px', marginBottom: '24px', flexWrap: 'wrap' }}>
-            {['general', 'locations', 'data', 'ui', 'ai', 'search'].map(tab => (
+            {['general', 'locations', 'ui', 'ai', 'search', 'data'].map(tab => (
                 <button 
                 key={tab}
                 onClick={() => setSettingsTab(tab)}
@@ -46,9 +47,10 @@ export default function Settings(props) {
                 >
                 {tab === 'general' ? 'General' : 
                 tab === 'locations' ? 'Backups' : 
-                tab === 'data' ? 'Data Management' : 
                 tab === 'ui' ? 'UI Preferences' : 
-                tab === 'ai' ? 'AI & Vision' : 'Smart Searches'}
+                tab === 'ai' ? 'AI & Vision' : 
+                tab === 'search' ? 'Smart Searches' : 
+                tab === 'data' ? 'Data Management' : ''}
                 </button>
             ))}
             </div>
@@ -281,6 +283,58 @@ export default function Settings(props) {
                         {dataOpProgress && dataOpProgress.id === 'tags' && dataOpProgress.action === 'import' ? (
                         <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Cancel Import</>
                         ) : 'Import JSON'}
+                    </ActionButton>
+                    </div>
+                </div>
+                <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                    <div style={{ flex: 1, minWidth: '250px' }}>
+                    <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Virtual Folders</h4>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Export or import virtual folder tree structures and manual file associations as a JSON file.</p>
+                    </div>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                    <ActionButton 
+                        disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} 
+                        className="btn btn-secondary" 
+                        onClick={exportVirtualFolders}
+                        title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to export data" : ""}
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                    >
+                        Export JSON
+                    </ActionButton>
+                    <ActionButton 
+                        disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} 
+                        className="btn btn-secondary" 
+                        onClick={importVirtualFolders}
+                        title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to import data" : ""}
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                    >
+                        Import JSON
+                    </ActionButton>
+                    </div>
+                </div>
+                <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                    <div style={{ flex: 1, minWidth: '250px' }}>
+                    <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Combined WABS Backup</h4>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Backup or restore all WABS metadata at once: Known People (Faces), Object &amp; Custom Tags, and Virtual Folders.</p>
+                    </div>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                    <ActionButton 
+                        disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} 
+                        className="btn btn-secondary" 
+                        onClick={exportAllWabs}
+                        title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to export data" : ""}
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                    >
+                        Backup All
+                    </ActionButton>
+                    <ActionButton 
+                        disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} 
+                        className="btn btn-secondary" 
+                        onClick={importAllWabs}
+                        title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to import data" : ""}
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                    >
+                        Restore All
                     </ActionButton>
                     </div>
                 </div>

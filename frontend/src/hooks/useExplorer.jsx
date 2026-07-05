@@ -25,6 +25,117 @@ export function useExplorer({
   const lastCheckedPath = useRef(null);
   const [activeDate, setActiveDate] = useState('');
 
+  // Virtual Folder states
+  const [virtualFolderId, setVirtualFolderId] = useState(null);
+  const [currentVirtualFolder, setCurrentVirtualFolder] = useState(null);
+  const [virtualFolders, setVirtualFolders] = useState([]);
+
+  async function loadVirtualFolders() {
+    try {
+      const r = await axios.get(`${API}/virtual-folders`);
+      setVirtualFolders(r.data);
+    } catch (err) {
+      console.warn('Failed to load virtual folders', err);
+    }
+  }
+
+  async function createVirtualFolder(name, parentId = null, isDynamic = false, queryText = null, metadataJson = null) {
+    try {
+      const r = await axios.post(`${API}/virtual-folders`, {
+        name,
+        parent_id: parentId,
+        is_dynamic: isDynamic,
+        query: queryText,
+        metadata_json: metadataJson
+      });
+      await loadVirtualFolders();
+      return r.data;
+    } catch (err) {
+      alert('Failed to create virtual folder: ' + (err.response?.data?.detail || err.message));
+    }
+  }
+
+  async function deleteVirtualFolder(folderId) {
+    try {
+      const folderToDelete = (virtualFolders || []).find(f => f.id === folderId);
+      await axios.delete(`${API}/virtual-folders/${folderId}`);
+      if (virtualFolderId === folderId) {
+        const parentId = folderToDelete?.parent_id;
+        const parent = parentId ? (virtualFolders || []).find(f => f.id === parentId) : null;
+        if (parent) {
+          setVirtualFolderId(parent.id);
+          setCurrentVirtualFolder(parent);
+          setPage('virtual_folder');
+          await loadFiles(0, false, filterCategory, sortBy, sortOrder, 'virtual_folder', parent.id);
+        } else {
+          setVirtualFolderId(null);
+          setCurrentVirtualFolder(null);
+          setPage('virtual_folders');
+        }
+      }
+      await loadVirtualFolders();
+    } catch (err) {
+      alert('Failed to delete virtual folder: ' + (err.response?.data?.detail || err.message));
+    }
+  }
+
+  async function renameVirtualFolder(folderId, name, metadataJson = null) {
+    try {
+      const payload = { name };
+      if (metadataJson !== null) {
+        payload.metadata_json = metadataJson;
+      }
+      const r = await axios.put(`${API}/virtual-folders/${folderId}`, payload);
+      if (virtualFolderId === folderId) {
+        setCurrentVirtualFolder(r.data);
+      }
+      await loadVirtualFolders();
+    } catch (err) {
+      alert('Failed to rename virtual folder: ' + (err.response?.data?.detail || err.message));
+    }
+  }
+
+  async function updateVirtualFolderQuery(folderId, queryText) {
+    try {
+      const r = await axios.put(`${API}/virtual-folders/${folderId}`, { query: queryText });
+      if (virtualFolderId === folderId) {
+        setCurrentVirtualFolder(r.data);
+      }
+      await loadVirtualFolders();
+    } catch (err) {
+      alert('Failed to update folder query: ' + (err.response?.data?.detail || err.message));
+    }
+  }
+
+  async function addFilesToVirtualFolder(folderId, fileIds) {
+    try {
+      const r = await axios.post(`${API}/virtual-folders/${folderId}/files`, { file_ids: fileIds });
+      showToastMessage(`Successfully added ${r.data.added} file(s) to virtual folder.`);
+      if (virtualFolderId === folderId) {
+        setCheckedFiles(new Set());
+        await loadFiles(0, false, filterCategory, sortBy, sortOrder);
+      }
+      return r.data;
+    } catch (err) {
+      alert('Failed to add files to virtual folder: ' + (err.response?.data?.detail || err.message));
+    }
+  }
+
+  async function removeFilesFromVirtualFolder(folderId, fileIds) {
+    try {
+      await axios.delete(`${API}/virtual-folders/${folderId}/files`, { data: { file_ids: fileIds } });
+      showToastMessage(`Removed file(s) from virtual folder.`);
+      setCheckedFiles(new Set());
+      await loadFiles(0, false, filterCategory, sortBy, sortOrder);
+    } catch (err) {
+      alert('Failed to remove files: ' + (err.response?.data?.detail || err.message));
+    }
+  }
+
+  useEffect(() => {
+    loadVirtualFolders();
+  }, []);
+
   const searchTimeout = useRef(null);
   const searchAbortController = useRef(null);
   const loadFilesAbortController = useRef(null);
@@ -60,7 +171,7 @@ export function useExplorer({
   }, [checkedFiles, settings]);
 
   // Loads files in chunks from the backend with AbortController query cancellation support.
-  async function loadFiles(nextOffset = 0, append = false, cat = filterCategory, sBy = sortBy, sOrd = sortOrder) {
+  async function loadFiles(nextOffset = 0, append = false, cat = filterCategory, sBy = sortBy, sOrd = sortOrder, customPage = page, customFolderId = virtualFolderId) {
     if (loadFilesAbortController.current) {
       loadFilesAbortController.current.abort();
     }
@@ -68,7 +179,11 @@ export function useExplorer({
     const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
     const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
     try {
-      const r = await axios.get(`${API}/files?category=${cat}&offset=${nextOffset}&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`, {
+      let url = `${API}/files?category=${cat}&offset=${nextOffset}&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
+      if (customPage === 'virtual_folder' && customFolderId) {
+        url = `${API}/virtual-folders/${customFolderId}/files?category=${cat}&offset=${nextOffset}&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
+      }
+      const r = await axios.get(url, {
         signal: loadFilesAbortController.current.signal
       });
       if(append){
@@ -98,7 +213,7 @@ export function useExplorer({
   }
 
   // Debounces search query key inputs and initiates search transitions.
-  function doSearch(value, cat = filterCategory, sBy = sortBy, sOrd = sortOrder) {
+  function doSearch(value, cat = filterCategory, sBy = sortBy, sOrd = sortOrder, forceFolderId = undefined) {
     setQuery(value);
   
     if(searchTimeout.current) {
@@ -106,13 +221,17 @@ export function useExplorer({
     }
   
     searchTimeout.current = setTimeout(async () => {
+      const folderIdToUse = forceFolderId !== undefined ? forceFolderId : virtualFolderId;
       if(!value){
-        if (page !== 'search') {
-          setPage('explorer');
-        }
         setSelected(null);
         setCheckedFiles(new Set());
-        await loadFiles(0, false, cat, sBy, sOrd);
+        if (folderIdToUse) {
+          setPage('virtual_folder');
+          await loadFiles(0, false, cat, sBy, sOrd, 'virtual_folder', folderIdToUse);
+        } else {
+          setPage('explorer');
+          await loadFiles(0, false, cat, sBy, sOrd, 'explorer');
+        }
         return;
       }
   
@@ -128,7 +247,11 @@ export function useExplorer({
       setCheckedFiles(new Set());
       const safeQuery = value.replace(/,/g, ' ');
       try {
-        const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`, {
+        let url = `${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
+        if (folderIdToUse) {
+          url += `&virtual_folder_id=${folderIdToUse}`;
+        }
+        const r = await axios.get(url, {
           signal: searchAbortController.current.signal
         });
         setSearchCache(r.data);
@@ -147,11 +270,12 @@ export function useExplorer({
     }, 600);
   }
 
-  async function goToSearch(cat = filterCategory, sBy = sortBy, sOrd = sortOrder) {
+  async function goToSearch(cat = filterCategory, sBy = sortBy, sOrd = sortOrder, forceFolderId = undefined) {
     setSelected(null);
     setCheckedFiles(new Set());
     const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
     const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
+    const folderIdToUse = forceFolderId !== undefined ? forceFolderId : virtualFolderId;
     if(query){
       if (searchAbortController.current) {
         searchAbortController.current.abort();
@@ -161,7 +285,11 @@ export function useExplorer({
       setLoadingMore(true);
       const safeQuery = query.replace(/,/g, ' ');
       try {
-        const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`, {
+        let url = `${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
+        if (folderIdToUse) {
+          url += `&virtual_folder_id=${folderIdToUse}`;
+        }
+        const r = await axios.get(url, {
           signal: searchAbortController.current.signal
         });
         setSearchCache(r.data);
@@ -177,10 +305,16 @@ export function useExplorer({
           setHasMore(false);
         }
       }
+      setPage('search');
     } else {
-      await loadFiles(0, false, cat, sBy, sOrd);
+      if (folderIdToUse) {
+        setPage('virtual_folder');
+        await loadFiles(0, false, cat, sBy, sOrd, 'virtual_folder', folderIdToUse);
+      } else {
+        setPage('explorer');
+        await loadFiles(0, false, cat, sBy, sOrd, 'explorer');
+      }
     }
-    setPage('search');
   }
 
   async function loadMore() {
@@ -190,7 +324,7 @@ export function useExplorer({
     loadingMoreRef.current = true;
     const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
     const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
-    if(page === 'explorer'){
+    if(page === 'explorer' || page === 'virtual_folder'){
       await loadFiles(offset, true, filterCategory, sortBy, sortOrder);
     } else if(page === 'search'){
       if (searchAbortController.current) searchAbortController.current.abort();
@@ -198,7 +332,11 @@ export function useExplorer({
   
       const safeQuery = query.replace(/,/g, ' ');
       try {
-        const r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${offset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`, {
+        let url = `${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${offset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+        if (virtualFolderId) {
+          url += `&virtual_folder_id=${virtualFolderId}`;
+        }
+        const r = await axios.get(url, {
           signal: searchAbortController.current.signal
         });
         setFiles(prev => {
@@ -253,11 +391,18 @@ export function useExplorer({
   
     try {
       let r;
-      if(page === 'explorer'){
-        r = await axios.get(`${API}/files?category=${filterCategory}&offset=${nextStartOffset}&limit=${fetchLimit}&sort_by=${sortBy}&sort_order=${sortOrder}`);
+      if(page === 'explorer' || page === 'virtual_folder'){
+        let url = `${API}/files?category=${filterCategory}&offset=${nextStartOffset}&limit=${fetchLimit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+        if (page === 'virtual_folder' && virtualFolderId) {
+          url = `${API}/virtual-folders/${virtualFolderId}/files?category=${filterCategory}&offset=${nextStartOffset}&limit=${fetchLimit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+        }
+        r = await axios.get(url);
       } else if(page === 'search'){
-        const safeQuery = query.replace(/,/g, ' ');
-        r = await axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${nextStartOffset}&limit=${fetchLimit}&sort_by=${sortBy}&sort_order=${sortOrder}`);
+        let url = `${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${nextStartOffset}&limit=${fetchLimit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+        if (virtualFolderId) {
+          url += `&virtual_folder_id=${virtualFolderId}`;
+        }
+        r = await axios.get(url);
       } else if(page === 'person_files') {
         const currentPerson = sharedState.current?.people?.currentPerson;
         if (currentPerson) {
@@ -348,6 +493,15 @@ export function useExplorer({
 
   const handleItemClick = (e, item) => {
     if (e.target.tagName && e.target.tagName.toLowerCase() === 'input' && e.target.type === 'checkbox') return;
+
+    if (item.is_folder) {
+      setVirtualFolderId(item.id);
+      setCurrentVirtualFolder(item);
+      setPage('virtual_folder');
+      setFilterCategory('all');
+      setQuery('');
+      return;
+    }
 
     setSelected(item);
     const currentIndex = sortedFiles.findIndex(f => f.path === item.path);
@@ -613,20 +767,25 @@ export function useExplorer({
   }
 
   const handleFilterChange = (e) => {
-    const newCat = e.target.value;
-    setFilterCategory(newCat);
+    const val = e.target.value;
     setShowSelectedOnly(false);
     setCheckedFiles(new Set());
-    if (newCat === 'duplicates') {
+    setSelected(null);
+
+    setFilterCategory(val);
+    setVirtualFolderId(null);
+    setCurrentVirtualFolder(null);
+    setPage('explorer');
+    
+    if (val === 'duplicates') {
       setSortBy('size');
       setSortOrder('desc');
     }
-    setSelected(null);
-    if (page === 'explorer') {
-      loadFiles(0, false, newCat, newCat === 'duplicates' ? 'size' : sortBy, newCat === 'duplicates' ? 'desc' : sortOrder);
-    } else if (page === 'search') {
-      doSearch(query, newCat, newCat === 'duplicates' ? 'size' : sortBy, newCat === 'duplicates' ? 'desc' : sortOrder);
-    }
+
+    const activeSortBy = val === 'duplicates' ? 'size' : sortBy;
+    const activeSortOrder = val === 'duplicates' ? 'desc' : sortOrder;
+
+    loadFiles(0, false, val, activeSortBy, activeSortOrder, 'explorer', null);
   };
   
   const handleCategoryClick = (category) => {
@@ -639,7 +798,7 @@ export function useExplorer({
       setSortBy('size');
       setSortOrder('desc');
     }
-    loadFiles(0, false, category, category === 'duplicates' ? 'size' : sortBy, category === 'duplicates' ? 'desc' : sortOrder);
+    loadFiles(0, false, category, category === 'duplicates' ? 'size' : sortBy, category === 'duplicates' ? 'desc' : sortOrder, 'explorer', null);
   };
 
   const sortedFiles = useMemo(() => {
@@ -723,6 +882,137 @@ export function useExplorer({
     return groups;
   }, [sortedFiles, filterCategory]);
 
+  async function exportVirtualFolders() {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+      alert("Please stop all background tasks before exporting virtual folders to ensure data consistency.");
+      return;
+    }
+    window.wabs_action_in_progress = true;
+    setActionInProgress(true);
+    showToastMessage('Exporting virtual folders...');
+    try {
+      const r = await axios.get(`${API}/system/export-folders`);
+      const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const dlAnchorElem = document.createElement('a');
+      dlAnchorElem.setAttribute("href", url);
+      dlAnchorElem.setAttribute("download", `wabs_virtual_folders_${new Date().toISOString().split('T')[0]}.json`);
+      document.body.appendChild(dlAnchorElem);
+      dlAnchorElem.click();
+      dlAnchorElem.remove();
+      URL.revokeObjectURL(url);
+      showToastMessage('Virtual folders exported successfully.');
+    } catch(err) {
+      alert('Error exporting virtual folders: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      window.wabs_action_in_progress = false;
+      setActionInProgress(false);
+    }
+  }
+
+  function importVirtualFolders() {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+      alert("Please stop all background tasks before importing virtual folders to prevent database conflicts.");
+      return;
+    }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        if (window.wabs_action_in_progress) return;
+        window.wabs_action_in_progress = true;
+        setActionInProgress(true);
+        showToastMessage('Importing virtual folders...');
+        try {
+          const payload = JSON.parse(event.target.result);
+          if (!Array.isArray(payload)) throw new Error("Invalid JSON format");
+          await axios.post(`${API}/system/import-folders`, payload);
+          showToastMessage('Virtual folders imported successfully.');
+          loadVirtualFolders();
+        } catch (err) {
+          alert('Error importing virtual folders: ' + (err?.response?.data?.detail || err.message));
+        } finally {
+          window.wabs_action_in_progress = false;
+          setActionInProgress(false);
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  }
+
+  async function exportAllWabs() {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+      alert("Please stop all background tasks before exporting WABS data to ensure data consistency.");
+      return;
+    }
+    window.wabs_action_in_progress = true;
+    setActionInProgress(true);
+    showToastMessage('Exporting all WABS data...');
+    try {
+      const r = await axios.get(`${API}/system/export-all`);
+      const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const dlAnchorElem = document.createElement('a');
+      dlAnchorElem.setAttribute("href", url);
+      dlAnchorElem.setAttribute("download", `wabs_full_backup_${new Date().toISOString().split('T')[0]}.json`);
+      document.body.appendChild(dlAnchorElem);
+      dlAnchorElem.click();
+      dlAnchorElem.remove();
+      URL.revokeObjectURL(url);
+      showToastMessage('All WABS data exported successfully.');
+    } catch(err) {
+      alert('Error exporting WABS data: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      window.wabs_action_in_progress = false;
+      setActionInProgress(false);
+    }
+  }
+
+  function importAllWabs() {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+      alert("Please stop all background tasks before importing WABS data to prevent database conflicts.");
+      return;
+    }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        if (window.wabs_action_in_progress) return;
+        window.wabs_action_in_progress = true;
+        setActionInProgress(true);
+        showToastMessage('Importing all WABS data...');
+        try {
+          const payload = JSON.parse(event.target.result);
+          if (typeof payload !== 'object' || Array.isArray(payload)) throw new Error("Invalid WABS backup JSON format");
+          const r = await axios.post(`${API}/system/import-all`, payload);
+          showToastMessage(`Successfully imported: ${r.data.imported_people} profiles, ${r.data.imported_faces} faces, ${r.data.imported_folders} folders, and ${r.data.imported_tags} file tags.`);
+          loadVirtualFolders();
+          if (window.loadPeople) window.loadPeople();
+        } catch (err) {
+          alert('Error importing WABS data: ' + (err?.response?.data?.detail || err.message));
+        } finally {
+          window.wabs_action_in_progress = false;
+          setActionInProgress(false);
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  }
+
   useEffect(() => {
     syncActiveDate(document.querySelector('.content'));
   }, [groupedFiles, page]);
@@ -737,6 +1027,15 @@ export function useExplorer({
     loadPrevious, syncActiveDate, handleScroll, openFile, openContainingFolder, handleItemClick,
     toggleCheck, selectAll, selectVerifiedDuplicates, deleteSelected, openSelected,
     copySelected, moveSelected, locateSelectedFileInExplorer, handleFilterChange,
-    handleCategoryClick, sortedFiles, groupedFiles
+    handleCategoryClick, sortedFiles, groupedFiles,
+    
+    // Virtual Folder exports
+    virtualFolderId, setVirtualFolderId, currentVirtualFolder, setCurrentVirtualFolder,
+    virtualFolders, setVirtualFolders, loadVirtualFolders, createVirtualFolder,
+    deleteVirtualFolder, renameVirtualFolder, updateVirtualFolderQuery,
+    addFilesToVirtualFolder, removeFilesFromVirtualFolder,
+    
+    // Data Management
+    exportVirtualFolders, importVirtualFolders, exportAllWabs, importAllWabs
   };
 }

@@ -163,6 +163,47 @@ def get_object_tags():
                         unique_tags.add(tag)
         return sorted(list(unique_tags))
 
+def export_tags_internal(s):
+    files = s.query(FileIndex.path, FileIndex.tags).filter(FileIndex.tags != None, FileIndex.tags != '').yield_per(1000)
+    export_data = []
+    for path, tags in files:
+        if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+            raise HTTPException(status_code=400, detail="Operation cancelled")
+        tag_list = parse_tags(tags)
+        if tag_list:
+            export_data.append({"path": path, "tags": sorted(list(tag_list))})
+    return export_data
+
+def import_tags_internal(s, tags_data):
+    imported_count = 0
+    for item in tags_data:
+        if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+            raise HTTPException(status_code=400, detail="Operation cancelled")
+        path = item.get("path")
+        tags_list = item.get("tags")
+        if not path or not tags_list:
+            continue
+        
+        # Handle cases where tags might still be a string (robustness)
+        if isinstance(tags_list, str):
+            imported_tags = parse_tags(tags_list)
+        else:
+            imported_tags = {t.strip() for t in tags_list if t.strip()}
+            
+        if not imported_tags:
+            continue
+            
+        file_record = find_file_by_path_smart(s, path)
+        if file_record:
+            current_tags = parse_tags(file_record.tags)
+            combined = current_tags.union(imported_tags)
+            new_tags_str = ",".join(sorted(combined))
+            if new_tags_str != file_record.tags:
+                file_record.tags = new_tags_str
+                imported_count += 1
+    s.commit()
+    return imported_count
+
 @router.get("/system/export-tags", dependencies=[Depends(lock_data_operation)])
 def export_tags():
     """
@@ -172,13 +213,7 @@ def export_tags():
         import logging
         logging.info("Exporting tags data.")
     with SessionLocal() as s:
-        files = s.query(FileIndex.path, FileIndex.tags).filter(FileIndex.tags != None, FileIndex.tags != '').yield_per(1000)
-        export_data = []
-        for path, tags in files:
-            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
-                raise HTTPException(status_code=400, detail="Operation cancelled")
-            export_data.append({"path": path, "tags": tags})
-        return export_data
+        return export_tags_internal(s)
 
 @router.post("/system/import-tags", dependencies=[Depends(lock_data_operation)])
 def import_tags(payload: list = Body(...)):
@@ -186,23 +221,8 @@ def import_tags(payload: list = Body(...)):
     Imports tags from JSON backup.
     Special code: Uses a Smart Path Fallback Matcher so tags survive root folder/drive letter changes.
     """
-    imported_count = 0
     with SessionLocal() as s:
-        for item in payload:
-            if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
-                raise HTTPException(status_code=400, detail="Operation cancelled")
-            path = item.get("path")
-            new_tags = item.get("tags")
-            if not path or not new_tags: continue
-            file_record = find_file_by_path_smart(s, path)
-            if file_record:
-                current_tags = parse_tags(file_record.tags)
-                imported_tags = parse_tags(new_tags)
-                new_tags_str = ",".join(sorted(current_tags.union(imported_tags)))
-                if new_tags_str != file_record.tags:
-                    file_record.tags = new_tags_str
-                    imported_count += 1
-        s.commit()
+        imported_count = import_tags_internal(s, payload)
     return {"success": True, "imported_files": imported_count}
 
 object_scanner_thread = None

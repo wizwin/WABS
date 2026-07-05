@@ -25,6 +25,7 @@ import threading
 import webbrowser
 import socket
 import uvicorn
+import asyncio
 from backend.app.main import app
 
 if sys.stdout is None:
@@ -334,6 +335,24 @@ if __name__ == "__main__":
         except (ValueError, IndexError):
             print("Invalid port specified. Using default 8000.")
             port = 8000
+
+    # Check if port is already in use to prevent duplicate launches
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("0.0.0.0", port))
+    except OSError:
+        msg = f"Port {port} is already in use.\nAnother instance of WABS or another application is already running."
+        print(f"Error: {msg}", file=sys.stderr, flush=True)
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("WABS Launch Error", msg)
+            root.destroy()
+        except Exception:
+            pass
+        sys.exit(1)
 
     # Wait 1.5 seconds for Uvicorn to start, then run the startup popup and open the browser
     threading.Timer(1.5, on_startup, args=[port, show_info_popup, open_browser_flag]).start()

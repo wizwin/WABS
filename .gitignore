@@ -32,3 +32,4 @@ wabs.log
 *.db-shm
 *.db-wal
 /test
+/tests

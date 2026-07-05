@@ -3,10 +3,29 @@
 ## v1.0.2
 
 ### 🚀 Major New Features & Enhancements
+*   **Settings Tab Layout Optimization:** Reordered the Settings tabs to make the "Backups" (locations) tab the second option and the "Data Management" tab the last option, improving the default settings setup and configuration flow.
+*   **Settings Backup Verification Nudge:** Integrated an intelligent toast notification warning when saving settings without any configured backup locations. Tapping the "Configure" button in the toast redirects the user directly to the Backups tab.
+*   **Hierarchical Virtual Folders:** Implemented a full parent-child folder tree navigation system. Users can create, rename, and nest subfolders indefinitely with multi-level breadcrumbs navigation.
+*   **Direct Disk Export (Native Folder Selector):** Added an option to export any virtual folder (along with its subfolders and files recursively) to another drive. Integrated with a native OS-level folder selector (Windows/Linux) to select destination paths directly.
+*   **Dynamic Queries & Hybrid Folders:** Integrated dynamic rules/query filters for both root folders and subfolders. Files matching the query rules are combined with manually added files in the folder view.
+*   **Recursive File Counts:** Corrected the file counter for virtual folders to calculate and display the recursive sum of files in the current folder and all of its subdirectories.
+*   **Data Portability (Virtual Folder Import/Export):** Extended Data Management in Settings to support importing/exporting virtual folder structures. Added a "Combined Backup" option to export all WABS metadata (Known People, Object/Custom Tags, and Virtual Folders) together in one step. Includes color and icon configuration details.
+*   **Virtual Folder Color & Icon Customization:** Integrated styling controls into the folder Create/Edit modals in Virtual Folder and Explorer layouts. Users can choose from a curated palette of 10 modern colors and 11 descriptive icons. Configurations are stored inside the SQLite database as serialized metadata.
 *   **Audio Album Art Extraction:** Integrated cover/album art extraction from audio files using the `mutagen` metadata library. Supported formats include MP3 (ID3 tags via `APIC` frames), MP4/M4A (`covr` tag), FLAC and OGG (via the `pictures` attribute or base64-encoded `metadata_block_picture` in Vorbis comments), and WMA/ASF (`WM/Picture` tags).
 *   **Audio Thumbnail Caching:** Automatically scales and saves extracted cover art as a 400x400 JPEG inside the `audio` subdirectory of WABS's cache folder (i.e. `.wabs_cache/audio`), keeping the cache structured.
 *   **Dynamic Audio Preview Serving:** Updated the `/preview/{item_id}` endpoint to serve the cached JPEG cover art when requested, falling back to a text SVG if no cover art exists.
 *   **Indigo Audio Fallback Placeholders:** Added custom indigo-themed placeholders (`#f5f3ff` for light theme, `#1e1b4b` for dark theme) in the frontend Explorer layout to represent audio files without cover art, rather than using a generic offline placeholder.
+*   **Virtual Folder Search Scope Limiting:** Restricted search queries initiated from within a Virtual Folder view to only match files within that Virtual Folder. General searches performed outside Virtual Folders continue to query all indexed workspace files.
+*   **Unified Virtual Folder Filter Behavior:** Integrated Virtual Folder selections inside the Explorer Filter dropdown to behave identically to standard categories (e.g., Photos, Videos). Selecting a Virtual Folder filters the current Explorer grid list in-place rather than jumping layout view context.
+
+### 🐞 Bug Fixes & Refinements
+*   **Root-Only Dashboard Count:** Fixed the Dashboard virtual folder statistics tile to only count root-level folders, resolving incorrect counts when subfolders were present.
+*   **Explorer Auto-Reload & Navigation Reset:** Fixed a regression where files did not reload automatically when navigating to virtual folders from the filter dropdown. Added automatic reset of active category filter back to `'all'` when navigating inside a virtual folder to prevent audio files from being hidden.
+*   **Smart Back-Navigation:** Deleting a subfolder now gracefully navigates the user back to the parent folder in the hierarchy, or redirects to the main Virtual Folders tile if the last folder is deleted.
+*   **Tree Selection UX Optimization:** Refactored the `AddToFolder` modal node selection logic. Clicking anywhere on a folder row now toggles expand/collapse state, while selecting a folder is done via a dedicated "Select" button to prevent accidental selections of parent folders.
+*   **Folder State Integrity:** Preserved parent hierarchy and configuration during virtual folder updates and renames, preventing nested subfolders from accidentally converting to root folders.
+*   **Missing Category Filters Alignment:** Added the missing `"untagged"` category query block to the virtual folder files endpoint, ensuring correct results when filtering untagged media.
+*   **Consolidated Shared Constants:** Centralized duplicate variables and configuration lists (such as standard categories, search query prefixes, searchable document categories, and extension type mappings) into a single constants module, removing code duplication across backend routes, indexing, and search files.
 
 ## v1.0.1
 

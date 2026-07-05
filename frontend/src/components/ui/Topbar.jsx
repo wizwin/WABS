@@ -35,7 +35,7 @@ export function Topbar({
           style={{
             flex: 1,
             margin: 0,
-            paddingRight: (page === 'explorer' || page === 'search' || page === 'person_files') ? (query ? '100px' : '72px') : (query ? '72px' : '40px')
+            paddingRight: (page === 'explorer' || page === 'search' || page === 'person_files' || page === 'virtual_folder') ? (query ? '100px' : '72px') : (query ? '72px' : '40px')
           }}
         />
         {suggestionsData.type !== 'none' && suggestionsData.suggestions.length > 0 && (
@@ -80,7 +80,7 @@ export function Topbar({
           >
             <HelpIcon fontSize="small" />
           </ActionButton>
-          {(page === 'explorer' || page === 'search' || page === 'person_files') && (
+          {(page === 'explorer' || page === 'search' || page === 'person_files' || page === 'virtual_folder') && (
             <ActionButton
               className=""
               onClick={toggleDetails}
@@ -109,7 +109,7 @@ export function Topbar({
         )}
       </div>
 
-      {(page === 'explorer' || page === 'search' || page === 'person_files') && (
+      {(page === 'explorer' || page === 'search' || page === 'person_files' || page === 'virtual_folder') && (
         <div style={{ display: 'flex', gap: '8px' }}>
           <ActionButton
             className=""

@@ -121,7 +121,7 @@ export function useSystemOps({
         explorer.globalFileCache.current.clear();
         explorer.setCheckedFiles(new Set());
         explorer.setSelected(null);
-        if (page === 'explorer') await explorer.loadFiles(0, false, explorer.filterCategory);
+        if (page === 'explorer' || page === 'virtual_folder') await explorer.loadFiles(0, false, explorer.filterCategory);
         else if (page === 'search') await explorer.goToSearch(explorer.filterCategory);
       }
     } catch (err) {

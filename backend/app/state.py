@@ -35,7 +35,12 @@ STATE = {
     "hasher_total": 0,
     "hasher_current": 0,
     "hasher_current_file": "",
-    "duplicates_status_changed_at": 0
+    "duplicates_status_changed_at": 0,
+    "export_running": False,
+    "export_folder_id": None,
+    "export_total": 0,
+    "export_current": 0,
+    "export_current_file": ""
 }
 
 scanner_lock = threading.Lock()

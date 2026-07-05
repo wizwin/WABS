@@ -38,7 +38,7 @@ a = Analysis(
     # We exclude pyarrow and tzdata to save substantial package space:
     # 1. pyarrow: Not used in WABS, but transitively detected and bundled (5.4MB).
     # 2. tzdata: Python's zoneinfo timezone database, unused by WABS's local/naive time (2.5MB).
-    excludes=['pyarrow', 'tzdata'],
+    excludes=['pyarrow', 'tzdata', 'tensorflow', 'torch', 'tensorboard'],
     noarchive=False,
     optimize=0,
 )

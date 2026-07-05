@@ -16,7 +16,11 @@ from backend.app.database import SessionLocal, FileIndex
 from backend.app.config import load_config, get_thumbnail_dir
 from backend.app.utils.utils import _resolve_path
 from backend.app.utils.media import generate_photo_thumbnail, generate_video_thumbnail, generate_document_thumbnail, generate_audio_thumbnail
-from backend.app.utils.indexer import PLAIN_TEXT_EXTENSIONS
+from backend.app.constants import (
+    STANDARD_CATEGORIES,
+    SEARCHABLE_DOCUMENT_CATEGORIES,
+    PLAIN_TEXT_EXTENSIONS
+)
 from backend.app.utils.validators import check_no_scanners_running, lock_data_operation
 import backend.app.shared_state as shared_state
 from backend.app.state import STATE
@@ -59,15 +63,26 @@ def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", so
         with SessionLocal() as s:
             q = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
             if category != "all":
-                if category == "other":
-                    standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
-                    q = q.filter(~FileIndex.category.in_(standard))
+                if category.startswith("virtual_folder_"):
+                    try:
+                        folder_id = int(category.replace("virtual_folder_", ""))
+                        from backend.app.routes.virtual_folders import get_virtual_folder_file_ids
+                        folder_file_ids = get_virtual_folder_file_ids(s, folder_id)
+                        if not folder_file_ids:
+                            yield "[]"
+                            return
+                        q = q.filter(FileIndex.id.in_(folder_file_ids))
+                    except Exception:
+                        yield "[]"
+                        return
+                elif category == "other":
+                    q = q.filter(~FileIndex.category.in_(STANDARD_CATEGORIES))
                 elif category == "duplicates":
                     dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
                     q = q.filter(FileIndex.size.in_(dup_sizes))
                     q = q.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
                 elif category == "searchable_documents":
-                    q = q.filter(FileIndex.category.in_(['document', 'ebook', 'code']), text("files.id IN (SELECT file_id FROM processed_text)"))
+                    q = q.filter(FileIndex.category.in_(SEARCHABLE_DOCUMENT_CATEGORIES), text("files.id IN (SELECT file_id FROM processed_text)"))
                 elif category == "untagged":
                     q = q.filter(FileIndex.category == 'photo', (FileIndex.tags.is_(None) | (FileIndex.tags == '') | (~FileIndex.tags.like('%object:%') & ~FileIndex.tags.like('%person:%') & ~FileIndex.tags.like('%ocr%'))))
                 else:

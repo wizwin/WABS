@@ -1,6 +1,9 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import axios from 'axios';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
+import FolderIcon from '@mui/icons-material/Folder';
+import SettingsIcon from '@mui/icons-material/Settings';
+import AddToFolderModal from '../components/ui/AddToFolderModal';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CloseIcon from '@mui/icons-material/Close';
@@ -8,6 +11,8 @@ import GridViewIcon from '@mui/icons-material/GridView';
 import ViewListIcon from '@mui/icons-material/ViewList';
 import PlaceIcon from '@mui/icons-material/Place';
 import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
+import AddIcon from '@mui/icons-material/Add';
+import { FOLDER_COLORS, FOLDER_ICONS, ICON_MAP, getFolderStyleAndIcon } from './VirtualFolders';
 
 import { ActionButton } from '../components/ui/ActionButton';
 import { TimelineItem } from '../components/ui/TimelineItem';
@@ -19,7 +24,7 @@ import { API, formatSize, parseFileDate, dateFormatter } from '../States';
 export default function Explorer(props) {
   const { 
     page, showTimeline, timelineWidth, timelineItems, activeDate, settings,
-    fullTimelineData, sortOrder, filterCategory, sortBy, setFiles, setOffset,
+    fullTimelineData, sortOrder, filterCategory, setFilterCategory, sortBy, setFiles, setOffset,
     setStartOffset, setHasMore, query, setSearchCache, isResizing, setIsResizing,
     checkedFiles, sortedFiles, selectAll, selectVerifiedDuplicates, handleFilterChange,
     setSortBy, loadFiles, doSearch, setSortOrder, indexer, actionInProgress,
@@ -33,8 +38,67 @@ export default function Explorer(props) {
     toggleCheck, handleItemClick, openContainingFolder, setSelected, openFile,
     renderThumb, checkFileReadOnly, hasMore, loadingMore, showDetails, detailsWidth,
     selected, getPersonThumbUrl, currentPerson, personPreviewPhotos, renderMetadata,
-    setLoadingMore, handleScroll, dataOpProgress
+    setLoadingMore, handleScroll, dataOpProgress, showToastMessage,
+    
+    // Virtual Folder props
+    virtualFolderId, currentVirtualFolder, virtualFolders, createVirtualFolder,
+    deleteVirtualFolder, renameVirtualFolder, updateVirtualFolderQuery,
+    addFilesToVirtualFolder, removeFilesFromVirtualFolder,
+    setVirtualFolderId, setCurrentVirtualFolder, setPage
   } = props;
+
+  const [isAddToFolderOpen, setIsAddToFolderOpen] = useState(false);
+  const [queryInput, setQueryInput] = useState('');
+  const [modalConfig, setModalConfig] = useState({
+    isOpen: false,
+    title: '',
+    initialValue: '',
+    placeholder: 'Folder Name',
+    onConfirm: null
+  });
+  const [modalInputValue, setModalInputValue] = useState('');
+  const [modalError, setModalError] = useState('');
+  const [selectedColor, setSelectedColor] = useState('#3b82f6');
+  const [selectedIcon, setSelectedIcon] = useState('folder');
+
+  const handleModalConfirm = () => {
+    const val = modalInputValue.trim();
+    if (!val) {
+      setModalError('Folder name cannot be empty.');
+      return;
+    }
+    modalConfig.onConfirm(val, selectedColor, selectedIcon);
+    setModalConfig(prev => ({ ...prev, isOpen: false }));
+  };
+
+  useEffect(() => {
+    if (currentVirtualFolder) {
+      setQueryInput(currentVirtualFolder.query || '');
+    }
+  }, [currentVirtualFolder?.id]);
+
+  const getBreadcrumbs = () => {
+    if (!currentVirtualFolder || !virtualFolders) return [];
+    const trail = [currentVirtualFolder];
+    let current = currentVirtualFolder;
+    while (current.parent_id) {
+      const parent = (virtualFolders || []).find(f => f.id === current.parent_id);
+      if (parent) {
+        trail.unshift(parent);
+        current = parent;
+      } else {
+        break;
+      }
+    }
+    return trail;
+  };
+
+  const handleOpenFolder = (folder) => {
+    setVirtualFolderId(folder.id);
+    setCurrentVirtualFolder(folder);
+    setFilterCategory('all');
+    loadFiles(0, false, 'all', sortBy, sortOrder, 'virtual_folder', folder.id);
+  };
 
   const loadFilesAbortController = useRef(null);
   const searchAbortController = useRef(null);
@@ -58,7 +122,7 @@ export default function Explorer(props) {
   return (
     <>
         {
-        (page==='explorer' || page==='search') &&
+        (page==='explorer' || page==='search' || page==='virtual_folder') &&
         <div className='explorer'>
 
         {showTimeline && (
@@ -172,6 +236,167 @@ export default function Explorer(props) {
         )}
 
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
+        {page === 'virtual_folder' && currentVirtualFolder && (
+          <div style={{ padding: '18px 18px 0 18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', marginBottom: '4px', flexWrap: 'wrap' }}>
+              <span 
+                style={{ cursor: 'pointer', color: '#38bdf8', fontWeight: 'bold' }} 
+                onClick={() => setPage('virtual_folders')}
+              >
+                Virtual Folders
+              </span>
+              <span style={{ color: '#475569', fontWeight: 'bold' }}>/</span>
+              {getBreadcrumbs().map((b, index, arr) => {
+                const isLast = index === arr.length - 1;
+                return (
+                  <React.Fragment key={b.id}>
+                    <span 
+                      style={{ 
+                        color: isLast ? '#f8fafc' : '#94a3b8', 
+                        fontWeight: isLast ? 'bold' : 'normal',
+                        cursor: isLast ? 'default' : 'pointer',
+                        textDecoration: isLast ? 'none' : 'underline'
+                      }}
+                      onClick={() => { if (!isLast) handleOpenFolder(b); }}
+                    >
+                      {b.name}
+                    </span>
+                    {!isLast && <span style={{ color: '#475569', fontWeight: 'bold' }}>/</span>}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+            {(() => {
+              const { color, iconKey } = getFolderStyleAndIcon(currentVirtualFolder);
+              const FolderIconComponent = ICON_MAP[iconKey] || FolderIcon;
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                  <FolderIconComponent style={{ color: color, fontSize: '28px' }} />
+                  <h2 style={{ margin: 0, fontSize: '22px', color: '#f8fafc', fontWeight: '600' }}>
+                    {currentVirtualFolder.name}
+                  </h2>
+                  <span style={{ 
+                    fontSize: '12px', 
+                    background: `${color}1a`, 
+                    color: color, 
+                    padding: '4px 10px', 
+                    borderRadius: '12px',
+                    border: `1px solid ${color}4a`,
+                    fontWeight: '600'
+                  }}>
+                    Virtual Folder
+                  </span>
+                </div>
+              );
+            })()}
+
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <ActionButton 
+                  className="btn btn-secondary" 
+                  disabled={indexer && indexer.export_running}
+                  style={{ padding: '4px 10px', fontSize: '13px' }} 
+                  onClick={() => {
+                    const { color, iconKey } = getFolderStyleAndIcon(currentVirtualFolder);
+                    setSelectedColor(color);
+                    setSelectedIcon(iconKey);
+                    setModalConfig({
+                      isOpen: true,
+                      title: `Edit "${currentVirtualFolder.name}"`,
+                      initialValue: currentVirtualFolder.name,
+                      placeholder: 'New Name',
+                      onConfirm: (name, colorVal, iconVal) => {
+                        const meta = JSON.stringify({ color: colorVal, icon: iconVal });
+                        renameVirtualFolder(currentVirtualFolder.id, name, meta);
+                      }
+                    });
+                    setModalInputValue(currentVirtualFolder.name);
+                    setModalError('');
+                  }}
+                >
+                  Rename
+                </ActionButton>
+                <ActionButton 
+                  className="btn btn-secondary" 
+                  disabled={indexer && indexer.export_running}
+                  style={{ padding: '4px 10px', fontSize: '13px', background: '#ef44442a', borderColor: '#ef44443a', color: '#f87171' }} 
+                  onClick={() => {
+                    if (confirm("Are you sure you want to delete this virtual folder? This deletes the folder but does NOT delete files on disk.")) {
+                      deleteVirtualFolder(currentVirtualFolder.id);
+                    }
+                  }}
+                >
+                  Delete
+                </ActionButton>
+                <ActionButton 
+                  className="btn btn-secondary" 
+                  disabled={indexer && indexer.export_running}
+                  style={{ padding: '4px 10px', fontSize: '13px', background: 'linear-gradient(135deg, #10b981, #059669)', border: 'none', color: 'white' }} 
+                  onClick={async () => {
+                    try {
+                      const chooseRes = await axios.get(`${API}/choose-path?mode=directory`);
+                      const targetPath = chooseRes.data?.path;
+                      if (!targetPath) return; // User cancelled
+                      
+                      showToastMessage("Exporting folder...");
+                      const r = await axios.post(`${API}/virtual-folders/${currentVirtualFolder.id}/export`, { target_path: targetPath.trim() });
+                      showToastMessage(r.data.message || "Folder exported successfully!");
+                    } catch (err) {
+                      alert("Export failed: " + (err.response?.data?.detail || err.message));
+                      showToastMessage("Export failed.");
+                    }
+                  }}
+                >
+                  Export to Drive
+                </ActionButton>
+              </div>
+
+              {indexer && indexer.export_running && indexer.export_folder_id === currentVirtualFolder.id && (
+                <div style={{ margin: '12px 0', padding: '12px 16px', background: '#1e293b', borderRadius: '12px', border: '1px solid #334155' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#f8fafc', fontWeight: 'bold', marginBottom: '6px' }}>
+                    <span>Exporting Virtual Folder...</span>
+                    <span style={{ color: '#94a3b8' }}>{indexer.export_current_file || ''}</span>
+                  </div>
+                  <ProgressBar current={indexer.export_current} total={indexer.export_total} color="#10b981" />
+                </div>
+              )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', background: '#1e293b', padding: '12px', borderRadius: '12px', border: '1px solid #334155' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '13px', color: '#94a3b8', fontWeight: 'bold', whiteSpace: 'nowrap' }}>Rules / Query:</span>
+                <input 
+                  type="text" 
+                  value={queryInput} 
+                  onChange={(e) => setQueryInput(e.target.value)}
+                  onBlur={() => {
+                    if (queryInput !== (currentVirtualFolder.query || '')) {
+                      updateVirtualFolderQuery(currentVirtualFolder.id, queryInput);
+                      setTimeout(() => loadFiles(0, false, filterCategory), 100);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.currentTarget.blur();
+                    }
+                  }}
+                  placeholder="Enter automatic filter rules (e.g. type:photo camera:iPhone object:car), or leave blank for manual-only."
+                  style={{ 
+                    flex: 1, 
+                    background: '#0f172a', 
+                    border: '1px solid #334155', 
+                    color: '#f8fafc', 
+                    padding: '6px 10px', 
+                    borderRadius: '6px', 
+                    fontSize: '13px',
+                    outline: 'none'
+                  }}
+                />
+              </div>
+              <div style={{ fontSize: '12px', color: '#64748b', paddingLeft: '94px' }}>
+                Files matching these rules will automatically appear here. You can also manually link/unlink files via the bulk actions.
+              </div>
+            </div>
+          </div>
+        )}
         <div className='sort-options' style={{ padding: '18px 18px 10px 18px', margin: 0, borderBottom: checkedFiles.size > 0 ? 'none' : '1px solid #1f2937' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginRight: '10px', cursor: 'pointer', fontWeight: '500' }}>
             <input 
@@ -194,7 +419,7 @@ export default function Explorer(props) {
         )}
 
         <label>Filter:</label>
-        <select value={filterCategory} onChange={handleFilterChange}>
+        <select value={page === 'virtual_folder' && virtualFolderId ? `virtual_folder_${virtualFolderId}` : filterCategory} onChange={handleFilterChange}>
             <option value='all'>All Files</option>
             <option value='photo'>Photos</option>
             <option value='video'>Videos</option>
@@ -211,12 +436,22 @@ export default function Explorer(props) {
             <option value='duplicates'>Duplicates</option>
             <option value='searchable_documents'>Searchable Docs</option>
             <option value='untagged'>Untagged Media</option>
+            {virtualFolders && virtualFolders.filter(vf => !vf.parent_id).length > 0 && (
+              <>
+                <option disabled>── Virtual Folders ──</option>
+                {virtualFolders.filter(vf => !vf.parent_id).map(vf => (
+                  <option key={vf.id} value={`virtual_folder_${vf.id}`}>
+                    📁 {vf.name}
+                  </option>
+                ))}
+              </>
+            )}
         </select>
 
         <label style={{marginLeft:'10px'}}>Sort by:</label>
         <select value={sortBy} onChange={(e)=>{
             setSortBy(e.target.value);
-            if(page === 'explorer') loadFiles(0, false, filterCategory, e.target.value, sortOrder);
+            if(page === 'explorer' || page === 'virtual_folder') loadFiles(0, false, filterCategory, e.target.value, sortOrder);
             else if(page === 'search') doSearch(query, filterCategory, e.target.value, sortOrder);
         }}>
             <option value='date'>Date</option>
@@ -227,7 +462,7 @@ export default function Explorer(props) {
         <ActionButton className="" style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }} onClick={()=>{
             const newOrder = sortOrder === 'asc' ? 'desc' : 'asc';
             setSortOrder(newOrder);
-            if(page === 'explorer') loadFiles(0, false, filterCategory, sortBy, newOrder);
+            if(page === 'explorer' || page === 'virtual_folder') loadFiles(0, false, filterCategory, sortBy, newOrder);
             else if(page === 'search') doSearch(query, filterCategory, sortBy, newOrder);
         }}>
             {sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />}
@@ -296,6 +531,24 @@ export default function Explorer(props) {
             )}
             </div>
 
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
+              <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setIsAddToFolderOpen(true)}>Add to Folder</ActionButton>
+              {page === 'virtual_folder' && currentVirtualFolder && (
+                <ActionButton 
+                  className="btn btn-secondary" 
+                  style={{ padding: '6px 12px', background: '#ef44442a', borderColor: '#ef44443a', color: '#f87171' }} 
+                  onClick={() => {
+                    const fileIds = Array.from(checkedFiles).map(path => globalFileCache.current?.get(path)?.id).filter(id => id);
+                    if (fileIds.length > 0) {
+                      removeFilesFromVirtualFolder(currentVirtualFolder.id, fileIds);
+                    }
+                  }}
+                >
+                  Remove from Folder
+                </ActionButton>
+              )}
+            </div>
+
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
             <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingPerson ? '#334155' : undefined }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); setIsTaggingObject(false); loadPeople(); }}>Tag Person</ActionButton>
             {isTaggingPerson && Array.isArray(people) && (
@@ -350,6 +603,26 @@ export default function Explorer(props) {
         </div>
         )}
 
+            {page === 'search' && virtualFolderId && currentVirtualFolder && (
+              <div style={{ padding: '12px 18px', background: '#3b82f61a', borderBottom: '1px solid #3b82f63b', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '14px', color: '#38bdf8', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <FolderIcon style={{ color: currentVirtualFolder.metadata?.color || '#3b82f6', fontSize: '18px' }} />
+                  Search restricted to: <strong>{currentVirtualFolder.name}</strong>
+                </span>
+                <ActionButton 
+                  className="btn btn-secondary" 
+                  style={{ padding: '6px 12px', fontSize: '13px', borderColor: '#3b82f6', color: '#38bdf8' }}
+                  onClick={() => {
+                    setVirtualFolderId(null);
+                    setCurrentVirtualFolder(null);
+                    doSearch(query, filterCategory, sortBy, sortOrder, null);
+                  }}
+                >
+                  Search Everywhere
+                </ActionButton>
+              </div>
+            )}
+
             {page === 'search' && (
             <div style={{ padding: '10px 18px', background: '#0f172a', borderBottom: '1px solid #1f2937', display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
                 <h3 style={{ marginTop: '8px', marginBottom: '16px', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px', flexShrink: 0 }}>Smart Searches</h3>
@@ -375,6 +648,100 @@ export default function Explorer(props) {
             )}
 
         <div className='content' onScroll={handleScroll} style={{ paddingTop: '18px' }}>
+        {(() => {
+          const currentSubfolders = (virtualFolders || []).filter(f => f.parent_id === virtualFolderId);
+          if (page === 'virtual_folder') {
+            return (
+              <div style={{ padding: '0 20px', marginBottom: '24px' }}>
+                <style>
+                  {`
+                    .subfolder-card-hover {
+                      transition: all 0.2s ease-in-out;
+                    }
+                    .subfolder-card-hover:hover {
+                      border-color: #3b82f6 !important;
+                      background-color: #1e293b !important;
+                      transform: translateY(-2px);
+                    }
+                  `}
+                </style>
+                <h3 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 'bold' }}>Subfolders</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '12px' }}>
+                  {currentSubfolders.map(sub => (
+                    <div 
+                      key={sub.id} 
+                      onClick={() => handleOpenFolder(sub)}
+                      style={{
+                        background: '#111827',
+                        border: '1px solid #24324a',
+                        borderRadius: '12px',
+                        padding: '12px 16px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '10px',
+                      }}
+                      className="subfolder-card-hover"
+                    >
+                      <FolderIcon style={{ color: sub.query ? '#a855f7' : '#3b82f6', fontSize: '20px' }} />
+                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                        <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#f8fafc' }} title={sub.name}>{sub.name}</div>
+                        <div style={{ fontSize: '11px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span>{sub.file_count || 0} file{sub.file_count !== 1 ? 's' : ''}</span>
+                          {sub.query && (
+                            <>
+                              <span style={{ color: '#475569' }}>•</span>
+                              <span style={{ color: '#c084fc', fontWeight: 'bold' }}>Dynamic</span>
+                            </>
+                          )}
+                        </div>
+                        {sub.query && (
+                          <div style={{ fontSize: '10.5px', color: '#64748b', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', marginTop: '2px' }} title={`Rules: ${sub.query}`}>
+                            Rules: {sub.query}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* + New Subfolder button */}
+                  <div 
+                    onClick={() => {
+                      setModalConfig({
+                        isOpen: true,
+                        title: `Create Subfolder under "${currentVirtualFolder?.name}"`,
+                        initialValue: '',
+                        placeholder: 'Subfolder Name',
+                        onConfirm: (name) => createVirtualFolder(name, virtualFolderId, false, null)
+                      });
+                      setModalInputValue('');
+                      setModalError('');
+                    }}
+                    style={{
+                      background: 'transparent',
+                      border: '2px dashed #24324a',
+                      borderRadius: '12px',
+                      padding: '12px 16px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      justifyContent: 'center',
+                      color: '#38bdf8',
+                      fontWeight: 'bold',
+                      fontSize: '13px'
+                    }}
+                    className="subfolder-card-hover"
+                  >
+                    <AddIcon style={{ fontSize: '18px' }} />
+                    New Subfolder
+                  </div>
+                </div>
+              </div>
+            );
+          }
+          return null;
+        })()}
 
         {startOffset > 0 && (
         <div style={{ textAlign: 'center', paddingTop: '150px', paddingBottom: '20px', color: '#94a3b8', display: 'flex', justifyContent: 'center', alignItems: 'flex-end', height: '200px', boxSizing: 'border-box' }}>
@@ -538,6 +905,158 @@ export default function Explorer(props) {
 
         </div>
         </>
+        )}
+
+        <AddToFolderModal
+          isOpen={isAddToFolderOpen}
+          onClose={() => setIsAddToFolderOpen(false)}
+          selectedFiles={Array.from(checkedFiles)}
+          virtualFolders={virtualFolders}
+          createVirtualFolder={createVirtualFolder}
+          addFilesToVirtualFolder={addFilesToVirtualFolder}
+          globalFileCache={globalFileCache}
+        />
+
+        {modalConfig.isOpen && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999
+          }}>
+            <div style={{
+              background: '#1e293b',
+              border: '1px solid #334155',
+              borderRadius: '16px',
+              padding: '24px',
+              width: '100%',
+              maxWidth: '400px',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4)'
+            }}>
+              <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', color: '#f8fafc', fontWeight: 'bold' }}>
+                {modalConfig.title}
+              </h3>
+
+              <input
+                type="text"
+                autoFocus
+                placeholder={modalConfig.placeholder}
+                value={modalInputValue}
+                onChange={(e) => {
+                  setModalInputValue(e.target.value);
+                  if (e.target.value.trim()) setModalError('');
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleModalConfirm();
+                  } else if (e.key === 'Escape') {
+                    setModalConfig(prev => ({ ...prev, isOpen: false }));
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  border: '1px solid #334155',
+                  background: '#0f172a',
+                  color: '#f8fafc',
+                  fontSize: '14px',
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                  marginBottom: '16px'
+                }}
+              />
+
+              {/* Custom Color Selector */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '13px', color: '#94a3b8', fontWeight: 'bold', marginBottom: '8px' }}>Folder Color</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                  {FOLDER_COLORS.map(c => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => setSelectedColor(c)}
+                      style={{
+                        width: '24px',
+                        height: '24px',
+                        borderRadius: '50%',
+                        backgroundColor: c,
+                        border: selectedColor === c ? '2px solid #f8fafc' : '2px solid transparent',
+                        cursor: 'pointer',
+                        outline: 'none',
+                        padding: 0,
+                        boxShadow: selectedColor === c ? '0 0 8px ' + c : 'none',
+                        transition: 'all 0.2s ease'
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Custom Icon Selector */}
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', fontSize: '13px', color: '#94a3b8', fontWeight: 'bold', marginBottom: '8px' }}>Folder Icon</label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '8px' }}>
+                  {FOLDER_ICONS.map(i => {
+                    const Icon = ICON_MAP[i.key] || FolderIcon;
+                    const isSel = selectedIcon === i.key;
+                    return (
+                      <button
+                        key={i.key}
+                        type="button"
+                        onClick={() => setSelectedIcon(i.key)}
+                        title={i.label}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          padding: '6px',
+                          borderRadius: '6px',
+                          background: isSel ? 'rgba(59, 130, 246, 0.15)' : '#0f172a',
+                          border: isSel ? '1px solid #3b82f6' : '1px solid #334155',
+                          color: isSel ? '#3b82f6' : '#94a3b8',
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease'
+                        }}
+                      >
+                        <Icon style={{ fontSize: '16px' }} />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {modalError && (
+                <div style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px', fontWeight: '500' }}>
+                  {modalError}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
+                <ActionButton
+                  className="btn btn-secondary"
+                  onClick={() => setModalConfig(prev => ({ ...prev, isOpen: false }))}
+                  style={{ padding: '8px 16px', borderRadius: '8px', fontSize: '14px' }}
+                >
+                  Cancel
+                </ActionButton>
+                <ActionButton
+                  className="btn btn-primary"
+                  onClick={handleModalConfirm}
+                  style={{ padding: '8px 16px', borderRadius: '8px', fontSize: '14px', background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)', border: 'none' }}
+                >
+                  Save
+                </ActionButton>
+              </div>
+            </div>
+          </div>
         )}
 
         </div>

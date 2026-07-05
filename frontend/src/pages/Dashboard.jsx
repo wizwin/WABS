@@ -1,5 +1,6 @@
 import React from 'react';
 import DashboardIcon from '@mui/icons-material/Dashboard';
+import FolderIcon from '@mui/icons-material/Folder';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
 import ImageIcon from '@mui/icons-material/Image';
 import MovieIcon from '@mui/icons-material/Movie';
@@ -30,7 +31,8 @@ export default function Dashboard(props) {
     actionInProgress, combinedOptions, setCombinedOptions,
     indexerAction, stopVerifyDuplicates, verifyDuplicates,
     stopFaceScan, startFaceScan, stopObjectScan, startObjectScan,
-    stopDocumentScan, startDocumentScan, dataOpProgress
+    stopDocumentScan, startDocumentScan, dataOpProgress,
+    virtualFolders, setVirtualFolderId, setCurrentVirtualFolder, loadFiles, showToastMessage, filterCategory
   } = props;
 
   const isTaskActive = actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation);
@@ -66,6 +68,10 @@ export default function Dashboard(props) {
         <StatCard title="Object Tags" value={objectTags.length || 0} icon={<CategoryIcon />} color="#38bdf8" onClick={() => { setPage('tags'); setSelected(null); setTagsPage(1); setTagSearchQuery(''); }} />
         <StatCard title="Untagged Media" value={stats.untagged_media || 0} icon={<ImageIcon />} color="#f59e0b" onClick={() => handleCategoryClick('untagged')} />
         <StatCard title="Searchable Docs" value={stats.searchable_documents || 0} icon={<DescriptionIcon />} color="#ec4899" onClick={() => handleCategoryClick('searchable_documents')} />
+        <StatCard title="Virtual Folders" value={stats.virtual_folders || 0} icon={<FolderIcon />} color="#a855f7" onClick={() => {
+          setPage('virtual_folders');
+          setSelected(null);
+        }} />
         </div>
 
         <div style={{display:'grid',gridTemplateColumns:'1.3fr 1fr',gap:'18px',marginTop:'24px'}}>

@@ -17,6 +17,11 @@ if (Test-Path "frontend") {
     npm install
     Write-Host "Running npm run build..."
     npm run build
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "npm run build failed. Aborting packaging."
+        Set-Location ..
+        exit 1
+    }
     Set-Location ..
 } else {
     Write-Error "frontend directory not found. Cannot build frontend assets."
@@ -26,7 +31,21 @@ if (Test-Path "frontend") {
 # 2. Package with PyInstaller
 Write-Host "`n--- 2. Packaging executable with PyInstaller ---" -ForegroundColor Yellow
 if (Test-Path "WABS-Windows.exe.spec") {
-    pyinstaller WABS-Windows.exe.spec
+    $pyinstallerCmd = "pyinstaller"
+    $venvPyInstaller = Join-Path $rootDir "venv\Scripts\pyinstaller.exe"
+    if (Test-Path $venvPyInstaller) {
+        Write-Host "Using virtual environment PyInstaller: $venvPyInstaller" -ForegroundColor Green
+        $pyinstallerCmd = $venvPyInstaller
+    } else {
+        Write-Host "No local virtual environment PyInstaller found. Using system pyinstaller." -ForegroundColor Cyan
+    }
+    
+    if (Test-Path "build") {
+        Write-Host "Cleaning existing build cache directory..." -ForegroundColor Cyan
+        Remove-Item -Recurse -Force build
+    }
+    
+    & $pyinstallerCmd --clean WABS-Windows.exe.spec
 } else {
     Write-Error "WABS-Windows.exe.spec not found."
     exit 1

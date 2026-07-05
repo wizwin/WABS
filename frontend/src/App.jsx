@@ -10,6 +10,7 @@ import Person from './pages/Person';
 import Tags from './pages/Tags';
 import Settings from './pages/Settings';
 import About from './pages/About';
+import VirtualFolders from './pages/VirtualFolders';
 
 import { API, dateFormatter, placeholderCache, SettingsContext, VERSION } from './States';
 import { ActionButton } from './components/ui/ActionButton';
@@ -269,11 +270,11 @@ async function saveSettings(){
  }
  await loadDashboard();
  // After saving settings, reload content if on explorer or search page
- if (page === 'explorer') {
-   await explorer.loadFiles(0, false, explorer.filterCategory);
- } else if (page === 'search') {
-   await explorer.goToSearch(explorer.filterCategory);
- }
+  if (page === 'explorer' || page === 'virtual_folder') {
+    await explorer.loadFiles(0, false, explorer.filterCategory);
+  } else if (page === 'search') {
+    await explorer.goToSearch(explorer.filterCategory);
+  }
  window.wabs_action_in_progress = false;
 }
 
@@ -825,7 +826,7 @@ export default function App() {
     timelineItems, mergeConflictData
   } = appState;
 
-  const isTaskRunning = indexer.running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || indexer.combined_scanner_running || indexer.data_operation_running || actionInProgress || dataOpProgress;
+  const isTaskRunning = indexer.running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || indexer.combined_scanner_running || indexer.data_operation_running || indexer.export_running || actionInProgress || dataOpProgress;
   let taskText = "Tasks Running...";
   let ledColor = "#10b981"; // Emerald
   if (indexer.running || indexer.combined_scanner_running) { taskText = "Indexing Files..."; ledColor = "#3b82f6"; } // Blue
@@ -833,6 +834,7 @@ export default function App() {
   else if (indexer.object_scanner_running) { taskText = "Scanning Objects..."; ledColor = "#f59e0b"; } // Amber
   else if (indexer.document_scanner_running) { taskText = "Extracting Text..."; ledColor = "#06b6d4"; } // Cyan
   else if (indexer.hasher_running) { taskText = "Finding Duplicates..."; ledColor = "#ec4899"; } // Pink
+  else if (indexer.export_running) { taskText = "Exporting Folder..."; ledColor = "#10b981"; } // Emerald
   else if (dataOpProgress) {
     if (dataOpProgress.id?.includes('cluster')) { taskText = "Clustering Faces..."; ledColor = "#10b981"; }
     else if (dataOpProgress.id?.includes('reclassify')) { taskText = "Reclassifying Faces..."; ledColor = "#f59e0b"; }
@@ -1053,6 +1055,7 @@ export default function App() {
   handleShutdown={handleShutdown}
   query={query}
   setQuery={setQuery}
+  page={page}
 />
 
 <div className='workspace' style={{ minWidth: 0 }}>
@@ -1098,7 +1101,7 @@ export default function App() {
 
 {page === 'dashboard' && <Dashboard {...appState} />}
 
-{(page === 'explorer' || page === 'search') && <Explorer {...appState} />}
+{(page === 'explorer' || page === 'search' || page === 'virtual_folder') && <Explorer {...appState} />}
 
 {page === 'person_files' && <Person {...appState} />}
 
@@ -1107,6 +1110,8 @@ export default function App() {
 {page === 'settings' && <Settings {...appState} />}
 
 {page === 'tags' && <Tags {...appState} />}
+
+{page === 'virtual_folders' && <VirtualFolders {...appState} />}
 
 {page === 'about' && <About page={page} />}
 

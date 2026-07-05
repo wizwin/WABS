@@ -1,4 +1,5 @@
 import json
+from typing import Optional
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, Integer, text
@@ -33,7 +34,11 @@ def _build_item(r, cache_flag=""):
     }
 
 @router.get("/search")
-def search(query:str="", category:str="all", offset:int=0, limit:int=50, sort_by:str="date", sort_order:str="desc"):
+def search(query:str="", category:str="all", offset:int=0, limit:int=50, sort_by:str="date", sort_order:str="desc", virtual_folder_id: Optional[int] = None):
+    if virtual_folder_id is not None:
+        from backend.app.routes.virtual_folders import search_virtual_folder_internal
+        return search_virtual_folder_internal(query, category, offset, limit, sort_by, sort_order, virtual_folder_id)
+
     cfg = load_config()
     ui_prefs = cfg.get("ui_preferences") or {}
     cache_enabled = cfg.get("enable_photo_thumbnail_cache")

@@ -49,12 +49,12 @@ export function useTags({
           try {
             await axios.post(`${API}/tags/remove`, { file_ids: fileIds, tags });
             showToastMessage('Tagging undone.');
-            if (page === 'explorer') {
+            if (page === 'explorer' || page === 'virtual_folder') {
               await loadFiles(0, false, filterCategory);
             } else if (page === 'search') {
               await goToSearch(filterCategory);
             }
-            if (page === 'explorer' && selected && filePaths.includes(selected.path)) {
+            if ((page === 'explorer' || page === 'virtual_folder') && selected && filePaths.includes(selected.path)) {
               const updatedFile = globalFileCache.current.get(selected.path);
               setSelected(updatedFile || null);
             }
@@ -72,12 +72,12 @@ export function useTags({
       setIsTaggingObject(false);
       setTagInput('');
       setCheckedFiles(new Set());
-      if (page === 'explorer') {
+      if (page === 'explorer' || page === 'virtual_folder') {
         await loadFiles(0, false, filterCategory);
       } else if (page === 'search') {
         await goToSearch(filterCategory);
       }
-      if (page === 'explorer' && selected && filePaths.includes(selected.path)) {
+      if ((page === 'explorer' || page === 'virtual_folder') && selected && filePaths.includes(selected.path)) {
         const updatedFile = globalFileCache.current.get(selected.path);
         setSelected(updatedFile || null);
       }
@@ -114,12 +114,12 @@ export function useTags({
           try {
             await axios.post(`${API}/tags/add`, { file_ids: fileIds, tags });
             showToastMessage('Tag removal undone.');
-            if (page === 'explorer') {
+            if (page === 'explorer' || page === 'virtual_folder') {
               await loadFiles(0, false, filterCategory);
             } else if (page === 'search') {
               await goToSearch(filterCategory);
             }
-            if (page === 'explorer' && selected && filePaths.includes(selected.path)) {
+            if ((page === 'explorer' || page === 'virtual_folder') && selected && filePaths.includes(selected.path)) {
               const updatedFile = globalFileCache.current.get(selected.path);
               setSelected(updatedFile || null);
             }
@@ -137,12 +137,12 @@ export function useTags({
       setIsTaggingObject(false);
       setTagInput('');
       setCheckedFiles(new Set());
-      if (page === 'explorer') {
+      if (page === 'explorer' || page === 'virtual_folder') {
         await loadFiles(0, false, filterCategory);
       } else if (page === 'search') {
         await goToSearch(filterCategory);
       }
-      if (page === 'explorer' && selected && filePaths.includes(selected.path)) {
+      if ((page === 'explorer' || page === 'virtual_folder') && selected && filePaths.includes(selected.path)) {
         const updatedFile = globalFileCache.current.get(selected.path);
         setSelected(updatedFile || null);
       }

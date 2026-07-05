@@ -30,6 +30,13 @@ from backend.app.utils.utils import parse_tags, _resolve_path
 # Database & Config
 from backend.app.database import SessionLocal, FileIndex
 from backend.app.config import load_config
+from backend.app.constants import (
+    CODE_EXTENSIONS,
+    PLAIN_TEXT_EXTENSIONS,
+    CRYPT_EXT_PATTERN,
+    CATEGORY_EXTENSIONS,
+    SEARCHABLE_DOCUMENT_CATEGORIES
+)
 from sqlalchemy import func, text
 
 try:
@@ -177,8 +184,7 @@ CODE_ENTITIES_PATTERN = re.compile(
 
 WORD_PATTERN = re.compile(r'\b[a-z0-9]{3,}\b')
 
-CODE_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".json", ".xml", ".yaml", ".yml", ".c", ".cpp", ".h", ".java", ".cs", ".go", ".rs", ".rb", ".php", ".sh", ".bat", ".ps1", ".sql", ".ini"}
-PLAIN_TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".htm"} | CODE_EXTENSIONS
+# CODE_EXTENSIONS and PLAIN_TEXT_EXTENSIONS are imported from backend.app.constants
 
 # Pre-compiled regex patterns used for heuristically filtering out meaningless text tokens.
 # Filters 5+ consecutive consonants (likely random hashes)
@@ -203,8 +209,7 @@ TAG_WORD_PATTERN = re.compile(r'[a-zA-Z0-9]+')
 # Matches YYYY:MM:DD format in EXIF date strings.
 EXIF_DATE_PATTERN = re.compile(r"(\d{4}):(\d{2}):(\d{2})")
 
-# Matches encrypted file extensions like .crypt12
-CRYPT_EXT_PATTERN = re.compile(r"^\.crypt\d{2,}$")
+# CRYPT_EXT_PATTERN is imported from backend.app.constants
 
 def extract_top_keywords(text_data: str, max_words: int = None, is_log: bool = False, extra_entities: list = None) -> str:
     if max_words is None:
@@ -1259,7 +1264,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                             face_stopped = STATE.get("face_scanner_stopped", False)
                             
                             needs_text = run_document and not doc_stopped and db_item_id not in text_processed_ids and (
-                                category in ['document', 'ebook', 'code', 'other'] or (category == 'photo' and cfg.get("ocr_enabled", False))
+                                category in (SEARCHABLE_DOCUMENT_CATEGORIES + ['other']) or (category == 'photo' and cfg.get("ocr_enabled", False))
                             )
                             needs_face = run_face and not face_stopped and db_item_id not in face_processed_ids and category == 'photo'
                             needs_object = run_object and not obj_stopped and db_item_id not in object_processed_ids and category == 'photo'
@@ -1361,7 +1366,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     face_stopped = STATE.get("face_scanner_stopped", False)
                     
                     needs_text = run_document and not doc_stopped and db_item_id not in text_processed_ids and (
-                        category in ['document', 'ebook', 'code', 'other'] or (category == 'photo' and cfg.get("ocr_enabled", False))
+                        category in (SEARCHABLE_DOCUMENT_CATEGORIES + ['other']) or (category == 'photo' and cfg.get("ocr_enabled", False))
                     )
                     needs_face = run_face and not face_stopped and db_item_id not in face_processed_ids and category == 'photo'
                     needs_object = run_object and not obj_stopped and db_item_id not in object_processed_ids and category == 'photo'
@@ -2097,28 +2102,11 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
 
 def classify(ext):
     ext = ext.lower()
-    if ext in [".jpg",".jpeg",".png",".webp",".gif",".bmp",".tiff",".raw",".svg",".ico",".xcf", ".dng"]:
-        return "photo"
-    if ext in [".mp4",".mkv",".avi",".mov",".wmv",".flv",".webm",".m4v",".mpg",".mpeg"]:
-        return "video"
-    if ext in [".mp3",".wav",".flac",".aac",".ogg",".m4a",".wma",".alac"]:
-        return "audio"
-    if ext in [".pdf",".doc",".docx",".txt",".rtf",".odt",".xls",".xlsx",".ppt",".pptx",".csv",".md",".log"]:
-        return "document"
-    if ext in [".epub",".mobi",".azw3",".cbz",".cbr",".chm"]:
-        return "ebook"
-    if ext in CODE_EXTENSIONS:
-        return "code"
-    if ext in [".ttf",".otf",".woff",".woff2",".eot"]:
-        return "font"
-    if ext in [".db",".sqlite",".sqlite3",".mdb",".accdb"] or CRYPT_EXT_PATTERN.match(ext):
+    for category, extensions in CATEGORY_EXTENSIONS.items():
+        if ext in extensions:
+            return category
+    if CRYPT_EXT_PATTERN.match(ext):
         return "database"
-    if ext in [".zip",".rar",".7z",".tar",".gz",".bz2",".xz"]:
-        return "compressed"
-    if ext in [".exe",".msi",".apk",".dmg",".deb",".rpm",".appimage"]:
-        return "installer"
-    if ext in [".bin",".dat",".iso",".img",".vmdk",".vdi",".qcow2",".mpb"]:
-        return "binary"
     return "other"
 
 def build_tags(metadata, category, ext, path_obj=None):

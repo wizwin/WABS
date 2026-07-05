@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from sqlalchemy import create_engine, Column, Integer, String, event
+from sqlalchemy import create_engine, Column, Integer, String, event, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 try:
@@ -66,6 +66,24 @@ class FileIndex(Base):
     tags = Column(String)
     metadata_json = Column(String)
 
+class VirtualFolder(Base):
+    __tablename__ = "virtual_folders"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    parent_id = Column(Integer, ForeignKey("virtual_folders.id", ondelete="CASCADE"), nullable=True)
+    is_dynamic = Column(Integer, default=0) # 0 = manual, 1 = dynamic/query-based
+    query = Column(String, nullable=True)
+    created_at = Column(String)
+    metadata_json = Column(String, nullable=True)
+
+class VirtualFolderFile(Base):
+    __tablename__ = "virtual_folder_files"
+
+    id = Column(Integer, primary_key=True)
+    virtual_folder_id = Column(Integer, ForeignKey("virtual_folders.id", ondelete="CASCADE"), nullable=False)
+    file_id = Column(Integer, ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
+
 Base.metadata.create_all(engine)
 
 from sqlalchemy import text
@@ -77,6 +95,10 @@ with engine.connect() as conn:
         conn.execute(text("ALTER TABLE files ADD COLUMN metadata_json TEXT"))
         if "metadata" in existing:
             conn.execute(text("UPDATE files SET metadata_json=metadata WHERE metadata_json IS NULL OR metadata_json=''"))
+            
+    existing_vf = [row[1] for row in conn.execute(text("PRAGMA table_info(virtual_folders)"))]
+    if "metadata_json" not in existing_vf:
+        conn.execute(text("ALTER TABLE virtual_folders ADD COLUMN metadata_json TEXT"))
 
 with engine.begin() as conn:
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_files_category ON files(category)"))

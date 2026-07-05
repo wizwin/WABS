@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useContext } from 'react';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
 import PlayCircleIcon from '@mui/icons-material/PlayCircle';
+import FolderIcon from '@mui/icons-material/Folder';
 import { formatSize, SettingsContext } from '../../States';
 
 export function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContextMenu, onSelectAndOpen, renderThumb, isAltGroup, showVerified, showUnverified, isReadOnly, isProcessing }) {
@@ -36,6 +37,54 @@ export function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, on
       setImgError(true);
     }
   };
+
+  if (item.is_folder) {
+    return (
+      <div
+        className={viewMode === 'grid' ? 'card' : 'list-item'}
+        onClick={(e) => onClick(e, item)}
+        onContextMenu={(e) => { e.preventDefault(); }}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => { setIsHovered(false); setIsActive(false); }}
+        onMouseDown={() => setIsActive(true)}
+        onMouseUp={() => setIsActive(false)}
+        style={{
+          transition: animationsEnabled ? 'all 0.3s ease' : 'none',
+          opacity: animationsEnabled ? (isMounted ? 1 : 0) : 1,
+          transform: animationsEnabled ? (isActive ? 'scale(0.97)' : isHovered ? 'translateY(-2px)' : isMounted ? 'none' : 'translateY(10px)') : 'none',
+          boxShadow: animationsEnabled && isActive ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none',
+          background: '#111827',
+          border: '1px solid #24324a',
+          cursor: 'pointer'
+        }}
+      >
+        {viewMode === 'grid' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between', padding: '16px', width: '100%', boxSizing: 'border-box' }}>
+            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '120px', background: '#1f2937', borderRadius: '8px', marginBottom: '12px' }}>
+              <FolderIcon style={{ color: item.color || '#3b82f6', fontSize: '64px' }} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div style={{ fontWeight: 'bold', fontSize: '14px', color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {item.filename}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#94a3b8' }}>
+                <span>Virtual Folder</span>
+                <span>{item.file_count || 0} file{item.file_count !== 1 ? 's' : ''}</span>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', width: '100%', padding: '8px 12px', gap: '12px', boxSizing: 'border-box' }}>
+            <FolderIcon style={{ color: item.color || '#3b82f6', fontSize: '32px', flexShrink: 0 }} />
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <span style={{ fontWeight: 'bold', fontSize: '14px', color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.filename}</span>
+              <span style={{ fontSize: '12px', color: '#94a3b8' }}>Virtual Folder • {item.file_count || 0} file{item.file_count !== 1 ? 's' : ''}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   let currentSrc = imgError ? renderThumb({ ...item, thumbnail: null }) : renderThumb(item);
   if (!imgError && retryKey > 0 && !currentSrc.startsWith('data:')) {

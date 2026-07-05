@@ -11,14 +11,19 @@ import os
 import platform
 from sqlalchemy import func, text, Integer
 
-from backend.app.database import SessionLocal, FileIndex
+from backend.app.database import SessionLocal, FileIndex, VirtualFolder, VirtualFolderFile
 from backend.app.config import load_config, save_config, get_thumbnail_dir
+from backend.app.constants import (
+    STANDARD_CATEGORIES,
+    SEARCHABLE_DOCUMENT_CATEGORIES
+)
 from backend.app.utils.paths import get_ai_db_path
 from backend.app.utils.cache import EXEMPLAR_CACHE
 from backend.app.utils.utils import _resolve_path, parse_tags, find_file_by_path_smart
 import backend.app.shared_state as shared_state
 from backend.app.utils.validators import check_no_scanners_running, lock_data_operation
 from backend.app.state import STATE
+from backend.app.routes.tags import export_tags_internal, import_tags_internal
 
 router = APIRouter()
 
@@ -49,7 +54,7 @@ def stats():
         
         try:
             doc_count = s.query(func.count(FileIndex.id)).filter(
-                FileIndex.category.in_(['document', 'ebook', 'code']),
+                FileIndex.category.in_(SEARCHABLE_DOCUMENT_CATEGORIES),
                 text("files.id IN (SELECT file_id FROM processed_text)")
             ).scalar() or 0
             stats_dict["searchable_documents"] = int(doc_count)
@@ -116,6 +121,13 @@ def stats():
             except Exception as e:
                 print(f"Error fetching AI stats: {e}")
                 
+        try:
+            folder_count = s.query(func.count(VirtualFolder.id)).filter(VirtualFolder.parent_id.is_(None)).scalar() or 0
+            stats_dict["virtual_folders"] = int(folder_count)
+        except Exception as e:
+            print(f"Error fetching virtual folder stats: {e}")
+            stats_dict["virtual_folders"] = 0
+            
         return stats_dict
 
 @router.get("/timeline")
@@ -130,13 +142,12 @@ def timeline(category: str = "all"):
         q = s.query(best_date.label("date"), func.count(FileIndex.id))
         if category != "all":
             if category == "other":
-                standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
-                q = q.filter(~FileIndex.category.in_(standard))
+                q = q.filter(~FileIndex.category.in_(STANDARD_CATEGORIES))
             elif category == "duplicates":
                 dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
                 q = q.filter(FileIndex.size.in_(dup_sizes))
             elif category == "searchable_documents":
-                q = q.filter(FileIndex.category.in_(['document', 'ebook', 'code']), text("files.id IN (SELECT file_id FROM processed_text)"))
+                q = q.filter(FileIndex.category.in_(SEARCHABLE_DOCUMENT_CATEGORIES), text("files.id IN (SELECT file_id FROM processed_text)"))
             elif category == "tagged_objects":
                 q = q.filter(FileIndex.tags.like('%object:%'))
             else:
@@ -995,4 +1006,176 @@ def import_people(payload: list = Body(...)):
         "success": True,
         "imported_people": imported_people_count,
         "imported_faces": imported_faces_count
+    }
+
+# Helper functions for Virtual Folders import/export
+def get_folder_path_names(s, folder):
+    path = []
+    current = folder
+    while current.parent_id:
+        parent = s.get(VirtualFolder, current.parent_id)
+        if parent:
+            path.insert(0, parent.name)
+            current = parent
+        else:
+            break
+    return path
+
+def export_folders_internal(s):
+    import datetime
+    folders = s.query(VirtualFolder).all()
+    export_data = []
+    for f in folders:
+        # Get manual file associations
+        assoc_files = s.query(FileIndex.path).join(
+            VirtualFolderFile, VirtualFolderFile.file_id == FileIndex.id
+        ).filter(VirtualFolderFile.virtual_folder_id == f.id).all()
+        file_paths = [r[0] for r in assoc_files]
+        
+        parent_path = get_folder_path_names(s, f)
+        
+        export_data.append({
+            "name": f.name,
+            "parent_path": parent_path,
+            "is_dynamic": bool(f.is_dynamic),
+            "query": f.query,
+            "files": file_paths,
+            "metadata_json": f.metadata_json
+        })
+    return export_data
+
+def import_folders_internal(s, folders_data):
+    import datetime
+    sorted_data = sorted(folders_data, key=lambda x: len(x.get("parent_path", [])))
+    folder_mapping = {}
+    
+    for item in sorted_data:
+        name = item.get("name")
+        parent_path = item.get("parent_path", [])
+        is_dynamic = item.get("is_dynamic", False)
+        query = item.get("query")
+        files = item.get("files", [])
+        
+        metadata_json = item.get("metadata_json")
+        
+        parent_id = None
+        current_path = []
+        for p_name in parent_path:
+            parent_key = (tuple(current_path), p_name)
+            if parent_key in folder_mapping:
+                parent_id = folder_mapping[parent_key]
+            else:
+                existing_parent = s.query(VirtualFolder).filter(
+                    VirtualFolder.name == p_name,
+                    VirtualFolder.parent_id == parent_id
+                ).first()
+                if existing_parent:
+                    parent_id = existing_parent.id
+                else:
+                    new_p = VirtualFolder(
+                        name=p_name,
+                        parent_id=parent_id,
+                        is_dynamic=0,
+                        created_at=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    )
+                    s.add(new_p)
+                    s.commit()
+                    s.refresh(new_p)
+                    parent_id = new_p.id
+                folder_mapping[parent_key] = parent_id
+            current_path.append(p_name)
+            
+        existing_folder = s.query(VirtualFolder).filter(
+            VirtualFolder.name == name,
+            VirtualFolder.parent_id == parent_id
+        ).first()
+        
+        if existing_folder:
+            folder = existing_folder
+            folder.is_dynamic = 1 if is_dynamic else 0
+            folder.query = query
+            if metadata_json is not None:
+                folder.metadata_json = metadata_json
+        else:
+            folder = VirtualFolder(
+                name=name,
+                parent_id=parent_id,
+                is_dynamic=1 if is_dynamic else 0,
+                query=query,
+                created_at=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                metadata_json=metadata_json
+            )
+            s.add(folder)
+            s.commit()
+            s.refresh(folder)
+            
+        my_key = (tuple(parent_path), name)
+        folder_mapping[my_key] = folder.id
+        
+        if files:
+            existing_rows = s.query(VirtualFolderFile.file_id).filter(
+                VirtualFolderFile.virtual_folder_id == folder.id
+            ).all()
+            existing_ids = {r[0] for r in existing_rows}
+            
+            for path in files:
+                f_item = s.query(FileIndex.id).filter(FileIndex.path == path).first()
+                if f_item and f_item[0] not in existing_ids:
+                    assoc = VirtualFolderFile(virtual_folder_id=folder.id, file_id=f_item[0])
+                    s.add(assoc)
+            s.commit()
+
+# System endpoints for Virtual Folders and Combined Import/Export
+@router.get("/system/export-folders")
+def export_folders():
+    with SessionLocal() as s:
+        return export_folders_internal(s)
+
+@router.post("/system/import-folders")
+def import_folders(payload: list = Body(...)):
+    with SessionLocal() as s:
+        try:
+            import_folders_internal(s, payload)
+            return {"status": "success", "message": f"Successfully imported {len(payload)} folders"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/system/export-all", dependencies=[Depends(lock_data_operation)])
+def export_all():
+    people_data = export_people()
+    with SessionLocal() as s:
+        folders_data = export_folders_internal(s)
+        tags_data = export_tags_internal(s)
+    return {
+        "people": people_data,
+        "folders": folders_data,
+        "tags": tags_data
+    }
+
+@router.post("/system/import-all", dependencies=[Depends(lock_data_operation)])
+def import_all(payload: dict = Body(...)):
+    imported_people_count = 0
+    imported_faces_count = 0
+    
+    people_data = payload.get("people")
+    if people_data:
+        res = import_people(people_data)
+        imported_people_count = res.get("imported_people", 0)
+        imported_faces_count = res.get("imported_faces", 0)
+        
+    with SessionLocal() as s:
+        folders_data = payload.get("folders")
+        if folders_data:
+            import_folders_internal(s, folders_data)
+            
+        tags_data = payload.get("tags")
+        if tags_data:
+            import_tags_internal(s, tags_data)
+            
+    return {
+        "success": True,
+        "imported_people": imported_people_count,
+        "imported_faces": imported_faces_count,
+        "imported_folders": len(folders_data) if folders_data else 0,
+        "imported_tags": len(tags_data) if tags_data else 0
     }

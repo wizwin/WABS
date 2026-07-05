@@ -685,12 +685,12 @@ export function usePeople({
             }
             showToastMessage('Tagging undone successfully.');
             loadPeople();
-            if (page === 'explorer') {
+            if (page === 'explorer' || page === 'virtual_folder') {
               await loadFiles(0, false, filterCategory);
             } else if (page === 'search') {
               await goToSearch(filterCategory);
             }
-            if (page === 'explorer' && selected && filePaths.includes(selected.path)) {
+            if ((page === 'explorer' || page === 'virtual_folder') && selected && filePaths.includes(selected.path)) {
               const updatedFile = globalFileCache.current.get(selected.path);
               setSelected(updatedFile || null);
             }
@@ -705,12 +705,12 @@ export function usePeople({
       showToastMessage(`Successfully tagged ${fileIds.length} photo(s).`, undoAction);
       setIsTaggingPerson(false);
       setCheckedFiles(new Set());
-      if (page === 'explorer') {
+      if (page === 'explorer' || page === 'virtual_folder') {
         await loadFiles(0, false, filterCategory);
       } else if (page === 'search') {
         await goToSearch(filterCategory);
       }
-      if (page === 'explorer' && selected && filePaths.includes(selected.path)) {
+      if ((page === 'explorer' || page === 'virtual_folder') && selected && filePaths.includes(selected.path)) {
         const updatedFile = globalFileCache.current.get(selected.path);
         setSelected(updatedFile || null);
       }

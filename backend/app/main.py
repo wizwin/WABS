@@ -41,6 +41,7 @@ from backend.app.routes.system import router as system_router
 from backend.app.routes.tags import router as tags_router
 from backend.app.routes.documents import router as documents_router
 from backend.app.routes.people import router as people_router
+from backend.app.routes.virtual_folders import router as virtual_folders_router
 import backend.app.shared_state as shared_state
 
 try:
@@ -66,6 +67,7 @@ app.include_router(system_router)
 app.include_router(tags_router)
 app.include_router(documents_router)
 app.include_router(people_router)
+app.include_router(virtual_folders_router)
 
 import asyncio
 
