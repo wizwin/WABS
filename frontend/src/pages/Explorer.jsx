@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useMemo } from 'react';
 import axios from 'axios';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import FolderIcon from '@mui/icons-material/Folder';
@@ -12,6 +12,11 @@ import ViewListIcon from '@mui/icons-material/ViewList';
 import PlaceIcon from '@mui/icons-material/Place';
 import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
 import AddIcon from '@mui/icons-material/Add';
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
+import AccountTreeIcon from '@mui/icons-material/AccountTree';
+import TableRowsIcon from '@mui/icons-material/TableRows';
+import { FolderTree } from '../components/ui/FolderTree';
 import { FOLDER_COLORS, FOLDER_ICONS, ICON_MAP, getFolderStyleAndIcon } from './VirtualFolders';
 
 import { ActionButton } from '../components/ui/ActionButton';
@@ -23,13 +28,13 @@ import { API, formatSize, parseFileDate, dateFormatter } from '../States';
 
 export default function Explorer(props) {
   const { 
-    page, showTimeline, timelineWidth, timelineItems, activeDate, settings,
+    page, showTimeline, showTreeView, viewType, setViewType, timelineWidth, timelineItems, activeDate, settings,
     fullTimelineData, sortOrder, filterCategory, setFilterCategory, sortBy, setFiles, setOffset,
     setStartOffset, setHasMore, query, setSearchCache, isResizing, setIsResizing,
-    checkedFiles, sortedFiles, selectAll, selectVerifiedDuplicates, handleFilterChange,
+    checkedFiles, sortedFiles, directories, loadDirectories, selectAll, selectVerifiedDuplicates, handleFilterChange,
     setSortBy, loadFiles, doSearch, setSortOrder, indexer, actionInProgress,
     stopVerifyDuplicates, verifyDuplicates, setViewMode, viewMode, showSelectedOnly,
-    setShowSelectedOnly, openSelected, locateSelectedFileInExplorer, copySelected,
+    setShowSelectedOnly, openSelected, locateSelectedFile, copySelected,
     isSelectionReadOnly, moveSelected, deleteSelected, isTaggingPerson, setIsTaggingPerson,
     isTaggingObject, setIsTaggingObject, loadPeople, people, setPersonTagInput, personTagInput,
     sortedNamedPeopleDropdown, assignPhotosToPerson, removePersonPhotosBulk,
@@ -38,16 +43,284 @@ export default function Explorer(props) {
     toggleCheck, handleItemClick, openContainingFolder, setSelected, openFile,
     renderThumb, checkFileReadOnly, hasMore, loadingMore, showDetails, detailsWidth,
     selected, getPersonThumbUrl, currentPerson, personPreviewPhotos, renderMetadata,
-    setLoadingMore, handleScroll, dataOpProgress, showToastMessage,
+    setLoadingMore, handleScroll, dataOpProgress, showToastMessage, getImplicitSelection,
     
     // Virtual Folder props
     virtualFolderId, currentVirtualFolder, virtualFolders, createVirtualFolder,
     deleteVirtualFolder, renameVirtualFolder, updateVirtualFolderQuery,
     addFilesToVirtualFolder, removeFilesFromVirtualFolder,
-    setVirtualFolderId, setCurrentVirtualFolder, setPage
+    setVirtualFolderId, setCurrentVirtualFolder, setPage, handleOpenFolder,
+
+    // Navigation props
+    activeFolderPath, navigateToPhys, canGoBack, canGoForward, canGoUp,
+    handleBack, handleForward, handleUp
   } = props;
 
+  const isPhys = page !== 'virtual_folder';
   const [isAddToFolderOpen, setIsAddToFolderOpen] = useState(false);
+  const [isSelectionListOpen, setIsSelectionListOpen] = useState(false);
+  const [isLocateMenuOpen, setIsLocateMenuOpen] = useState(false);
+  const [showRules, setShowRules] = useState(false);
+
+  // Refs for click-outside dismissal
+  const selectionListRef = useRef(null);
+  const locateMenuRef = useRef(null);
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (selectionListRef.current && !selectionListRef.current.contains(e.target)) {
+        setIsSelectionListOpen(false);
+      }
+      if (locateMenuRef.current && !locateMenuRef.current.contains(e.target)) {
+        setIsLocateMenuOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Filtered files for physical tree path
+  const displayedFiles = useMemo(() => {
+    if (viewType === 'flat' || page === 'virtual_folder' || page === 'search') {
+      return sortedFiles || [];
+    }
+    const cleanActive = activeFolderPath ? activeFolderPath.replace(/\\/g, '/').toLowerCase() : null;
+    return (sortedFiles || []).filter(file => {
+      if (!file || !file.path) return false;
+      const cleanFile = file.path.replace(/\\/g, '/');
+      const lastSlash = cleanFile.lastIndexOf('/');
+      if (lastSlash === -1) {
+        return cleanActive === null;
+      }
+      const fileParent = cleanFile.substring(0, lastSlash).toLowerCase();
+      return cleanActive !== null && fileParent === cleanActive;
+    });
+  }, [sortedFiles, activeFolderPath, viewType, page]);
+
+  // Grouped files for display
+  const displayedGroupedFiles = useMemo(() => {
+    if (filterCategory === 'duplicates') {
+      const map = new Map();
+      map.set('Duplicate Files', displayedFiles);
+      return map;
+    }
+    const groups = new Map();
+    displayedFiles.forEach(file => {
+      let key = 'Unknown Date';
+      const d = parseFileDate(file);
+      if (d) key = dateFormatter.format(d);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(file);
+    });
+    return groups;
+  }, [displayedFiles, filterCategory]);
+
+  // Extract direct subfolders under active physical folder
+  const directSubfolders = useMemo(() => {
+    if (page === 'virtual_folder') return [];
+    const subfolderPaths = new Set();
+    const subfoldersList = [];
+    const cleanActive = activeFolderPath ? activeFolderPath.replace(/\\/g, '/').toLowerCase() : '';
+
+    const backups = settings?.backup_configs || [{
+      id: 'default',
+      name: 'Default Backup Location',
+      backup_path: settings?.backup_path || ''
+    }];
+
+    if (!activeFolderPath) {
+      // At Computer root: show configured backup locations
+      const fallbackList = [];
+      backups.forEach(b => {
+        if (b.backup_path) {
+          let pathKey = String(b.backup_path).replace(/\\/g, '/');
+          if (pathKey.endsWith('/') && pathKey.length > 3) {
+            pathKey = pathKey.slice(0, -1);
+          }
+          const pathKeyLower = pathKey.toLowerCase();
+          if (!subfolderPaths.has(pathKeyLower)) {
+            subfolderPaths.add(pathKeyLower);
+            subfoldersList.push({
+              name: b.name || 'Backup Location',
+              path: pathKey
+            });
+          }
+        }
+      });
+
+      // Also extract drives for any directories that don't match any backup config
+      (directories || []).forEach(dirPath => {
+        if (!dirPath) return;
+        let normalized = dirPath.replace(/\\/g, '/');
+        if (normalized.endsWith('/') && normalized.length > 3) {
+          normalized = normalized.slice(0, -1);
+        }
+        const normalizedLower = normalized.toLowerCase();
+        
+        let hasMatch = false;
+        backups.forEach(b => {
+          let pathKey = String(b.backup_path || '').replace(/\\/g, '/').toLowerCase();
+          if (pathKey.endsWith('/') && pathKey.length > 3) {
+            pathKey = pathKey.slice(0, -1);
+          }
+          if (pathKey && (normalizedLower.startsWith(pathKey + '/') || normalizedLower === pathKey)) {
+            hasMatch = true;
+          }
+          if (pathKey) {
+            const dirParts = normalizedLower.split('/').filter(Boolean);
+            const backupParts = pathKey.split('/').filter(Boolean);
+            if (dirParts.length < backupParts.length && dirParts.every((part, idx) => part === backupParts[idx])) {
+              hasMatch = true;
+            }
+          }
+        });
+
+        if (!hasMatch) {
+          const parts = normalized.split('/').filter(Boolean);
+          if (parts.length > 0) {
+            const drive = normalized.startsWith('/') ? '/' + parts[0] : parts[0];
+            const driveKey = drive.toLowerCase();
+            if (!subfolderPaths.has(driveKey)) {
+              subfolderPaths.add(driveKey);
+              fallbackList.push({
+                name: drive,
+                path: drive
+              });
+            }
+          }
+        }
+      });
+
+      return [...subfoldersList, ...fallbackList.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))];
+    }
+
+    // Inside a directory: get subdirectories under activeFolderPath
+    const cleanActiveSlash = cleanActive ? cleanActive + '/' : '';
+    (directories || []).forEach(dirPath => {
+      if (!dirPath) return;
+      const normDir = dirPath.replace(/\\/g, '/');
+      const normDirLower = normDir.toLowerCase();
+      
+      if (normDirLower.startsWith(cleanActiveSlash)) {
+        const relative = normDir.substring(cleanActiveSlash.length);
+        if (relative && relative.indexOf('/') === -1) {
+          // This is a direct subfolder!
+          const subPath = activeFolderPath + '/' + relative;
+          const subPathKey = subPath.toLowerCase();
+          if (!subfolderPaths.has(subPathKey)) {
+            subfolderPaths.add(subPathKey);
+            subfoldersList.push({
+              name: relative,
+              path: subPath
+            });
+          }
+        }
+      }
+    });
+
+    return subfoldersList.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  }, [directories, activeFolderPath, page, settings]);
+
+  const renderPhysicalBreadcrumbs = () => {
+    const backups = settings?.backup_configs || [{
+      id: 'default',
+      name: 'Default Backup Location',
+      backup_path: settings?.backup_path || ''
+    }];
+
+    const cleanActive = activeFolderPath ? activeFolderPath.replace(/\\/g, '/') : '';
+    const cleanActiveLower = cleanActive.toLowerCase();
+
+    let matchedBackup = null;
+    let matchedPathKey = '';
+    let longestMatchLen = -1;
+
+    backups.forEach(b => {
+      let pathKey = String(b.backup_path || '').replace(/\\/g, '/').toLowerCase();
+      if (pathKey.endsWith('/') && pathKey.length > 3) {
+        pathKey = pathKey.slice(0, -1);
+      }
+      if (pathKey && (cleanActiveLower.startsWith(pathKey + '/') || cleanActiveLower === pathKey)) {
+        if (pathKey.length > longestMatchLen) {
+          longestMatchLen = pathKey.length;
+          matchedBackup = b;
+          matchedPathKey = pathKey;
+        }
+      }
+    });
+
+    if (matchedBackup && matchedBackup.backup_path) {
+      const backupRootPath = String(matchedBackup.backup_path).replace(/\\/g, '/');
+      const relativePath = cleanActive.substring(matchedPathKey.length).replace(/^\//, '');
+      const parts = relativePath.split('/').filter(Boolean);
+
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#94a3b8', flexWrap: 'wrap' }}>
+          <span 
+            style={{ cursor: 'pointer', color: '#38bdf8', fontWeight: 'bold' }} 
+            onClick={() => navigateToPhys(backupRootPath)}
+          >
+            {matchedBackup.name}
+          </span>
+          {parts.map((part, index) => {
+            const currentParts = parts.slice(0, index + 1);
+            const partPath = backupRootPath + '/' + currentParts.join('/');
+            const isLast = index === parts.length - 1;
+            return (
+              <React.Fragment key={index}>
+                <span style={{ color: '#475569', fontWeight: 'bold' }}>/</span>
+                <span 
+                  style={{ 
+                    color: isLast ? '#f8fafc' : '#94a3b8', 
+                    fontWeight: isLast ? 'bold' : 'normal',
+                    cursor: isLast ? 'default' : 'pointer',
+                    textDecoration: isLast ? 'none' : 'underline'
+                  }}
+                  onClick={() => { if (!isLast) navigateToPhys(partPath); }}
+                >
+                  {part}
+                </span>
+              </React.Fragment>
+            );
+          })}
+        </div>
+      );
+    } else {
+      const parts = activeFolderPath ? activeFolderPath.replace(/\\/g, '/').split('/').filter(Boolean) : [];
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#94a3b8', flexWrap: 'wrap' }}>
+          <span 
+            style={{ cursor: 'pointer', color: '#38bdf8', fontWeight: 'bold' }} 
+            onClick={() => navigateToPhys(null)}
+          >
+            Backups
+          </span>
+          {parts.map((part, index) => {
+            const currentParts = parts.slice(0, index + 1);
+            const partPath = currentParts.join('/');
+            const isLast = index === parts.length - 1;
+            return (
+              <React.Fragment key={index}>
+                <span style={{ color: '#475569', fontWeight: 'bold' }}>/</span>
+                <span 
+                  style={{ 
+                    color: isLast ? '#f8fafc' : '#94a3b8', 
+                    fontWeight: isLast ? 'bold' : 'normal',
+                    cursor: isLast ? 'default' : 'pointer',
+                    textDecoration: isLast ? 'none' : 'underline'
+                  }}
+                  onClick={() => { if (!isLast) navigateToPhys(partPath); }}
+                >
+                  {part}
+                </span>
+              </React.Fragment>
+            );
+          })}
+        </div>
+      );
+    }
+  };
+
   const [queryInput, setQueryInput] = useState('');
   const [modalConfig, setModalConfig] = useState({
     isOpen: false,
@@ -93,12 +366,6 @@ export default function Explorer(props) {
     return trail;
   };
 
-  const handleOpenFolder = (folder) => {
-    setVirtualFolderId(folder.id);
-    setCurrentVirtualFolder(folder);
-    setFilterCategory('all');
-    loadFiles(0, false, 'all', sortBy, sortOrder, 'virtual_folder', folder.id);
-  };
 
   const loadFilesAbortController = useRef(null);
   const searchAbortController = useRef(null);
@@ -125,7 +392,30 @@ export default function Explorer(props) {
         (page==='explorer' || page==='search' || page==='virtual_folder') &&
         <div className='explorer'>
 
-        {showTimeline && (
+        {viewType === 'tree' ? (
+        showTreeView && (
+        <>
+        <div className='timeline' style={{ width: timelineWidth, position: 'relative' }}>
+          <FolderTree 
+            page={page}
+            setPage={setPage}
+            sortedFiles={sortedFiles}
+            directories={directories}
+            virtualFolders={virtualFolders}
+            virtualFolderId={virtualFolderId}
+            currentVirtualFolder={currentVirtualFolder}
+            handleOpenFolder={handleOpenFolder}
+            activeFolderPath={activeFolderPath}
+            setActiveFolderPath={navigateToPhys}
+            query={query}
+            settings={settings}
+          />
+        </div>
+        <div className={`resizer ${isResizing === 'timeline' ? 'active' : ''}`} onMouseDown={(e) => { e.preventDefault(); setIsResizing('timeline'); }} />
+        </>
+        )
+        ) : (
+        showTimeline && (
         <>
         <div className='timeline' style={{ width: timelineWidth, position: 'relative' }}>
         {timelineItems.length > 0 && (
@@ -224,7 +514,7 @@ export default function Explorer(props) {
                 const timeline = document.querySelector('.timeline');
                 timeline?.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' });
             }}
-            style={{ margin: '8px auto', padding: '4px 12px', width: '90px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: 'rgba(30, 41, 59, 0.9)', border: '1px solid #334155', color: '#94a3b8', position: 'sticky', bottom: '8px', zIndex: 10, borderRadius: '16px', fontSize: '12px', boxShadow: '0 -4px 6px -1px rgba(0,0,0,0.2)' }}
+            style={{ margin: '8px auto', padding: '4px 12px', width: '90px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: 'rgba(30, 41, 59, 0.9)', border: '1px solid #334155', color: '#94a3b8', position: 'sticky', top: '8px', zIndex: 10, borderRadius: '16px', fontSize: '12px', boxShadow: '0 -4px 6px -1px rgba(0,0,0,0.2)' }}
             title="Jump to Bottom"
             >
             <ArrowDownwardIcon style={{ fontSize: '16px' }} /> Bottom
@@ -233,168 +523,55 @@ export default function Explorer(props) {
         </div>
         <div className={`resizer ${isResizing === 'timeline' ? 'active' : ''}`} onMouseDown={(e) => { e.preventDefault(); setIsResizing('timeline'); }} />
         </>
+        )
         )}
 
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
-        {page === 'virtual_folder' && currentVirtualFolder && (
-          <div style={{ padding: '18px 18px 0 18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', marginBottom: '4px', flexWrap: 'wrap' }}>
-              <span 
-                style={{ cursor: 'pointer', color: '#38bdf8', fontWeight: 'bold' }} 
-                onClick={() => setPage('virtual_folders')}
-              >
-                Virtual Folders
-              </span>
-              <span style={{ color: '#475569', fontWeight: 'bold' }}>/</span>
-              {getBreadcrumbs().map((b, index, arr) => {
-                const isLast = index === arr.length - 1;
-                return (
-                  <React.Fragment key={b.id}>
-                    <span 
-                      style={{ 
-                        color: isLast ? '#f8fafc' : '#94a3b8', 
-                        fontWeight: isLast ? 'bold' : 'normal',
-                        cursor: isLast ? 'default' : 'pointer',
-                        textDecoration: isLast ? 'none' : 'underline'
-                      }}
-                      onClick={() => { if (!isLast) handleOpenFolder(b); }}
-                    >
-                      {b.name}
-                    </span>
-                    {!isLast && <span style={{ color: '#475569', fontWeight: 'bold' }}>/</span>}
-                  </React.Fragment>
-                );
-              })}
+        {page === 'virtual_folder' && currentVirtualFolder && showRules && (
+          <div style={{ margin: '14px 20px 0 20px', padding: '10px 14px', background: '#1e293b', borderRadius: '8px', border: '1px solid #334155', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 'bold', whiteSpace: 'nowrap' }}>Rules / Query:</span>
+            <input 
+              type="text" 
+              value={queryInput} 
+              onChange={(e) => setQueryInput(e.target.value)}
+              onBlur={() => {
+                if (queryInput !== (currentVirtualFolder.query || '')) {
+                  updateVirtualFolderQuery(currentVirtualFolder.id, queryInput);
+                  setTimeout(() => loadFiles(0, false, filterCategory), 100);
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.currentTarget.blur();
+                }
+              }}
+              placeholder="Enter automatic filter rules (e.g. type:photo camera:iPhone object:car)"
+              style={{ 
+                flex: 1, 
+                minWidth: '200px',
+                background: '#0f172a', 
+                border: '1px solid #334155', 
+                color: '#f8fafc', 
+                padding: '4px 10px', 
+                borderRadius: '6px', 
+                fontSize: '12px',
+                outline: 'none',
+                height: '28px'
+              }}
+            />
+            <span style={{ fontSize: '11px', color: '#64748b' }}>
+              💡 Matches files automatically. Leave empty for manual links.
+            </span>
+          </div>
+        )}
+
+        {page === 'virtual_folder' && currentVirtualFolder && indexer && indexer.export_running && indexer.export_folder_id === currentVirtualFolder.id && (
+          <div style={{ margin: '14px 20px 0 20px', padding: '12px 16px', background: '#1e293b', borderRadius: '8px', border: '1px solid #334155' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#f8fafc', fontWeight: 'bold', marginBottom: '6px' }}>
+              <span>Exporting Virtual Folder...</span>
+              <span style={{ color: '#94a3b8' }}>{indexer.export_current_file || ''}</span>
             </div>
-            {(() => {
-              const { color, iconKey } = getFolderStyleAndIcon(currentVirtualFolder);
-              const FolderIconComponent = ICON_MAP[iconKey] || FolderIcon;
-              return (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                  <FolderIconComponent style={{ color: color, fontSize: '28px' }} />
-                  <h2 style={{ margin: 0, fontSize: '22px', color: '#f8fafc', fontWeight: '600' }}>
-                    {currentVirtualFolder.name}
-                  </h2>
-                  <span style={{ 
-                    fontSize: '12px', 
-                    background: `${color}1a`, 
-                    color: color, 
-                    padding: '4px 10px', 
-                    borderRadius: '12px',
-                    border: `1px solid ${color}4a`,
-                    fontWeight: '600'
-                  }}>
-                    Virtual Folder
-                  </span>
-                </div>
-              );
-            })()}
-
-              <div style={{ display: 'flex', gap: '6px' }}>
-                <ActionButton 
-                  className="btn btn-secondary" 
-                  disabled={indexer && indexer.export_running}
-                  style={{ padding: '4px 10px', fontSize: '13px' }} 
-                  onClick={() => {
-                    const { color, iconKey } = getFolderStyleAndIcon(currentVirtualFolder);
-                    setSelectedColor(color);
-                    setSelectedIcon(iconKey);
-                    setModalConfig({
-                      isOpen: true,
-                      title: `Edit "${currentVirtualFolder.name}"`,
-                      initialValue: currentVirtualFolder.name,
-                      placeholder: 'New Name',
-                      onConfirm: (name, colorVal, iconVal) => {
-                        const meta = JSON.stringify({ color: colorVal, icon: iconVal });
-                        renameVirtualFolder(currentVirtualFolder.id, name, meta);
-                      }
-                    });
-                    setModalInputValue(currentVirtualFolder.name);
-                    setModalError('');
-                  }}
-                >
-                  Rename
-                </ActionButton>
-                <ActionButton 
-                  className="btn btn-secondary" 
-                  disabled={indexer && indexer.export_running}
-                  style={{ padding: '4px 10px', fontSize: '13px', background: '#ef44442a', borderColor: '#ef44443a', color: '#f87171' }} 
-                  onClick={() => {
-                    if (confirm("Are you sure you want to delete this virtual folder? This deletes the folder but does NOT delete files on disk.")) {
-                      deleteVirtualFolder(currentVirtualFolder.id);
-                    }
-                  }}
-                >
-                  Delete
-                </ActionButton>
-                <ActionButton 
-                  className="btn btn-secondary" 
-                  disabled={indexer && indexer.export_running}
-                  style={{ padding: '4px 10px', fontSize: '13px', background: 'linear-gradient(135deg, #10b981, #059669)', border: 'none', color: 'white' }} 
-                  onClick={async () => {
-                    try {
-                      const chooseRes = await axios.get(`${API}/choose-path?mode=directory`);
-                      const targetPath = chooseRes.data?.path;
-                      if (!targetPath) return; // User cancelled
-                      
-                      showToastMessage("Exporting folder...");
-                      const r = await axios.post(`${API}/virtual-folders/${currentVirtualFolder.id}/export`, { target_path: targetPath.trim() });
-                      showToastMessage(r.data.message || "Folder exported successfully!");
-                    } catch (err) {
-                      alert("Export failed: " + (err.response?.data?.detail || err.message));
-                      showToastMessage("Export failed.");
-                    }
-                  }}
-                >
-                  Export to Drive
-                </ActionButton>
-              </div>
-
-              {indexer && indexer.export_running && indexer.export_folder_id === currentVirtualFolder.id && (
-                <div style={{ margin: '12px 0', padding: '12px 16px', background: '#1e293b', borderRadius: '12px', border: '1px solid #334155' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#f8fafc', fontWeight: 'bold', marginBottom: '6px' }}>
-                    <span>Exporting Virtual Folder...</span>
-                    <span style={{ color: '#94a3b8' }}>{indexer.export_current_file || ''}</span>
-                  </div>
-                  <ProgressBar current={indexer.export_current} total={indexer.export_total} color="#10b981" />
-                </div>
-              )}
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', background: '#1e293b', padding: '12px', borderRadius: '12px', border: '1px solid #334155' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ fontSize: '13px', color: '#94a3b8', fontWeight: 'bold', whiteSpace: 'nowrap' }}>Rules / Query:</span>
-                <input 
-                  type="text" 
-                  value={queryInput} 
-                  onChange={(e) => setQueryInput(e.target.value)}
-                  onBlur={() => {
-                    if (queryInput !== (currentVirtualFolder.query || '')) {
-                      updateVirtualFolderQuery(currentVirtualFolder.id, queryInput);
-                      setTimeout(() => loadFiles(0, false, filterCategory), 100);
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.currentTarget.blur();
-                    }
-                  }}
-                  placeholder="Enter automatic filter rules (e.g. type:photo camera:iPhone object:car), or leave blank for manual-only."
-                  style={{ 
-                    flex: 1, 
-                    background: '#0f172a', 
-                    border: '1px solid #334155', 
-                    color: '#f8fafc', 
-                    padding: '6px 10px', 
-                    borderRadius: '6px', 
-                    fontSize: '13px',
-                    outline: 'none'
-                  }}
-                />
-              </div>
-              <div style={{ fontSize: '12px', color: '#64748b', paddingLeft: '94px' }}>
-                Files matching these rules will automatically appear here. You can also manually link/unlink files via the bulk actions.
-              </div>
-            </div>
+            <ProgressBar current={indexer.export_current} total={indexer.export_total} color="#10b981" />
           </div>
         )}
         <div className='sort-options' style={{ padding: '18px 18px 10px 18px', margin: 0, borderBottom: checkedFiles.size > 0 ? 'none' : '1px solid #1f2937' }}>
@@ -484,6 +661,25 @@ export default function Explorer(props) {
 
         <div style={{ flex: 1 }}></div>
 
+        <div style={{ display: 'flex', gap: '4px', background: '#111827', padding: '4px', borderRadius: '8px', marginRight: '6px' }}>
+            <ActionButton 
+            className=""
+            onClick={() => setViewType('flat')} 
+            style={{ padding: '6px 10px', background: viewType === 'flat' ? '#3b82f6' : 'transparent', color: viewType === 'flat' ? 'white' : '#94a3b8', borderRadius: '6px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 'bold' }}
+            title="Flat View"
+            >
+            <TableRowsIcon style={{ fontSize: '16px' }} /> Flat
+            </ActionButton>
+            <ActionButton 
+            className=""
+            onClick={() => setViewType('tree')} 
+            style={{ padding: '6px 10px', background: viewType === 'tree' ? '#3b82f6' : 'transparent', color: viewType === 'tree' ? 'white' : '#94a3b8', borderRadius: '6px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 'bold' }}
+            title="Tree View"
+            >
+            <AccountTreeIcon style={{ fontSize: '16px' }} /> Tree
+            </ActionButton>
+        </div>
+
         <div style={{ display: 'flex', gap: '4px', background: '#111827', padding: '4px', borderRadius: '8px' }}>
             <ActionButton 
             className=""
@@ -511,95 +707,259 @@ export default function Explorer(props) {
         )}
 
         {checkedFiles.size > 0 && (
-        <div style={{ padding: '10px 18px', background: '#1e293b', borderBottom: '1px solid #1f2937', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto', whiteSpace: 'nowrap' }}>{showSelectedOnly ? `Showing ${checkedFiles.size} selected file(s)` : `${checkedFiles.size} file(s) selected`}</span>
-            <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', borderColor: showSelectedOnly ? '#3b82f6' : undefined, color: showSelectedOnly ? '#38bdf8' : undefined }} onClick={() => setShowSelectedOnly(!showSelectedOnly)}>{showSelectedOnly ? 'Show All Files' : 'Show Selected Only'}</ActionButton>
-
-            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
-            <ActionButton className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={openSelected}>Open</ActionButton>
-            {checkedFiles.size === 1 && (
-                <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', whiteSpace: 'nowrap' }} onClick={locateSelectedFileInExplorer}>
-                <PlaceIcon fontSize="small" /> Locate in Explorer
-                </ActionButton>
-            )}
-            <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={copySelected}>Copy</ActionButton>
-            {!isSelectionReadOnly && (
-                <>
-                <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={moveSelected}>Move</ActionButton>
-                <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={deleteSelected}>Delete</ActionButton>
-                </>
-            )}
-            </div>
-
-            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
-              <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setIsAddToFolderOpen(true)}>Add to Folder</ActionButton>
-              {page === 'virtual_folder' && currentVirtualFolder && (
-                <ActionButton 
-                  className="btn btn-secondary" 
-                  style={{ padding: '6px 12px', background: '#ef44442a', borderColor: '#ef44443a', color: '#f87171' }} 
-                  onClick={() => {
-                    const fileIds = Array.from(checkedFiles).map(path => globalFileCache.current?.get(path)?.id).filter(id => id);
-                    if (fileIds.length > 0) {
-                      removeFilesFromVirtualFolder(currentVirtualFolder.id, fileIds);
-                    }
-                  }}
-                >
-                  Remove from Folder
-                </ActionButton>
-              )}
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
-            <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingPerson ? '#334155' : undefined }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); setIsTaggingObject(false); loadPeople(); }}>Tag Person</ActionButton>
-            {isTaggingPerson && Array.isArray(people) && (
-                <div style={{ display: 'flex', gap: '4px' }}>
-                <select 
-                    onChange={(e) => setPersonTagInput(e.target.value)} 
-                    style={{ padding: '6px 12px', background: '#1e293b', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none' }}
-                    value={personTagInput}
-                >
-                    <option value="" disabled>Select person...</option>
-                    {sortedNamedPeopleDropdown.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-                <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '4px 8px', color: '#10b981' }} onClick={() => personTagInput && assignPhotosToPerson(personTagInput, Array.from(checkedFiles))}>Add</ActionButton>
-                <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '4px 8px', color: '#ef4444' }} onClick={() => {
-                    if (!personTagInput) return;
-                    const fileIds = Array.from(checkedFiles).map(path => globalFileCache.current.get(path)?.id).filter(id => id);
-                    removePersonPhotosBulk(personTagInput, fileIds);
-                }}>Remove</ActionButton>
+        <div style={{ padding: '12px 18px', background: '#1e293b', borderBottom: '1px solid #1f2937', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {/* Top row: selection info and Show Selected Only */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontWeight: 'bold', color: '#3b82f6', fontSize: '13.5px', whiteSpace: 'nowrap' }}>
+                      {showSelectedOnly ? `Showing ${checkedFiles.size} selected item(s)` : `${checkedFiles.size} item(s) selected`}
+                  </span>
+                  <div ref={selectionListRef} style={{ position: 'relative' }}>
+                    <ActionButton
+                      className="btn btn-secondary"
+                      style={{ padding: '5px 12px', fontSize: '13.5px', borderColor: isSelectionListOpen ? '#3b82f6' : undefined, color: isSelectionListOpen ? '#38bdf8' : undefined }}
+                      onClick={() => setIsSelectionListOpen(v => !v)}
+                    >
+                      View Selection ▾
+                    </ActionButton>
+                    {isSelectionListOpen && (
+                      <div style={{
+                        position: 'absolute',
+                        top: '34px',
+                        left: 0,
+                        zIndex: 9999,
+                        background: '#0f172a',
+                        border: '1px solid #334155',
+                        borderRadius: '10px',
+                        boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+                        width: '380px',
+                        maxHeight: '400px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflow: 'hidden'
+                      }}>
+                        <div style={{ padding: '10px 14px', borderBottom: '1px solid #1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontWeight: 'bold', fontSize: '13px', color: '#f8fafc' }}>Selected Items ({checkedFiles.size})</span>
+                          <span style={{ fontSize: '11px', color: '#64748b', cursor: 'pointer', userSelect: 'none' }} onClick={() => setIsSelectionListOpen(false)}>✕ Close</span>
+                        </div>
+                        <div style={{ overflowY: 'auto', flex: 1 }}>
+                          {Array.from(checkedFiles).map(path => {
+                            const isVirtual = path.startsWith('virtual_folder:');
+                            let label, sublabel, icon;
+                            if (isVirtual) {
+                              const vfId = parseInt(path.split(':')[1]);
+                              const vf = (virtualFolders || []).find(f => f.id === vfId);
+                              label = vf ? vf.name : `Virtual Folder #${vfId}`;
+                              sublabel = 'Virtual Folder';
+                              icon = '📁';
+                            } else {
+                              const file = globalFileCache.current?.get(path);
+                              const parts = path.replace(/\\/g, '/').split('/');
+                              label = file ? file.filename : parts[parts.length - 1];
+                              sublabel = file ? file.category : (parts.length > 1 ? parts.slice(0, -1).join('/') : path);
+                              icon = file ? (file.category === 'photo' ? '🖼' : file.category === 'video' ? '🎬' : file.category === 'audio' ? '🎵' : file.category === 'document' ? '📄' : '📦') : '📂';
+                            }
+                            return (
+                              <div key={path} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 14px', borderBottom: '1px solid #1f2937', cursor: 'pointer' }}
+                                onClick={() => {
+                                  const next = new Set(checkedFiles);
+                                  next.delete(path);
+                                  setCheckedFiles(next);
+                                }}
+                                title="Click to deselect"
+                              >
+                                <span style={{ fontSize: '16px', flexShrink: 0 }}>{icon}</span>
+                                <div style={{ flex: 1, overflow: 'hidden' }}>
+                                  <div style={{ fontSize: '12.5px', fontWeight: 'bold', color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</div>
+                                  <div style={{ fontSize: '11px', color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sublabel}</div>
+                                </div>
+                                <span style={{ fontSize: '11px', color: '#ef4444', flexShrink: 0 }}>✕</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
-            )}
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
-            <ActionButton disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingObject ? '#334155' : undefined }} onClick={() => { setIsTaggingObject(!isTaggingObject); setIsTaggingPerson(false); }} title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to manage tags" : ""}>Manage Tags</ActionButton>
-            {isTaggingObject && (
-                <div style={{ display: 'flex', gap: '4px' }}>
-                <input 
-                    type="text" 
-                    list="existing-tags"
-                    placeholder="tag1, tag2..." 
-                    value={tagInput}
-                    onChange={(e) => setTagInput(e.target.value)}
-                    style={{ padding: '6px 12px', background: '#1e293b', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none', width: '150px' }}
-                    onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                        addTagsToSelected(tagInput);
-                    }
-                    }}
-                />
-                <datalist id="existing-tags">
-                    {objectTags.map(tag => (
-                    <option key={tag} value={tag.replace('object:', '')} />
-                    ))}
-                </datalist>
-                <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '4px 8px', color: '#10b981' }} onClick={() => addTagsToSelected(tagInput)}>Add</ActionButton>
-                <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '4px 8px', color: '#ef4444' }} onClick={() => removeTagsFromSelected(tagInput)}>Remove</ActionButton>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <ActionButton className="btn btn-secondary" style={{ padding: '5px 12px', borderColor: showSelectedOnly ? '#3b82f6' : undefined, color: showSelectedOnly ? '#38bdf8' : undefined, fontSize: '13.5px' }} onClick={() => setShowSelectedOnly(!showSelectedOnly)}>{showSelectedOnly ? 'Show All Files' : 'Show Selected Only'}</ActionButton>
+                    <ActionButton className="btn btn-secondary" style={{ padding: '5px 12px', fontSize: '13.5px' }} onClick={() => { setCheckedFiles(new Set()); setIsSelectionListOpen(false); }}>Clear Selection</ActionButton>
                 </div>
-            )}
             </div>
 
-            <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setCheckedFiles(new Set())}>Clear Selection</ActionButton>
+            {/* Bottom row: all buttons grouped together */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: '4px', alignItems: 'center', background: '#0f172a', padding: '3px', borderRadius: '8px', border: '1px solid #334155' }}>
+                    <ActionButton className="btn btn-primary" style={{ padding: '5px 10px', fontSize: '13px' }} onClick={openSelected}>Open</ActionButton>
+                    {checkedFiles.size === 1 && (
+                      <div ref={locateMenuRef} style={{ position: 'relative', display: 'inline-block' }}>
+                        <ActionButton 
+                          className="btn btn-secondary" 
+                          style={{ padding: '5px 10px', fontSize: '13px', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '4px' }} 
+                          onClick={() => setIsLocateMenuOpen(!isLocateMenuOpen)}
+                        >
+                          <PlaceIcon style={{ fontSize: '15px' }} /> Locate
+                        </ActionButton>
+                        {isLocateMenuOpen && (
+                          <div style={{
+                            position: 'absolute',
+                            top: '32px',
+                            left: 0,
+                            background: '#1e293b',
+                            border: '1px solid #334155',
+                            borderRadius: '8px',
+                            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                            padding: '6px 0',
+                            zIndex: 1000,
+                            minWidth: '160px',
+                            display: 'flex',
+                            flexDirection: 'column'
+                          }}>
+                            <button
+                              onClick={() => {
+                                setIsLocateMenuOpen(false);
+                                locateSelectedFile('tree');
+                              }}
+                              onMouseEnter={(e) => e.currentTarget.style.background = '#334155'}
+                              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                              style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#cbd5e1',
+                                padding: '8px 12px',
+                                textAlign: 'left',
+                                fontSize: '12px',
+                                cursor: 'pointer',
+                                transition: 'background 0.2s',
+                                width: '100%'
+                              }}
+                            >
+                              📁 Folder (Tree View)
+                            </button>
+                            <button
+                              onClick={() => {
+                                setIsLocateMenuOpen(false);
+                                locateSelectedFile('flat');
+                              }}
+                              onMouseEnter={(e) => e.currentTarget.style.background = '#334155'}
+                              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                              style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#cbd5e1',
+                                padding: '8px 12px',
+                                textAlign: 'left',
+                                fontSize: '12px',
+                                cursor: 'pointer',
+                                transition: 'background 0.2s',
+                                width: '100%'
+                              }}
+                            >
+                              📋 Flat List (Flat View)
+                            </button>
+                            <button
+                              onClick={() => {
+                                setIsLocateMenuOpen(false);
+                                locateSelectedFile('virtual_folder');
+                              }}
+                              onMouseEnter={(e) => e.currentTarget.style.background = '#334155'}
+                              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                              style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#cbd5e1',
+                                padding: '8px 12px',
+                                textAlign: 'left',
+                                fontSize: '12px',
+                                cursor: 'pointer',
+                                transition: 'background 0.2s',
+                                width: '100%'
+                              }}
+                            >
+                              ⭐ Virtual Folder
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <ActionButton className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '13px' }} onClick={copySelected}>Copy</ActionButton>
+                    {!isSelectionReadOnly && (
+                        <>
+                            <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '13px' }} onClick={moveSelected}>Move</ActionButton>
+                            <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '13px', background: '#ef4444', borderColor: '#b91c1c', color: 'white' }} onClick={deleteSelected}>Delete</ActionButton>
+                        </>
+                    )}
+                </div>
+
+                <div style={{ display: 'flex', gap: '4px', alignItems: 'center', background: '#0f172a', padding: '3px', borderRadius: '8px', border: '1px solid #334155' }}>
+                    <ActionButton className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '13px' }} onClick={() => setIsAddToFolderOpen(true)}>Add to Folder</ActionButton>
+                    {page === 'virtual_folder' && currentVirtualFolder && (
+                        <ActionButton 
+                            className="btn btn-secondary" 
+                            style={{ padding: '5px 10px', fontSize: '13px', background: '#ef44442a', borderColor: '#ef44443a', color: '#f87171' }} 
+                            onClick={() => {
+                                const fileIds = Array.from(checkedFiles).map(path => globalFileCache.current?.get(path)?.id).filter(id => id);
+                                if (fileIds.length > 0) {
+                                    removeFilesFromVirtualFolder(currentVirtualFolder.id, fileIds);
+                                }
+                            }}
+                        >
+                            Remove from Folder
+                        </ActionButton>
+                    )}
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#0f172a', padding: '3px', borderRadius: '8px', border: '1px solid #334155' }}>
+                    <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '13px', background: isTaggingPerson ? '#334155' : undefined }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); setIsTaggingObject(false); loadPeople(); }}>Tag Person</ActionButton>
+                    {isTaggingPerson && Array.isArray(people) && (
+                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                            <select 
+                                onChange={(e) => setPersonTagInput(e.target.value)} 
+                                style={{ padding: '4px 8px', background: '#1e293b', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none', fontSize: '12px' }}
+                                value={personTagInput}
+                            >
+                                <option value="" disabled>Select...</option>
+                                {sortedNamedPeopleDropdown.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </select>
+                            <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '3px 6px', fontSize: '12px', color: '#10b981' }} onClick={() => personTagInput && assignPhotosToPerson(personTagInput, Array.from(checkedFiles))}>Add</ActionButton>
+                            <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '3px 6px', fontSize: '12px', color: '#ef4444' }} onClick={() => {
+                                if (!personTagInput) return;
+                                const fileIds = Array.from(checkedFiles).map(path => globalFileCache.current.get(path)?.id).filter(id => id);
+                                removePersonPhotosBulk(personTagInput, fileIds);
+                            }}>Remove</ActionButton>
+                        </div>
+                    )}
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#0f172a', padding: '3px', borderRadius: '8px', border: '1px solid #334155' }}>
+                    <ActionButton disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '13px', background: isTaggingObject ? '#334155' : undefined }} onClick={() => { setIsTaggingObject(!isTaggingObject); setIsTaggingPerson(false); }} title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to manage tags" : ""}>Manage Tags</ActionButton>
+                    {isTaggingObject && (
+                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                            <input 
+                                type="text" 
+                                list="existing-tags"
+                                placeholder="tag1, tag2..." 
+                                value={tagInput}
+                                onChange={(e) => setTagInput(e.target.value)}
+                                style={{ padding: '4px 8px', background: '#1e293b', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none', width: '110px', fontSize: '12px' }}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                        addTagsToSelected(tagInput);
+                                    }
+                                }}
+                            />
+                            <datalist id="existing-tags">
+                                {objectTags.map(tag => (
+                                    <option key={tag} value={tag.replace('object:', '')} />
+                                ))}
+                            </datalist>
+                            <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '3px 6px', fontSize: '12px', color: '#10b981' }} onClick={() => addTagsToSelected(tagInput)}>Add</ActionButton>
+                            <ActionButton disabled={actionInProgress || !!dataOpProgress || (indexer && (indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)))} className="btn btn-secondary" style={{ padding: '3px 6px', fontSize: '12px', color: '#ef4444' }} onClick={() => removeTagsFromSelected(tagInput)}>Remove</ActionButton>
+                        </div>
+                    )}
+                </div>
+            </div>
         </div>
         )}
 
@@ -647,10 +1007,239 @@ export default function Explorer(props) {
             </div>
             )}
 
-        <div className='content' onScroll={handleScroll} style={{ paddingTop: '18px' }}>
+        <div className={`content ${checkedFiles.size > 0 ? 'has-selections' : ''}`} onScroll={handleScroll} style={{ paddingTop: '18px' }}>
+        {viewType === 'tree' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '0 20px 14px 20px', borderBottom: '1px solid #1f2937', marginBottom: '18px' }}>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <ActionButton 
+                disabled={!canGoBack} 
+                onClick={handleBack} 
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '28px',
+                  height: '28px',
+                  borderRadius: '50%',
+                  border: '1px solid #334155',
+                  background: canGoBack ? '#1e293b' : 'transparent',
+                  color: canGoBack ? '#f8fafc' : '#475569',
+                  cursor: canGoBack ? 'pointer' : 'default',
+                  outline: 'none',
+                  transition: 'all 0.2s',
+                  padding: 0
+                }}
+                title="Back"
+              >
+                <ArrowBackIcon style={{ fontSize: '14px' }} />
+              </ActionButton>
+              <ActionButton 
+                disabled={!canGoForward} 
+                onClick={handleForward} 
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '28px',
+                  height: '28px',
+                  borderRadius: '50%',
+                  border: '1px solid #334155',
+                  background: canGoForward ? '#1e293b' : 'transparent',
+                  color: canGoForward ? '#f8fafc' : '#475569',
+                  cursor: canGoForward ? 'pointer' : 'default',
+                  outline: 'none',
+                  transition: 'all 0.2s',
+                  padding: 0
+                }}
+                title="Forward"
+              >
+                <ArrowForwardIcon style={{ fontSize: '14px' }} />
+              </ActionButton>
+              <ActionButton 
+                disabled={!canGoUp} 
+                onClick={handleUp} 
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '28px',
+                  height: '28px',
+                  borderRadius: '50%',
+                  border: '1px solid #334155',
+                  background: canGoUp ? '#1e293b' : 'transparent',
+                  color: canGoUp ? '#f8fafc' : '#475569',
+                  cursor: canGoUp ? 'pointer' : 'default',
+                  outline: 'none',
+                  transition: 'all 0.2s',
+                  padding: 0
+                }}
+                title="Up"
+              >
+                <ArrowUpwardIcon style={{ fontSize: '14px' }} />
+              </ActionButton>
+            </div>
+
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+              {isPhys ? renderPhysicalBreadcrumbs() : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#94a3b8', flexWrap: 'wrap' }}>
+                  <span 
+                    style={{ cursor: 'pointer', color: '#38bdf8', fontWeight: 'bold' }} 
+                    onClick={() => setPage('virtual_folders')}
+                  >
+                    Virtual Folders
+                  </span>
+                  {getBreadcrumbs().map((b, index, arr) => {
+                    const isLast = index === arr.length - 1;
+                    const { color, iconKey } = getFolderStyleAndIcon(b);
+                    const FolderIconComponent = ICON_MAP[iconKey] || FolderIcon;
+                    return (
+                      <React.Fragment key={b.id}>
+                        <span style={{ color: '#475569', fontWeight: 'bold' }}>/</span>
+                        <span 
+                          style={{ 
+                            color: isLast ? '#f8fafc' : '#94a3b8', 
+                            fontWeight: isLast ? 'bold' : 'normal',
+                            cursor: isLast ? 'default' : 'pointer',
+                            textDecoration: isLast ? 'none' : 'underline',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}
+                          onClick={() => { if (!isLast) handleOpenFolder(b); }}
+                        >
+                          {isLast && <FolderIconComponent style={{ color: color, fontSize: '15px' }} />}
+                          {b.name}
+                        </span>
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Action buttons for Virtual Folder */}
+              {!isPhys && currentVirtualFolder && (
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  <ActionButton 
+                    className="btn btn-secondary" 
+                    style={{ padding: '3px 8px', fontSize: '11px', height: '24px' }} 
+                    onClick={() => {
+                      const { color, iconKey } = getFolderStyleAndIcon(currentVirtualFolder);
+                      setSelectedColor(color);
+                      setSelectedIcon(iconKey);
+                      setModalConfig({
+                        isOpen: true,
+                        title: `Rename "${currentVirtualFolder.name}"`,
+                        initialValue: currentVirtualFolder.name,
+                        placeholder: 'New Name',
+                        onConfirm: (name, colorVal, iconVal) => {
+                          const meta = JSON.stringify({ color: colorVal, icon: iconVal });
+                          renameVirtualFolder(currentVirtualFolder.id, name, meta);
+                        }
+                      });
+                      setModalInputValue(currentVirtualFolder.name);
+                      setModalError('');
+                    }}
+                  >
+                    Rename
+                  </ActionButton>
+                  <ActionButton 
+                    className="btn btn-secondary" 
+                    style={{ padding: '3px 8px', fontSize: '11px', height: '24px', background: '#ef44442a', borderColor: '#ef44443a', color: '#f87171' }} 
+                    onClick={() => {
+                      if (confirm("Are you sure you want to delete this virtual folder? This deletes the folder but does NOT delete files on disk.")) {
+                        deleteVirtualFolder(currentVirtualFolder.id);
+                      }
+                    }}
+                  >
+                    Delete
+                  </ActionButton>
+                  <ActionButton 
+                    className="btn btn-secondary" 
+                    style={{ padding: '3px 8px', fontSize: '11px', height: '24px' }} 
+                    onClick={async () => {
+                      try {
+                        const chooseRes = await axios.get(`${API}/choose-path?mode=directory`);
+                        const targetPath = chooseRes.data?.path;
+                        if (!targetPath) return; // User cancelled
+                        
+                        showToastMessage("Exporting folder...");
+                        const r = await axios.post(`${API}/virtual-folders/${currentVirtualFolder.id}/export`, { target_path: targetPath.trim() });
+                        showToastMessage(r.data.message || "Folder exported successfully!");
+                      } catch (err) {
+                        alert("Export failed: " + (err.response?.data?.detail || err.message));
+                        showToastMessage("Export failed.");
+                      }
+                    }}
+                  >
+                    Export
+                  </ActionButton>
+                  <ActionButton 
+                    className="btn btn-secondary" 
+                    style={{ 
+                      padding: '3px 8px', 
+                      fontSize: '11px', 
+                      height: '24px', 
+                      borderColor: showRules ? '#3b82f6' : undefined,
+                      color: showRules ? '#38bdf8' : undefined,
+                      background: showRules ? 'rgba(59, 130, 246, 0.1)' : 'transparent'
+                    }} 
+                    onClick={() => setShowRules(!showRules)}
+                  >
+                    Rules {currentVirtualFolder.query ? '✓' : ''}
+                  </ActionButton>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {viewType === 'tree' && page !== 'virtual_folder' && directSubfolders.length > 0 && (
+          <div style={{ padding: '0 20px', marginBottom: '24px' }}>
+            <h3 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 'bold' }}>Folders</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '12px' }}>
+              {directSubfolders.map(sub => (
+                <div 
+                  key={sub.path} 
+                  onClick={() => navigateToPhys(sub.path)}
+                  style={{
+                    background: '#111827',
+                    border: checkedFiles.has(sub.path) ? '1px solid #3b82f6' : '1px solid #24324a',
+                    borderRadius: '12px',
+                    padding: '12px 16px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                  }}
+                  className="subfolder-card-hover"
+                >
+                  {(() => {
+                    const isImplicit = getImplicitSelection && getImplicitSelection(sub.path);
+                    return (
+                      <input 
+                        type="checkbox"
+                        className="folder-cb"
+                        checked={checkedFiles.has(sub.path) || isImplicit}
+                        title={isImplicit ? "Selected via parent folder — click to deselect the folder" : undefined}
+                        onChange={(e) => toggleCheck(e, sub.path)}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ cursor: 'pointer', width: '15px', height: '15px', accentColor: isImplicit ? '#14b8a6' : '#3b82f6' }}
+                      />
+                    );
+                  })()}
+                  <FolderIcon style={{ color: '#3b82f6', fontSize: '20px' }} />
+                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                    <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#f8fafc' }} title={sub.name}>{sub.name}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {(() => {
           const currentSubfolders = (virtualFolders || []).filter(f => f.parent_id === virtualFolderId);
-          if (page === 'virtual_folder') {
+          if (page === 'virtual_folder' && viewType === 'tree') {
             return (
               <div style={{ padding: '0 20px', marginBottom: '24px' }}>
                 <style>
@@ -673,7 +1262,7 @@ export default function Explorer(props) {
                       onClick={() => handleOpenFolder(sub)}
                       style={{
                         background: '#111827',
-                        border: '1px solid #24324a',
+                        border: checkedFiles.has("virtual_folder:" + sub.id) ? '1px solid #3b82f6' : '1px solid #24324a',
                         borderRadius: '12px',
                         padding: '12px 16px',
                         cursor: 'pointer',
@@ -683,6 +1272,20 @@ export default function Explorer(props) {
                       }}
                       className="subfolder-card-hover"
                     >
+                      {(() => {
+                        const isImplicit = getImplicitSelection && getImplicitSelection(sub.id, true);
+                        return (
+                          <input 
+                            type="checkbox"
+                            className="folder-cb"
+                            checked={checkedFiles.has("virtual_folder:" + sub.id) || isImplicit}
+                            title={isImplicit ? "Selected via parent folder — click to deselect the folder" : undefined}
+                            onChange={(e) => toggleCheck(e, "virtual_folder:" + sub.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            style={{ cursor: 'pointer', width: '15px', height: '15px', accentColor: isImplicit ? '#14b8a6' : '#3b82f6' }}
+                          />
+                        );
+                      })()}
                       <FolderIcon style={{ color: sub.query ? '#a855f7' : '#3b82f6', fontSize: '20px' }} />
                       <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
                         <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#f8fafc' }} title={sub.name}>{sub.name}</div>
@@ -752,7 +1355,7 @@ export default function Explorer(props) {
         )}
 
         {
-        Array.from(groupedFiles.entries()).map(([dateKey, filesGroup]) => (
+        Array.from(displayedGroupedFiles.entries()).map(([dateKey, filesGroup]) => (
         <DateGroup
         key={dateKey}
         dateKey={dateKey}
@@ -768,6 +1371,7 @@ export default function Explorer(props) {
         filterCategory={filterCategory}
         indexer={indexer}
         checkFileReadOnly={checkFileReadOnly}
+        getImplicitSelection={getImplicitSelection}
         />
         ))
         }

@@ -31,7 +31,9 @@ const [stats,setStats]=useState({total:0,photos:0,videos:0,audio:0,documents:0,e
 const [indexer,setIndexer]=useState({running:false,paused:false,stopped:false,current:0,total:0,current_file:'',status:'Idle',indexed:0,face_scanner_running:false,object_scanner_running:false,document_scanner_running:false,hasher_running:false,hasher_current:0,hasher_total:0,face_scanner_current:0,face_scanner_total:0,object_scanner_current:0,object_scanner_total:0,document_scanner_current:0,document_scanner_total:0})
 const [showSidebar, setShowSidebar] = useState(true)
 const [showTimeline, setShowTimeline] = useState(true)
+const [showTreeView, setShowTreeView] = useState(true)
 const [showDetails, setShowDetails] = useState(true)
+const [viewType, setViewType] = useState('flat')
 const [sidebarWidth, setSidebarWidth] = useState(240)
 const [timelineWidth, setTimelineWidth] = useState(150)
 const [detailsWidth, setDetailsWidth] = useState(260)
@@ -81,8 +83,28 @@ const showToastMessage = (message, action = null) => {
 
 const sharedState = useRef({});
 
+const updateUIPreferences = (updates) => {
+  setSettings(prev => {
+    const next = { ...prev, ...updates };
+    const payload = { ...next };
+    if (payload.database_path && typeof payload.database_path === 'string' && !payload.database_path.endsWith('.db')) {
+      const separator = payload.database_path.includes('\\') ? '\\' : '/';
+      const cleanPath = payload.database_path.replace(/[/\\]$/, '');
+      payload.database_path = cleanPath ? (cleanPath + separator + dbFilename) : dbFilename;
+    }
+    axios.post(`${API}/settings`, payload).catch(e => console.warn(e));
+    return next;
+  });
+};
+
+const changeViewType = (newType) => {
+  setViewType(newType);
+  updateUIPreferences({ view_type: newType });
+};
+
 const explorer = useExplorer({
-  settings, page, setPage, query, setQuery, showToastMessage, sharedState, indexer, actionInProgress, dataOpProgress, setActionInProgress
+  settings, page, setPage, query, setQuery, showToastMessage, sharedState, indexer, actionInProgress, dataOpProgress, setActionInProgress,
+  viewType, setViewType: changeViewType
 });
 
 const tagsState = useTags({
@@ -229,11 +251,13 @@ async function loadSettings(){
  }
  setSettings(data)
  if(data.show_sidebar !== undefined) setShowSidebar(data.show_sidebar)
- if(r.data.show_timeline !== undefined) setShowTimeline(r.data.show_timeline)
- if(r.data.show_details !== undefined) setShowDetails(r.data.show_details)
- if(r.data.sidebar_width) setSidebarWidth(r.data.sidebar_width)
- if(r.data.timeline_width) setTimelineWidth(r.data.timeline_width)
- if(r.data.details_width) setDetailsWidth(r.data.details_width)
+  if(r.data.show_timeline !== undefined) setShowTimeline(r.data.show_timeline)
+  if(r.data.show_tree_view !== undefined) setShowTreeView(r.data.show_tree_view)
+  if(r.data.show_details !== undefined) setShowDetails(r.data.show_details)
+  if(r.data.sidebar_width) setSidebarWidth(r.data.sidebar_width)
+  if(r.data.timeline_width) setTimelineWidth(r.data.timeline_width)
+  if(r.data.details_width) setDetailsWidth(r.data.details_width)
+  if(data.view_type !== undefined) setViewType(data.view_type)
 
  // Sync the saved AI scanning options directly from the backend configuration
  if (data.run_face_scan !== undefined || data.run_object_scan !== undefined || data.run_document_scan !== undefined) {
@@ -451,20 +475,6 @@ async function handleForceShutdown() {
   }
 }
 
-const updateUIPreferences = (updates) => {
-  setSettings(prev => {
-    const next = { ...prev, ...updates };
-    const payload = { ...next };
-    if (payload.database_path && typeof payload.database_path === 'string' && !payload.database_path.endsWith('.db')) {
-      const separator = payload.database_path.includes('\\') ? '\\' : '/';
-      const cleanPath = payload.database_path.replace(/[/\\]$/, '');
-      payload.database_path = cleanPath ? (cleanPath + separator + dbFilename) : dbFilename;
-    }
-    axios.post(`${API}/settings`, payload).catch(e => console.warn(e));
-    return next;
-  });
-};
-
 const toggleSidebar = () => {
   const val = !showSidebar;
   setShowSidebar(val);
@@ -475,6 +485,12 @@ const toggleTimeline = () => {
   const val = !showTimeline;
   setShowTimeline(val);
   updateUIPreferences({ show_timeline: val });
+};
+
+const toggleTreeView = () => {
+  const val = !showTreeView;
+  setShowTreeView(val);
+  updateUIPreferences({ show_tree_view: val });
 };
 
 const toggleDetails = () => {
@@ -772,7 +788,8 @@ function renderValue(value){
 
   const appState = {
     page, setPage, query, setQuery, settings, setSettings, stats, setStats, indexer, setIndexer,
-    showSidebar, setShowSidebar, showTimeline, setShowTimeline, showDetails, setShowDetails,
+    showSidebar, setShowSidebar, showTimeline, setShowTimeline, showTreeView, setShowTreeView, showDetails, setShowDetails,
+    viewType, setViewType: changeViewType,
     sidebarWidth, setSidebarWidth, timelineWidth, setTimelineWidth, detailsWidth, setDetailsWidth,
     isResizing, setIsResizing,
     showSearchHelp, setShowSearchHelp, toastMessage, setToastMessage, showToast, setShowToast,
@@ -782,7 +799,8 @@ function renderValue(value){
     dbFilename, setDbFilename, saveSettings, choosePath, choosePathForConfig, testAIConnection, generateSearchWithAI, clearCache, loadDashboard,
     updateUIPreferences, togglePinPerson,
     fullTimelineData, setFullTimelineData, timelineUpdateTick, setTimelineUpdateTick, applySuggestion, getOfflinePlaceholder, renderThumb, renderMetadata, renderValue,
-    showToastMessage, toggleSidebar, toggleTimeline, toggleDetails,
+    showToastMessage, toggleSidebar, toggleTimeline, toggleTreeView, toggleDetails,
+    locateSelectedFileInExplorer: () => explorer.locateSelectedFile('flat'),
     
     ...explorer,
     ...tagsState,
@@ -795,7 +813,7 @@ function renderValue(value){
   return {
     appState,
     isShutdown, isShuttingDown, handleShutdown, handleForceShutdown,
-    toggleSidebar, toggleTimeline, toggleDetails, isResizing, setIsResizing,
+    toggleSidebar, toggleTimeline, toggleTreeView, toggleDetails, isResizing, setIsResizing,
     searchContainerRef, handleSearchChange, handleKeyDown, toastTimeoutRef,
     toastAction, getPersonThumbUrl: peopleState.getPersonThumbUrl,
     explorer, tagsState, peopleState, scannerState, systemOpsState
@@ -806,7 +824,7 @@ export default function App() {
   const {
     appState,
     isShutdown, isShuttingDown, handleShutdown, handleForceShutdown,
-    toggleSidebar, toggleTimeline, toggleDetails, isResizing, setIsResizing,
+    toggleSidebar, toggleTimeline, toggleTreeView, toggleDetails, isResizing, setIsResizing,
     searchContainerRef, handleSearchChange, handleKeyDown, toastTimeoutRef,
     toastAction, getPersonThumbUrl,
     explorer, tagsState, peopleState, scannerState, systemOpsState
@@ -814,7 +832,8 @@ export default function App() {
 
   const {
     page, setPage, query, setQuery, settings, setSettings, stats, setStats, indexer, setIndexer,
-    showSidebar, setShowSidebar, showTimeline, setShowTimeline, showDetails, setShowDetails,
+    showSidebar, setShowSidebar, showTimeline, setShowTimeline, showTreeView, setShowTreeView, showDetails, setShowDetails,
+    viewType, setViewType,
     sidebarWidth, setSidebarWidth, timelineWidth, setTimelineWidth, detailsWidth, setDetailsWidth,
     showSearchHelp, setShowSearchHelp, toastMessage, setToastMessage, showToast, setShowToast,
     suggestionsData, setSuggestionsData, focusedSuggestionIndex, setFocusedSuggestionIndex,
@@ -1076,6 +1095,9 @@ export default function App() {
   setShowSearchHelp={setShowSearchHelp}
   toggleTimeline={toggleTimeline}
   showTimeline={showTimeline}
+  toggleTreeView={toggleTreeView}
+  showTreeView={showTreeView}
+  viewType={viewType}
   toggleDetails={toggleDetails}
   showDetails={showDetails}
   page={page}

@@ -193,6 +193,7 @@ def settings():
         "allow_unverified_deletion": False,
         "animations_enabled": True,
         "show_full_timeline": False,
+        "show_tree_view": True,
         "read_only_mode": True,
         "ai_enabled": False,
         "ai_provider": "",
@@ -217,6 +218,7 @@ def settings():
         "backup_configs": [],
         "smart_searches": [],
         "auto_run_on_startup": False,
+        "view_type": "flat",
     }
 
     def merge_defaults(config, defaults_dict):
@@ -419,8 +421,33 @@ def shutdown(request: Request):
             time.sleep(2.0)
             if logging_enabled:
                 logging.info("Server is shutting down (Production method).")
+
+            # Stop the tray icon immediately from this thread so it
+            # disappears even if server.run() takes time to return.
+            try:
+                from backend.app.utils.tray import stop_tray_icon
+                stop_tray_icon()
+            except Exception:
+                pass
+
+            # Signal uvicorn to start its graceful drain.
             server.should_exit = True
-        threading.Thread(target=graceful_shutdown).start()
+
+            # Give uvicorn 3 seconds to drain open connections.
+            time.sleep(3.0)
+
+            # Force-close any connections that are still open
+            # (e.g. browser keep-alive connections that never closed).
+            server.force_exit = True
+            if logging_enabled:
+                logging.info("Server force-exit flag set.")
+
+            # Final safety net: if the process is still alive after another
+            # 3 seconds (e.g. uvicorn event loop is stuck), hard-kill it.
+            time.sleep(3.0)
+            import os as _os
+            _os._exit(0)
+        threading.Thread(target=graceful_shutdown, daemon=True).start()
         return {"shutdown": True, "message": "Server is shutting down..."}
     else:
         import os

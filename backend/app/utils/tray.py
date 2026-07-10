@@ -5,6 +5,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 _tray_icon = None
+_tray_lock = threading.Lock()
 
 def create_default_icon():
     # Create an image with a dark blue background and a white "W"
@@ -48,6 +49,15 @@ def _create_icon(server, port):
     def on_shutdown(icon, item):
         icon.stop()
         server.should_exit = True
+        # Give uvicorn 3 s to drain, then force-close connections,
+        # then hard-kill if the event loop is still stuck.
+        def _force_exit():
+            import time as _time, os as _os
+            _time.sleep(3.0)
+            server.force_exit = True
+            _time.sleep(3.0)
+            _os._exit(0)
+        threading.Thread(target=_force_exit, daemon=True).start()
         
     menu = pystray.Menu(
         pystray.MenuItem("Open WABS", on_open_wabs),
@@ -103,12 +113,13 @@ def run_tray_icon(server, port):
 
 def stop_tray_icon():
     global _tray_icon
-    if _tray_icon is not None:
-        try:
-            _tray_icon.stop()
-            print("System tray icon stopped.")
-        except KeyboardInterrupt:
-            pass
-        except BaseException as e:
-            print(f"Could not stop system tray: {e}")
-        _tray_icon = None
+    with _tray_lock:
+        if _tray_icon is not None:
+            try:
+                _tray_icon.stop()
+                print("System tray icon stopped.")
+            except KeyboardInterrupt:
+                pass
+            except BaseException as e:
+                print(f"Could not stop system tray: {e}")
+            _tray_icon = None

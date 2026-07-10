@@ -1,6 +1,17 @@
 # scripts/build_windows.ps1
 # Automates the build and signing process of WABS on Windows
 
+param (
+    # -Fast: Speeds up local build for quick testing by skipping build cache cleanup and UPX compression.
+    # NOTE: Only use this for local testing! Official GitHub/Release builds should NOT use this
+    # to ensure clean builds and proper executable compression.
+    [switch]$Fast,
+    
+    # -SkipFrontend: Completely skips the frontend installation and build steps.
+    # Very useful when testing only backend python changes.
+    [switch]$SkipFrontend
+)
+
 # Force execute from the workspace root (parent directory of scripts/)
 $scriptPath = $MyInvocation.MyCommand.Path
 $scriptDir = Split-Path $scriptPath
@@ -11,21 +22,29 @@ Write-Host "Starting build from workspace root: $rootDir" -ForegroundColor Cyan
 
 # 1. Build React Frontend
 Write-Host "--- 1. Building React Frontend ---" -ForegroundColor Yellow
-if (Test-Path "frontend") {
-    Set-Location frontend
-    Write-Host "Running npm install..."
-    npm install
-    Write-Host "Running npm run build..."
-    npm run build
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "npm run build failed. Aborting packaging."
+if ($SkipFrontend) {
+    Write-Host "Skipping frontend compilation as requested." -ForegroundColor Cyan
+} else {
+    if (Test-Path "frontend") {
+        Set-Location frontend
+        if ($Fast -and (Test-Path "node_modules")) {
+            Write-Host "node_modules found and -Fast is enabled. Skipping npm install..." -ForegroundColor Cyan
+        } else {
+            Write-Host "Running npm install..."
+            npm install
+        }
+        Write-Host "Running npm run build..."
+        npm run build
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "npm run build failed. Aborting packaging."
+            Set-Location ..
+            exit 1
+        }
         Set-Location ..
+    } else {
+        Write-Error "frontend directory not found. Cannot build frontend assets."
         exit 1
     }
-    Set-Location ..
-} else {
-    Write-Error "frontend directory not found. Cannot build frontend assets."
-    exit 1
 }
 
 # 2. Package with PyInstaller
@@ -40,12 +59,20 @@ if (Test-Path "WABS-Windows.exe.spec") {
         Write-Host "No local virtual environment PyInstaller found. Using system pyinstaller." -ForegroundColor Cyan
     }
     
-    if (Test-Path "build") {
-        Write-Host "Cleaning existing build cache directory..." -ForegroundColor Cyan
-        Remove-Item -Recurse -Force build
+    $extraArgs = @()
+    if ($Fast) {
+        Write-Host "Running fast local build for testing..." -ForegroundColor Cyan
+        # Point UPX directory to root to disable UPX compression (since upx.exe is not present there)
+        $extraArgs += @("--upx-dir", ".")
+    } else {
+        if (Test-Path "build") {
+            Write-Host "Cleaning existing build cache directory..." -ForegroundColor Cyan
+            Remove-Item -Recurse -Force build
+        }
+        $extraArgs += @("--clean")
     }
     
-    & $pyinstallerCmd --clean WABS-Windows.exe.spec
+    & $pyinstallerCmd $extraArgs WABS-Windows.exe.spec
 } else {
     Write-Error "WABS-Windows.exe.spec not found."
     exit 1

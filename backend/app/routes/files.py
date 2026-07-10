@@ -51,7 +51,7 @@ def _build_item(r, cache_flag=""):
     }
 
 @router.get("/files")
-def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", sort_order:str="desc"):
+def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", sort_order:str="desc", folder:str=None):
     cfg = load_config()
     ui_prefs = cfg.get("ui_preferences") or {}
     cache_enabled = cfg.get("enable_photo_thumbnail_cache")
@@ -62,6 +62,17 @@ def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", so
     def generate():
         with SessionLocal() as s:
             q = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
+            if folder:
+                if folder == "root":
+                    yield "[]"
+                    return
+                folder_normalized = folder.replace("\\", "/").lower()
+                folder_slash = folder_normalized if folder_normalized.endswith("/") else folder_normalized + "/"
+                normalized_path = func.replace(func.lower(FileIndex.path), '\\', '/')
+                q = q.filter(
+                    normalized_path.like(folder_slash + '%'),
+                    func.instr(func.substr(normalized_path, len(folder_slash) + 1), '/') == 0
+                )
             if category != "all":
                 if category.startswith("virtual_folder_"):
                     try:
@@ -122,6 +133,94 @@ def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", so
             yield "]"
             
     return StreamingResponse(generate(), media_type="application/json")
+
+@router.get("/files/{file_id}/offset")
+def get_file_offset(
+    file_id: int,
+    category: str = "all",
+    sort_by: str = "date",
+    sort_order: str = "desc",
+    folder: str = None,
+    virtual_folder_id: int = None,
+    recursive: bool = False
+):
+    with SessionLocal() as s:
+        if virtual_folder_id is not None:
+            from backend.app.routes.virtual_folders import get_virtual_folder_file_ids, get_virtual_folder_file_ids_recursive
+            if recursive:
+                combined_ids = get_virtual_folder_file_ids_recursive(s, virtual_folder_id)
+            else:
+                combined_ids = get_virtual_folder_file_ids(s, virtual_folder_id)
+            if not combined_ids:
+                return {"offset": 0}
+            q = s.query(FileIndex.id).filter(FileIndex.id.in_(combined_ids))
+        else:
+            q = s.query(FileIndex.id)
+            if folder:
+                if folder == "root":
+                    return {"offset": 0}
+                folder_normalized = folder.replace("\\", "/").lower()
+                folder_slash = folder_normalized if folder_normalized.endswith("/") else folder_normalized + "/"
+                normalized_path = func.replace(func.lower(FileIndex.path), '\\', '/')
+                q = q.filter(
+                    normalized_path.like(folder_slash + '%'),
+                    func.instr(func.substr(normalized_path, len(folder_slash) + 1), '/') == 0
+                )
+
+        if category != "all":
+            if category.startswith("virtual_folder_"):
+                try:
+                    f_id = int(category.replace("virtual_folder_", ""))
+                    from backend.app.routes.virtual_folders import get_virtual_folder_file_ids
+                    f_file_ids = get_virtual_folder_file_ids(s, f_id)
+                    if not f_file_ids:
+                        return {"offset": 0}
+                    q = q.filter(FileIndex.id.in_(f_file_ids))
+                except Exception:
+                    return {"offset": 0}
+            elif category == "other":
+                q = q.filter(~FileIndex.category.in_(STANDARD_CATEGORIES))
+            elif category == "duplicates":
+                dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
+                q = q.filter(FileIndex.size.in_(dup_sizes))
+                q = q.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
+            elif category == "searchable_documents":
+                q = q.filter(FileIndex.category.in_(SEARCHABLE_DOCUMENT_CATEGORIES), text("files.id IN (SELECT file_id FROM processed_text)"))
+            elif category == "untagged":
+                q = q.filter(FileIndex.category == 'photo', (FileIndex.tags.is_(None) | (FileIndex.tags == '') | (~FileIndex.tags.like('%object:%') & ~FileIndex.tags.like('%person:%') & ~FileIndex.tags.like('%ocr%'))))
+            else:
+                q = q.filter(FileIndex.category == category)
+
+        if category != "duplicates":
+            if sort_by == "date":
+                order_expr = "coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))"
+                if sort_order == "asc":
+                    q = q.order_by(text(f"{order_expr} ASC"), FileIndex.id)
+                else:
+                    q = q.order_by(text(f"{order_expr} DESC"), FileIndex.id)
+            elif sort_by == "size":
+                if sort_order == "asc":
+                    q = q.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id)
+                else:
+                    q = q.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id)
+            elif sort_by == "filename":
+                if sort_order == "asc":
+                    q = q.order_by(FileIndex.filename.asc(), FileIndex.id)
+                else:
+                    q = q.order_by(FileIndex.filename.desc(), FileIndex.id)
+            elif sort_by == "extension":
+                if sort_order == "asc":
+                    q = q.order_by(FileIndex.extension.asc(), FileIndex.id)
+                else:
+                    q = q.order_by(FileIndex.extension.desc(), FileIndex.id)
+
+        ids = [r[0] for r in q.all()]
+        try:
+            offset = ids.index(file_id)
+        except ValueError:
+            offset = 0
+
+        return {"offset": offset}
 
 @router.get("/preview/{item_id}")
 def preview(item_id:int, theme: str = "dark"):
@@ -348,17 +447,49 @@ def delete_files(paths: list[str] = Body(..., embed=True)):
         for path_str in paths:
             if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
                 raise HTTPException(status_code=400, detail="Operation cancelled")
-            file_path = _resolve_path(Path(path_str))
-            try:
-                if file_path.exists() and file_path.is_file():
-                    file_path.unlink() # Deletes file from disk
-                session.query(FileIndex).filter(FileIndex.path == path_str).delete()
-                deleted_count += 1
-            except Exception as e:
-                if cfg.get("enable_logging"):
-                    import logging
-                    logging.error(f"Critical error: Failed to delete {path_str}: {e}", exc_info=True)
-                print(f"Failed to delete {path_str}: {e}")
+            
+            if path_str.startswith("virtual_folder:"):
+                try:
+                    vf_id = int(path_str.split(":")[1])
+                    from backend.app.routes.virtual_folders import get_virtual_folder_file_ids_recursive
+                    file_ids = get_virtual_folder_file_ids_recursive(session, vf_id)
+                    matching_files = session.query(FileIndex).filter(FileIndex.id.in_(file_ids)).all()
+                    for f in matching_files:
+                        fp = _resolve_path(Path(f.path))
+                        if fp.exists() and fp.is_file():
+                            fp.unlink()
+                        session.delete(f)
+                        deleted_count += 1
+                except Exception as e:
+                    print(f"Error deleting virtual folder files: {e}")
+            else:
+                file_path = _resolve_path(Path(path_str))
+                try:
+                    if file_path.exists():
+                        if file_path.is_file():
+                            file_path.unlink() # Deletes file from disk
+                            session.query(FileIndex).filter(FileIndex.path == path_str).delete()
+                            deleted_count += 1
+                        elif file_path.is_dir():
+                            import shutil
+                            shutil.rmtree(str(file_path))
+                            folder_normalized = path_str.replace('\\', '/')
+                            if not folder_normalized.endswith('/'):
+                                folder_normalized += '/'
+                            from sqlalchemy import or_, func
+                            normalized_path = func.replace(FileIndex.path, '\\', '/')
+                            session.query(FileIndex).filter(
+                                or_(
+                                    FileIndex.path == path_str,
+                                    normalized_path.like(folder_normalized + '%')
+                                )
+                            ).delete(synchronize_session=False)
+                            deleted_count += 1
+                except Exception as e:
+                    if cfg.get("enable_logging"):
+                        import logging
+                        logging.error(f"Critical error: Failed to delete {path_str}: {e}", exc_info=True)
+                    print(f"Failed to delete {path_str}: {e}")
         session.commit()
     if cfg.get("enable_logging"):
         import logging
@@ -383,16 +514,36 @@ def copy_files(paths: list[str] = Body(...), destination: str = Body(...)):
     for path_str in paths:
         if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
             raise HTTPException(status_code=400, detail="Operation cancelled")
-        src = _resolve_path(Path(path_str))
-        if src.exists() and src.is_file():
+        
+        if path_str.startswith("virtual_folder:"):
             try:
-                shutil.copy2(src, dest_path / src.name)
-                copied_count += 1
+                vf_id = int(path_str.split(":")[1])
+                with SessionLocal() as session:
+                    from backend.app.routes.virtual_folders import get_virtual_folder_file_ids_recursive
+                    file_ids = get_virtual_folder_file_ids_recursive(session, vf_id)
+                    matching_files = session.query(FileIndex.path).filter(FileIndex.id.in_(file_ids)).all()
+                    for f in matching_files:
+                        src = _resolve_path(Path(f.path))
+                        if src.exists() and src.is_file():
+                            shutil.copy2(src, dest_path / src.name)
+                            copied_count += 1
             except Exception as e:
-                if load_config().get("enable_logging"):
-                    import logging
-                    logging.error(f"Critical error: Failed to copy {path_str}: {e}", exc_info=True)
-                print(f"Failed to copy {path_str}: {e}")
+                print(f"Error copying virtual folder files: {e}")
+        else:
+            src = _resolve_path(Path(path_str))
+            if src.exists():
+                try:
+                    if src.is_file():
+                        shutil.copy2(src, dest_path / src.name)
+                        copied_count += 1
+                    elif src.is_dir():
+                        shutil.copytree(src, dest_path / src.name)
+                        copied_count += 1
+                except Exception as e:
+                    if load_config().get("enable_logging"):
+                        import logging
+                        logging.error(f"Critical error: Failed to copy {path_str}: {e}", exc_info=True)
+                    print(f"Failed to copy {path_str}: {e}")
     if load_config().get("enable_logging"):
         import logging
         logging.info(f"Successfully copied {copied_count} files to destination.")
@@ -436,25 +587,92 @@ def move_files(paths: list[str] = Body(...), destination: str = Body(...)):
         for path_str in paths:
             if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
                 raise HTTPException(status_code=400, detail="Operation cancelled")
-            src = _resolve_path(Path(path_str))
-            if src.exists() and src.is_file():
+            
+            if path_str.startswith("virtual_folder:"):
                 try:
-                    new_target = dest_path / src.name
-                    shutil.move(str(src), str(new_target))
-                    
-                    db_item = session.query(FileIndex).filter(FileIndex.path == path_str).first()
-                    if db_item:
-                        db_item.path = str(new_target)
-                    
-                    updates[path_str] = str(new_target)
-                    moved_count += 1
+                    vf_id = int(path_str.split(":")[1])
+                    from backend.app.routes.virtual_folders import get_virtual_folder_file_ids_recursive
+                    file_ids = get_virtual_folder_file_ids_recursive(session, vf_id)
+                    matching_files = session.query(FileIndex).filter(FileIndex.id.in_(file_ids)).all()
+                    for f in matching_files:
+                        src = _resolve_path(Path(f.path))
+                        if src.exists() and src.is_file():
+                            new_target = dest_path / src.name
+                            shutil.move(str(src), str(new_target))
+                            updates[f.path] = str(new_target)
+                            f.path = str(new_target)
+                            moved_count += 1
                 except Exception as e:
-                    if cfg.get("enable_logging"):
-                        import logging
-                        logging.error(f"Critical error: Failed to move {path_str}: {e}", exc_info=True)
-                    print(f"Failed to move {path_str}: {e}")
+                    print(f"Error moving virtual folder files: {e}")
+            else:
+                src = _resolve_path(Path(path_str))
+                if src.exists():
+                    try:
+                        new_target = dest_path / src.name
+                        shutil.move(str(src), str(new_target))
+                        
+                        if src.is_file():
+                            db_item = session.query(FileIndex).filter(FileIndex.path == path_str).first()
+                            if db_item:
+                                db_item.path = str(new_target)
+                            updates[path_str] = str(new_target)
+                            moved_count += 1
+                        elif src.is_dir():
+                            old_prefix = path_str.replace('\\', '/')
+                            if not old_prefix.endswith('/'):
+                                old_prefix += '/'
+                            new_prefix = str(new_target).replace('\\', '/')
+                            if not new_prefix.endswith('/'):
+                                new_prefix += '/'
+                            
+                            from sqlalchemy import func
+                            normalized_path = func.replace(FileIndex.path, '\\', '/')
+                            items_to_update = session.query(FileIndex).filter(
+                                normalized_path.like(old_prefix + '%')
+                            ).all()
+                            
+                            for item in items_to_update:
+                                norm_item_path = item.path.replace('\\', '/')
+                                rel_path = norm_item_path[len(old_prefix):]
+                                new_item_path = os.path.join(str(new_target), rel_path.replace('/', os.sep))
+                                updates[item.path] = new_item_path
+                                item.path = new_item_path
+                                
+                            db_dir_item = session.query(FileIndex).filter(FileIndex.path == path_str).first()
+                            if db_dir_item:
+                                db_dir_item.path = str(new_target)
+                                updates[path_str] = str(new_target)
+                            moved_count += 1
+                    except Exception as e:
+                        if cfg.get("enable_logging"):
+                            import logging
+                            logging.error(f"Critical error: Failed to move {path_str}: {e}", exc_info=True)
+                        print(f"Failed to move {path_str}: {e}")
         session.commit()
     if cfg.get("enable_logging"):
         import logging
         logging.info(f"Successfully moved {moved_count} files to destination.")
     return {"moved": moved_count, "updates": updates}
+
+@router.get("/directories")
+def directories():
+    # Used by the frontend Tree View to build the folder hierarchy sidebar.
+    # Previously used .all() which loaded every file path into a single Python list at once,
+    # causing a large transient memory spike (240+ MB) on startup for large libraries.
+    # Now uses yield_per(1000) to stream paths in batches, keeping peak memory low.
+    with SessionLocal() as s:
+        dirs = set()
+        for r in s.query(FileIndex.path).filter(FileIndex.path.isnot(None)).yield_per(1000):
+            path = r[0]
+            if not path:
+                continue
+            normalized = path.replace('\\', '/')
+            last_slash = normalized.rfind('/')
+            if last_slash != -1:
+                parent = normalized[:last_slash]
+                dirs.add(parent)
+                # Also add every ancestor directory so the tree can render the full hierarchy
+                parts = parent.split('/')
+                for i in range(1, len(parts)):
+                    dirs.add('/'.join(parts[:i]))
+        return sorted(list(dirs))

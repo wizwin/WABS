@@ -7,8 +7,10 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, Integer, text, or_
 from pydantic import BaseModel
 
+from pathlib import Path
 from backend.app.database import SessionLocal, FileIndex, VirtualFolder, VirtualFolderFile
 from backend.app.config import load_config
+from backend.app.utils.utils import _resolve_path
 from backend.app.utils.search import _build_search_query, _parse_regex_pattern
 import backend.app.shared_state as shared_state
 from backend.app.constants import (
@@ -36,6 +38,69 @@ class VirtualFolderUpdate(BaseModel):
 
 class FileAssociationRequest(BaseModel):
     file_ids: List[int]
+    paths: Optional[List[str]] = None
+
+def get_relative_segments(path_str: str) -> list[str]:
+    cfg = load_config()
+    backup_configs = cfg.get("backup_configs", [])
+    norm_path = path_str.replace('\\', '/').lower()
+    
+    matched_prefix = None
+    longest_match = -1
+    
+    for config in backup_configs:
+        bp = config.get("backup_path")
+        if bp:
+            bp_norm = bp.replace('\\', '/').lower()
+            if bp_norm.endswith('/') and len(bp_norm) > 3:
+                bp_norm = bp_norm[:-1]
+            if norm_path.startswith(bp_norm + '/') or norm_path == bp_norm:
+                if len(bp_norm) > longest_match:
+                    longest_match = len(bp_norm)
+                    matched_prefix = bp_norm
+                    
+    path_clean = path_str.replace('\\', '/')
+    if matched_prefix:
+        rel = path_clean[longest_match:].strip('/')
+    else:
+        import re
+        rel = re.sub(r'^[a-zA-Z]:', '', path_clean).strip('/')
+        
+    return [s for s in rel.split('/') if s]
+
+def copy_virtual_folder_hierarchy(s, src_folder_id: int, dest_parent_id: int):
+    src_folder = s.get(VirtualFolder, src_folder_id)
+    if not src_folder:
+        return
+        
+    vf = s.query(VirtualFolder).filter(
+        VirtualFolder.parent_id == dest_parent_id,
+        func.lower(VirtualFolder.name) == src_folder.name.lower()
+    ).first()
+    
+    if not vf:
+        vf = VirtualFolder(
+            name=src_folder.name,
+            parent_id=dest_parent_id,
+            is_dynamic=src_folder.is_dynamic,
+            query=src_folder.query,
+            metadata_json=src_folder.metadata_json
+        )
+        s.add(vf)
+        s.flush()
+        
+    manual_rows = s.query(VirtualFolderFile.file_id).filter(VirtualFolderFile.virtual_folder_id == src_folder_id).all()
+    for r in manual_rows:
+        exists = s.query(VirtualFolderFile).filter(
+            VirtualFolderFile.virtual_folder_id == vf.id,
+            VirtualFolderFile.file_id == r[0]
+        ).first()
+        if not exists:
+            s.add(VirtualFolderFile(virtual_folder_id=vf.id, file_id=r[0]))
+            
+    children = s.query(VirtualFolder).filter(VirtualFolder.parent_id == src_folder_id).all()
+    for child in children:
+        copy_virtual_folder_hierarchy(s, child.id, vf.id)
 
 def _parse_json(value):
     if not value:
@@ -149,12 +214,19 @@ def get_folder_counts(s, folder):
 
 @router.get("/virtual-folders")
 def get_virtual_folders():
+    # MEMORY OPTIMIZATION: This endpoint is called at startup and on every folder operation.
+    # Previously it ran get_folder_files_recursive() for every folder to compute file counts,
+    # which allocated large Python sets per folder and kept memory high (240+ MB idle).
+    # Now, file_count is returned as None (lazy) and must be fetched separately via
+    # GET /virtual-folders/{id}/count — only called when the VirtualFolders page is visible.
+    # Subfolder count is cheap (a single COUNT query) and is still computed here.
     with SessionLocal() as s:
         cleanup_orphans(s)
         folders = s.query(VirtualFolder).all()
         result = []
         for f in folders:
-            file_count, subfolder_count = get_folder_counts(s, f)
+            # Subfolder count: fast single COUNT query, safe to compute here
+            subfolder_count = s.query(VirtualFolder).filter(VirtualFolder.parent_id == f.id).count()
             result.append({
                 "id": f.id,
                 "name": f.name,
@@ -162,11 +234,27 @@ def get_virtual_folders():
                 "is_dynamic": bool(f.is_dynamic),
                 "query": f.query,
                 "created_at": f.created_at,
-                "file_count": file_count,
+                "file_count": None,  # Lazy — fetched on demand via /virtual-folders/{id}/count
                 "subfolder_count": subfolder_count,
                 "metadata_json": f.metadata_json
             })
         return result
+
+@router.get("/virtual-folders/{folder_id}/count")
+def get_virtual_folder_count(folder_id: int):
+    """
+    Returns the recursive file count for a single virtual folder.
+    This is a separate, on-demand endpoint so the main /virtual-folders list stays fast.
+    The frontend calls this only when the VirtualFolders page is actively displayed,
+    not on every startup or navigation event.
+    """
+    with SessionLocal() as s:
+        folder = s.get(VirtualFolder, folder_id)
+        if not folder:
+            raise HTTPException(status_code=404, detail="Virtual folder not found")
+        # get_folder_files_recursive handles both manual files and dynamic query matches
+        all_file_ids = get_folder_files_recursive(s, folder_id)
+        return {"file_count": len(all_file_ids)}
 
 @router.post("/virtual-folders")
 def create_virtual_folder(folder: VirtualFolderCreate):
@@ -245,21 +333,105 @@ def add_files_to_virtual_folder(folder_id: int, req: FileAssociationRequest):
         if not folder:
             raise HTTPException(status_code=404, detail="Virtual folder not found")
             
-        # Avoid duplicate associations
-        existing_rows = s.query(VirtualFolderFile.file_id).filter(
-            VirtualFolderFile.virtual_folder_id == folder_id,
-            VirtualFolderFile.file_id.in_(req.file_ids)
-        ).all()
-        existing = [row[0] for row in existing_rows]
+        added_count = 0
         
-        to_add = set(req.file_ids) - set(existing)
-        
-        for f_id in to_add:
-            assoc = VirtualFolderFile(virtual_folder_id=folder_id, file_id=f_id)
-            s.add(assoc)
+        # 1. Handle individual file IDs
+        if req.file_ids:
+            existing_rows = s.query(VirtualFolderFile.file_id).filter(
+                VirtualFolderFile.virtual_folder_id == folder_id,
+                VirtualFolderFile.file_id.in_(req.file_ids)
+            ).all()
+            existing = {row[0] for row in existing_rows}
+            to_add = set(req.file_ids) - existing
+            for f_id in to_add:
+                s.add(VirtualFolderFile(virtual_folder_id=folder_id, file_id=f_id))
+            added_count += len(to_add)
             
+        # 2. Handle paths (which can contain directory paths, file paths, or virtual folder paths)
+        if req.paths:
+            for path_str in req.paths:
+                if not path_str:
+                    continue
+                    
+                # A. Virtual Folder Path (e.g. virtual_folder:ID)
+                if path_str.startswith("virtual_folder:"):
+                    try:
+                        src_vf_id = int(path_str.split(":")[1])
+                        copy_virtual_folder_hierarchy(s, src_vf_id, folder_id)
+                    except Exception as e:
+                        print(f"Error copying virtual folder hierarchy: {e}")
+                        
+                # B. Physical Directory / File Path
+                else:
+                    folder_normalized = path_str.replace('\\', '/')
+                    if not folder_normalized.endswith('/'):
+                        folder_normalized += '/'
+                        
+                    normalized_path = func.replace(FileIndex.path, '\\', '/')
+                    
+                    # Check if this path represents a directory containing files in the database
+                    has_children = s.query(FileIndex.id).filter(
+                        normalized_path.like(folder_normalized + '%')
+                    ).first() is not None
+                    
+                    if has_children:
+                        # Extract the selected folder's base name
+                        folder_name = path_str.replace('\\', '/').rstrip('/').split('/')[-1]
+                        
+                        # Create/resolve this subfolder directly under the target virtual folder
+                        vf = s.query(VirtualFolder).filter(
+                            VirtualFolder.parent_id == folder_id,
+                            func.lower(VirtualFolder.name) == folder_name.lower()
+                        ).first()
+                        if not vf:
+                            vf = VirtualFolder(name=folder_name, parent_id=folder_id)
+                            s.add(vf)
+                            s.flush()
+                        current_parent_id = vf.id
+                            
+                        matching_files = s.query(FileIndex.id, FileIndex.path).filter(
+                            normalized_path.like(folder_normalized + '%')
+                        ).all()
+                        
+                        for f in matching_files:
+                            f_path_clean = f.path.replace('\\', '/')
+                            rel_to_base = f_path_clean[len(folder_normalized):]
+                            parts = [p for p in rel_to_base.split('/')[:-1] if p]
+                            
+                            file_parent_id = current_parent_id
+                            for part in parts:
+                                vf = s.query(VirtualFolder).filter(
+                                    VirtualFolder.parent_id == file_parent_id,
+                                    func.lower(VirtualFolder.name) == part.lower()
+                                ).first()
+                                if not vf:
+                                    vf = VirtualFolder(name=part, parent_id=file_parent_id)
+                                    s.add(vf)
+                                    s.flush()
+                                file_parent_id = vf.id
+                                
+                            exists = s.query(VirtualFolderFile).filter(
+                                VirtualFolderFile.virtual_folder_id == file_parent_id,
+                                VirtualFolderFile.file_id == f.id
+                            ).first()
+                            if not exists:
+                                s.add(VirtualFolderFile(virtual_folder_id=file_parent_id, file_id=f.id))
+                                added_count += 1
+                                
+                    else:
+                        # C. Individual File Path
+                        db_file = s.query(FileIndex.id).filter(FileIndex.path == path_str).first()
+                        if db_file:
+                            exists = s.query(VirtualFolderFile).filter(
+                                VirtualFolderFile.virtual_folder_id == folder_id,
+                                VirtualFolderFile.file_id == db_file[0]
+                            ).first()
+                            if not exists:
+                                s.add(VirtualFolderFile(virtual_folder_id=folder_id, file_id=db_file[0]))
+                                added_count += 1
+
         s.commit()
-        return {"status": "success", "added": len(to_add)}
+        return {"status": "success", "added": added_count}
 
 @router.delete("/virtual-folders/{folder_id}/files")
 def remove_files_from_virtual_folder(folder_id: int, req: FileAssociationRequest):
@@ -268,9 +440,28 @@ def remove_files_from_virtual_folder(folder_id: int, req: FileAssociationRequest
         if not folder:
             raise HTTPException(status_code=404, detail="Virtual folder not found")
             
+        resolved_ids = list(req.file_ids) if req.file_ids else []
+        if req.paths:
+            for path_str in req.paths:
+                folder_normalized = path_str.replace('\\', '/')
+                if not folder_normalized.endswith('/'):
+                    folder_normalized += '/'
+                
+                normalized_path = func.replace(FileIndex.path, '\\', '/')
+                matching_files = s.query(FileIndex.id).filter(
+                    or_(
+                        FileIndex.path == path_str,
+                        normalized_path.like(folder_normalized + '%')
+                    )
+                ).all()
+                resolved_ids.extend([row[0] for row in matching_files])
+
+        if not resolved_ids:
+            return {"status": "success", "removed": 0}
+
         deleted = s.query(VirtualFolderFile).filter(
             VirtualFolderFile.virtual_folder_id == folder_id,
-            VirtualFolderFile.file_id.in_(req.file_ids)
+            VirtualFolderFile.file_id.in_(resolved_ids)
         ).delete(synchronize_session=False)
         
         s.commit()
@@ -415,7 +606,8 @@ def get_virtual_folder_files(
     offset: int = 0,
     limit: int = 50,
     sort_by: str = "date",
-    sort_order: str = "desc"
+    sort_order: str = "desc",
+    recursive: bool = False
 ):
     cfg = load_config()
     ui_prefs = cfg.get("ui_preferences") or {}
@@ -426,7 +618,10 @@ def get_virtual_folder_files(
 
     def generate():
         with SessionLocal() as s:
-            combined_ids = get_virtual_folder_file_ids(s, folder_id)
+            if recursive:
+                combined_ids = get_virtual_folder_file_ids_recursive(s, folder_id)
+            else:
+                combined_ids = get_virtual_folder_file_ids(s, folder_id)
             if not combined_ids:
                 yield "[]"
                 return
@@ -790,3 +985,40 @@ def search_virtual_folder_internal(query: str = "", category: str = "all", offse
             yield "]"
 
     return StreamingResponse(generate(), media_type="application/json")
+
+@router.get("/files/{file_id}/virtual-folders")
+def get_file_virtual_folders(file_id: int):
+    with SessionLocal() as s:
+        file_obj = s.get(FileIndex, file_id)
+        if not file_obj:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        folders = s.query(VirtualFolder).all()
+        matched = []
+        for f in folders:
+            is_manual = s.query(VirtualFolderFile).filter(
+                VirtualFolderFile.virtual_folder_id == f.id,
+                VirtualFolderFile.file_id == file_id
+            ).first() is not None
+            
+            if is_manual:
+                matched.append({
+                    "id": f.id,
+                    "name": f.name,
+                    "parent_id": f.parent_id,
+                    "is_dynamic": f.is_dynamic,
+                    "query": f.query
+                })
+                continue
+            
+            if f.is_dynamic and f.query:
+                file_ids = get_virtual_folder_file_ids(s, f.id)
+                if file_id in file_ids:
+                    matched.append({
+                        "id": f.id,
+                        "name": f.name,
+                        "parent_id": f.parent_id,
+                        "is_dynamic": f.is_dynamic,
+                        "query": f.query
+                    })
+        return matched

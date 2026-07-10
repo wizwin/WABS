@@ -44,6 +44,7 @@ DEFAULT = {
     "show_full_timeline": False,
     "show_sidebar": True,
     "show_timeline": True,
+    "show_tree_view": True,
     "sidebar_width": 237,
     "smart_searches": [],
     "document_scan_depth": "low",

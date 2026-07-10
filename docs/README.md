@@ -16,6 +16,7 @@ WABS is a modern, 100% offline archival management system designed to help you o
 * **Document Text Extraction:** Automatically extracts and intelligently filters text from PDFs, documents, and code files, making their inner contents instantly searchable.
 * **Combined Background Scanning:** Scan for files, faces, objects, and document text simultaneously to massively speed up index generation.
 * **Advanced JSON Search:** Native, high-speed metadata querying (FPS, Camera Model, ID3 Tags, etc.) powered by SQLite's JSON1 extension.
+* **Virtual Folders:** Create custom, cross-drive folder views that group any files from your archive regardless of where they physically live. Supports both manual curation and smart dynamic rules.
 * **Database Management:** Built-in tools to cleanly remove missing files, purge orphaned AI profiles, and vacuum the databases to reclaim disk space.
 * **Portable:** Move your backup drives around? WABS easily remaps your indexed files to new drive letters.
 
@@ -79,6 +80,44 @@ To safeguard your AI metadata against database wipes or migrations, you can expo
 2. Click **Export JSON** under **Known People (Faces)** or **Object & Custom Tags** to save your data.
 3. To restore, simply click **Import JSON** and select your saved file. 
 *Note: WABS uses a **Smart Path Fallback Matcher**, meaning your exported tags and faces will successfully import and remap to your files even if you have moved your archive to a completely different drive letter!*
+
+### Using Virtual Folders
+
+Virtual Folders let you create **custom, logical groupings** of files from anywhere in your archive — across drives, discs, or directory structures — without moving or copying a single file.
+
+#### Creating a Virtual Folder
+1. In the **Explorer** sidebar, right-click on **Virtual Folders** and select **New Virtual Folder**, or use the **+** button next to the section heading.
+2. Give the folder a name. It will appear in the sidebar alongside your physical drive tree.
+
+#### Adding Files Manually
+1. Browse to any physical folder or search result in the Explorer.
+2. **Select** one or more files or entire folders using the checkboxes.
+   * Checking a physical folder automatically covers all files inside it (and any subfolders) — a blue parent indicator shows partial coverage.
+   * You can also deselect individual items within a selected parent to fine-tune your pick.
+3. Right-click the selection and choose **Add to Virtual Folder**, then pick your target folder.
+
+#### Dynamic Rules (Smart Content)
+Each Virtual Folder can have **dynamic query rules** that automatically pull in matching files every time you open the folder:
+* **Path Prefix** — includes every file whose path starts with a given prefix (e.g., all files from a specific disc or directory branch).
+* **Keyword / Phrase** — includes files whose names or extracted text contain a search term.
+* **Regex** — includes files matching a regular expression pattern.
+
+Dynamic members are combined with manually linked files at query time — no duplicate storage is needed.
+
+#### Subfolders & Nesting
+Virtual Folders can be nested inside other Virtual Folders, creating a hierarchy. Opening a parent folder shows both its own files and any Virtual Folder subfolders it contains. You can navigate the tree just like a physical directory.
+
+#### Selection Behavior
+The selection system treats Virtual Folders consistently with physical folders:
+* **Selecting a Virtual Folder** implicitly covers all its member files (manual + dynamic). A ✓ badge indicates full selection.
+* **Partial selection** is shown with an indeterminate indicator when only some members are checked.
+* **Deselecting** a child item removes it from the selection without affecting the rest of the parent's contents.
+* Selection state is used by batch operations (export, tagging, deletion) — exactly the same as with physical folders.
+
+#### Exporting Virtual Folder Contents
+When you trigger an export with a Virtual Folder selected, WABS resolves all member file IDs (manual links ∪ dynamic query matches) and applies the export operation to the full resolved set.
+
+---
 
 ### Advanced Search Operators
 WABS supports powerful search operators to help you precisely filter your archive. You can combine multiple operators with spaces (e.g., `type:video length:>1h`).

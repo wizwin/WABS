@@ -447,3 +447,5 @@ if __name__ == "__main__":
             spawn_detached_cleanup()
         except Exception:
             pass
+
+    os._exit(0)

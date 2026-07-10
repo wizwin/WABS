@@ -144,12 +144,12 @@ export default function AddToFolderModal({
   const handleSelectFolder = async (folder) => {
     // Translate file paths to database IDs
     const fileIds = selectedFiles.map(path => globalFileCache.current?.get(path)?.id).filter(id => id);
-    if (fileIds.length === 0) {
-      setError("No valid file IDs found for selection.");
+    if (fileIds.length === 0 && selectedFiles.length === 0) {
+      setError("No valid selection found.");
       return;
     }
     
-    await addFilesToVirtualFolder(folder.id, fileIds);
+    await addFilesToVirtualFolder(folder.id, fileIds, selectedFiles);
     onClose();
   };
 
@@ -160,15 +160,15 @@ export default function AddToFolderModal({
     }
     
     const fileIds = selectedFiles.map(path => globalFileCache.current?.get(path)?.id).filter(id => id);
-    if (fileIds.length === 0) {
-      setError("No valid file IDs found for selection.");
+    if (fileIds.length === 0 && selectedFiles.length === 0) {
+      setError("No valid selection found.");
       return;
     }
 
     // Create a static virtual folder
     const folder = await createVirtualFolder(newFolderName.trim(), null, false, null);
     if (folder && folder.id) {
-      await addFilesToVirtualFolder(folder.id, fileIds);
+      await addFilesToVirtualFolder(folder.id, fileIds, selectedFiles);
       setNewFolderName('');
       onClose();
     }

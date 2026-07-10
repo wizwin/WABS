@@ -5,12 +5,13 @@ import PlayCircleIcon from '@mui/icons-material/PlayCircle';
 import FolderIcon from '@mui/icons-material/Folder';
 import { formatSize, SettingsContext } from '../../States';
 
-export function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContextMenu, onSelectAndOpen, renderThumb, isAltGroup, showVerified, showUnverified, isReadOnly, isProcessing }) {
+export function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, onContextMenu, onSelectAndOpen, renderThumb, isAltGroup, showVerified, showUnverified, isReadOnly, isProcessing, hasSelections, isImplicit }) {
   const [isHovered, setIsHovered] = useState(false);
   const [isActive, setIsActive] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
   const [imgError, setImgError] = useState(false);
   const { animationsEnabled } = useContext(SettingsContext);
+  const showCheckbox = isHovered || isChecked || hasSelections;
 
   const retryCount = useRef(0);
   const [retryKey, setRetryKey] = useState(0);
@@ -105,14 +106,27 @@ export function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, on
         transition: animationsEnabled ? 'all 0.3s ease' : 'none',
         opacity: animationsEnabled ? (isMounted ? 1 : 0) : 1,
         transform: animationsEnabled ? (isActive ? 'scale(0.97)' : isHovered ? 'translateY(-2px)' : isMounted ? 'none' : 'translateY(10px)') : 'none',
-        boxShadow: isProcessing ? '0 0 0 2px #3b82f6, 0 0 15px rgba(59, 130, 246, 0.4)' : animationsEnabled && isActive ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none',
-        backgroundColor: isProcessing ? '#1e3a8a' : isAltGroup ? '#1e293b' : undefined,
-        border: isProcessing ? '1px solid #3b82f6' : undefined
+        boxShadow: isProcessing ? '0 0 0 2px #3b82f6, 0 0 15px rgba(59, 130, 246, 0.4)' : isImplicit ? '0 0 0 1px #14b8a6' : animationsEnabled && isActive ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none',
+        backgroundColor: isProcessing ? '#1e3a8a' : isImplicit ? 'rgba(20, 184, 166, 0.08)' : isAltGroup ? '#1e293b' : undefined,
+        border: isProcessing ? '1px solid #3b82f6' : isImplicit ? '1px solid #14b8a6' : undefined
       }}
     >
       {viewMode === 'grid' ? (
         <>
-          <input type="checkbox" className="select-cb" checked={isChecked} onChange={(e) => onToggleCheck(e, item.path)} onClick={(e) => e.stopPropagation()} />
+          <input 
+            type="checkbox" 
+            className="select-cb" 
+            checked={isChecked} 
+            title={isImplicit ? "Selected via parent folder — click to deselect the folder" : undefined}
+            onChange={(e) => onToggleCheck(e, item.path)} 
+            onClick={(e) => e.stopPropagation()} 
+            style={{ 
+              opacity: showCheckbox ? 1 : 0, 
+              pointerEvents: showCheckbox ? 'auto' : 'none', 
+              transition: 'opacity 0.15s ease-in-out',
+              accentColor: isImplicit ? '#14b8a6' : undefined
+            }} 
+          />
           <img
             src={currentSrc}
             className='thumb'
@@ -142,7 +156,20 @@ export function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, on
         </>
       ) : (
         <>
-          <input type="checkbox" className="select-cb list-cb" checked={isChecked} onChange={(e) => onToggleCheck(e, item.path)} onClick={(e) => e.stopPropagation()} />
+          <input 
+            type="checkbox" 
+            className="select-cb list-cb" 
+            checked={isChecked} 
+            title={isImplicit ? "Selected via parent folder — click to deselect the folder" : undefined}
+            onChange={(e) => onToggleCheck(e, item.path)} 
+            onClick={(e) => e.stopPropagation()} 
+            style={{ 
+              opacity: showCheckbox ? 1 : 0, 
+              pointerEvents: showCheckbox ? 'auto' : 'none', 
+              transition: 'opacity 0.15s ease-in-out',
+              accentColor: isImplicit ? '#14b8a6' : undefined
+            }} 
+          />
           <img
             src={currentSrc}
             className='list-thumb'

@@ -1,4 +1,6 @@
-import React, { useState, useContext } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
+import axios from 'axios';
+import { API } from '../States';
 import { SettingsContext } from '../States';
 import FolderIcon from '@mui/icons-material/Folder';
 import SettingsIcon from '@mui/icons-material/Settings';
@@ -110,11 +112,38 @@ export default function VirtualFolders(props) {
   const [selectedColor, setSelectedColor] = useState('#3b82f6');
   const [selectedIcon, setSelectedIcon] = useState('folder');
 
-  React.useEffect(() => {
+  // Lazy file counts: keyed by folder id, populated asynchronously via /virtual-folders/{id}/count.
+  // This avoids running expensive recursive DB queries in the main list endpoint on every startup.
+  const [folderCounts, setFolderCounts] = useState({});
+
+  useEffect(() => {
     if (page === 'virtual_folders' && loadVirtualFolders) {
       loadVirtualFolders();
     }
   }, [page]);
+
+  // When the VirtualFolders page opens, fetch file counts for ALL folders in parallel.
+  // Counts are fetched lazily here (not at startup) to avoid the memory spike from recursive queries.
+  // All folders (root and subfolders) are included so every card shows its correct file count.
+  useEffect(() => {
+    if (page !== 'virtual_folders') return;
+    const allFolderIds = (virtualFolders || []).map(f => f.id);
+    if (allFolderIds.length === 0) return;
+
+    // Reset counts for the current folder list
+    setFolderCounts({});
+
+    // Fetch each folder's count independently so UI updates progressively as each one arrives
+    allFolderIds.forEach(id => {
+      axios.get(`${API}/virtual-folders/${id}/count`)
+        .then(r => {
+          setFolderCounts(prev => ({ ...prev, [id]: r.data.file_count }));
+        })
+        .catch(() => {
+          // Silently ignore on error — count will remain '…' rather than showing a wrong value
+        });
+    });
+  }, [page, virtualFolders]);
 
   if (page !== 'virtual_folders') return null;
 
@@ -263,7 +292,8 @@ export default function VirtualFolders(props) {
                 </h3>
 
                 <p style={{ margin: '0 0 6px 0', fontSize: '13px', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ color: '#38bdf8', fontWeight: 'bold' }}>{folder.file_count || 0}</span> file{folder.file_count !== 1 ? 's' : ''}
+                  {/* file_count is null from the list endpoint; resolved lazily via /count */}
+                  <span style={{ color: '#38bdf8', fontWeight: 'bold' }}>{folderCounts[folder.id] ?? '…'}</span> file{(folderCounts[folder.id] ?? 2) !== 1 ? 's' : ''}
                   <span style={{ color: '#64748b' }}>•</span>
                   <span style={{ color: '#10b981', fontWeight: 'bold' }}>{subCount}</span> subfolder{subCount !== 1 ? 's' : ''}
                 </p>

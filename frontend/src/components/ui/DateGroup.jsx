@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, Fragment } from 'react';
 import { FileCard } from './FileCard';
 
-export function DateGroup({ dateKey, filesGroup, viewMode, checkedFiles, toggleCheck, handleItemClick, openContainingFolder, setSelected, openFile, renderThumb, filterCategory, indexer, checkFileReadOnly }) {
+export function DateGroup({ dateKey, filesGroup, viewMode, checkedFiles, toggleCheck, handleItemClick, openContainingFolder, setSelected, openFile, renderThumb, filterCategory, indexer, checkFileReadOnly, getImplicitSelection }) {
   const [isVisible, setIsVisible] = useState(false);
   const [minHeight, setMinHeight] = useState('100px');
   const groupRef = useRef(null);
@@ -36,6 +36,7 @@ export function DateGroup({ dateKey, filesGroup, viewMode, checkedFiles, toggleC
               const prevItem = index > 0 ? filesGroup[index - 1] : null;
               const isNewDuplicateGroup = filterCategory === 'duplicates' && prevItem && prevItem.size !== item.size;
               if (isNewDuplicateGroup) isAlternateGroup = !isAlternateGroup;
+              const isImplicit = getImplicitSelection && getImplicitSelection(item.path);
               return (
                 <Fragment key={item.path}>
                   {isNewDuplicateGroup && (
@@ -44,7 +45,8 @@ export function DateGroup({ dateKey, filesGroup, viewMode, checkedFiles, toggleC
                   <FileCard
                     item={item}
                     viewMode={viewMode}
-                    isChecked={checkedFiles.has(item.path)}
+                    isChecked={checkedFiles.has(item.path) || isImplicit}
+                    isImplicit={isImplicit}
                     onToggleCheck={toggleCheck}
                     onClick={handleItemClick}
                     onContextMenu={openContainingFolder}
@@ -55,6 +57,7 @@ export function DateGroup({ dateKey, filesGroup, viewMode, checkedFiles, toggleC
                     showUnverified={filterCategory === 'duplicates' && !item.metadata?.sha256}
                     isReadOnly={checkFileReadOnly(item.path)}
                     isProcessing={filterCategory === 'duplicates' && indexer?.hasher_running && indexer?.hasher_current_file === item.path}
+                    hasSelections={checkedFiles.size > 0}
                   />
                 </Fragment>
               );

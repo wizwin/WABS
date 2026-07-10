@@ -3,9 +3,11 @@ import axios from 'axios';
 import { API, parseFileDate, dateFormatter } from '../States';
 
 export function useExplorer({
-  settings, page, setPage, query, setQuery, showToastMessage, sharedState, indexer, actionInProgress, dataOpProgress, setActionInProgress
+  settings, page, setPage, query, setQuery, showToastMessage, sharedState, indexer, actionInProgress, dataOpProgress, setActionInProgress,
+  viewType, setViewType
 }) {
   const [files, setFiles] = useState([]);
+  const [directories, setDirs] = useState([]);
   const [selected, setSelected] = useState(null);
   const [searchCache, setSearchCache] = useState([]);
   const [offset, setOffset] = useState(0);
@@ -23,12 +25,189 @@ export function useExplorer({
   const globalFileCache = useRef(new Map());
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
   const lastCheckedPath = useRef(null);
+  const suppressNextAutoLoad = useRef(false);
   const [activeDate, setActiveDate] = useState('');
+
+  const viewContexts = useRef({
+    explorer_flat: {
+      files: [],
+      offset: 0,
+      startOffset: 0,
+      hasMore: true,
+      scrollTop: 0
+    },
+    explorer_tree: {
+      files: [],
+      offset: 0,
+      startOffset: 0,
+      hasMore: true,
+      scrollTop: 0
+    },
+    virtual_folder_flat: {
+      files: [],
+      offset: 0,
+      startOffset: 0,
+      hasMore: true,
+      scrollTop: 0
+    },
+    virtual_folder_tree: {
+      files: [],
+      offset: 0,
+      startOffset: 0,
+      hasMore: true,
+      scrollTop: 0
+    }
+  });
+  const prevViewType = useRef(viewType);
+  const prevPage = useRef(page);
+
+  // Physical Navigation states
+  const [activeFolderPath, setActiveFolderPath] = useState(null);
+  const [physHistory, setPhysHistory] = useState([null]);
+  const [physHistoryIdx, setPhysHistoryIdx] = useState(0);
+
+  const navigateToPhys = (path, isHistoryAction = false) => {
+    setActiveFolderPath(path);
+    if (!isHistoryAction) {
+      const nextHist = physHistory.slice(0, physHistoryIdx + 1);
+      nextHist.push(path);
+      setPhysHistory(nextHist);
+      setPhysHistoryIdx(nextHist.length - 1);
+    }
+  };
+
+  const goBackPhys = () => {
+    if (physHistoryIdx > 0) {
+      const idx = physHistoryIdx - 1;
+      setPhysHistoryIdx(idx);
+      navigateToPhys(physHistory[idx], true);
+    }
+  };
+
+  const goForwardPhys = () => {
+    if (physHistoryIdx < physHistory.length - 1) {
+      const idx = physHistoryIdx + 1;
+      setPhysHistoryIdx(idx);
+      navigateToPhys(physHistory[idx], true);
+    }
+  };
+
+  const goUpPhys = () => {
+    if (!activeFolderPath) return;
+    const cleanPath = activeFolderPath.replace(/\\/g, '/');
+    const cleanActive = cleanPath.toLowerCase();
+    const backups = settings?.backup_configs || [];
+    const isBackupRoot = backups.some(b => {
+      const bp = String(b.backup_path || '').replace(/\\/g, '/').toLowerCase();
+      return bp && cleanActive === bp;
+    });
+
+    if (isBackupRoot) {
+      navigateToPhys(null);
+      return;
+    }
+
+    const parts = cleanPath.split('/').filter(Boolean);
+    if (parts.length <= 1) {
+      navigateToPhys(null);
+    } else {
+      parts.pop();
+      const parentPath = parts.join('/');
+      const parentLower = parentPath.toLowerCase();
+      
+      const isAncestor = backups.some(b => {
+        if (!b.backup_path) return false;
+        const bp = String(b.backup_path).replace(/\\/g, '/').toLowerCase();
+        return bp.startsWith(parentLower + '/') || (parentLower.endsWith(':') && bp.startsWith(parentLower));
+      });
+      
+      if (isAncestor) {
+        navigateToPhys(null);
+      } else {
+        navigateToPhys(parentPath);
+      }
+    }
+  };
 
   // Virtual Folder states
   const [virtualFolderId, setVirtualFolderId] = useState(null);
   const [currentVirtualFolder, setCurrentVirtualFolder] = useState(null);
   const [virtualFolders, setVirtualFolders] = useState([]);
+
+  const handleOpenFolder = (folder) => {
+    setVirtualFolderId(folder.id);
+    setCurrentVirtualFolder(folder);
+    setFilterCategory('all');
+    loadFiles(0, false, 'all', sortBy, sortOrder, 'virtual_folder', folder.id);
+  };
+
+  // Virtual Folder Navigation states
+  const [virtHistory, setVirtHistory] = useState([null]);
+  const [virtHistoryIdx, setVirtHistoryIdx] = useState(0);
+  const [isNavigatingVirt, setIsNavigatingVirt] = useState(false);
+
+  useEffect(() => {
+    if (page === 'virtual_folder') {
+      if (isNavigatingVirt) {
+        setIsNavigatingVirt(false);
+        return;
+      }
+      if (virtHistory[virtHistoryIdx] !== virtualFolderId) {
+        const nextHist = virtHistory.slice(0, virtHistoryIdx + 1);
+        nextHist.push(virtualFolderId);
+        setVirtHistory(nextHist);
+        setVirtHistoryIdx(nextHist.length - 1);
+      }
+    }
+  }, [virtualFolderId, page]);
+
+  const goBackVirt = () => {
+    if (virtHistoryIdx > 0) {
+      const idx = virtHistoryIdx - 1;
+      setVirtHistoryIdx(idx);
+      setIsNavigatingVirt(true);
+      const targetId = virtHistory[idx];
+      if (targetId) {
+        const folder = (virtualFolders || []).find(f => f.id === targetId);
+        if (folder) handleOpenFolder(folder);
+      } else {
+        setPage('virtual_folders');
+      }
+    }
+  };
+
+  const goForwardVirt = () => {
+    if (virtHistoryIdx < virtHistory.length - 1) {
+      const idx = virtHistoryIdx + 1;
+      setVirtHistoryIdx(idx);
+      setIsNavigatingVirt(true);
+      const targetId = virtHistory[idx];
+      if (targetId) {
+        const folder = (virtualFolders || []).find(f => f.id === targetId);
+        if (folder) handleOpenFolder(folder);
+      }
+    }
+  };
+
+  const goUpVirt = () => {
+    if (currentVirtualFolder) {
+      if (currentVirtualFolder.parent_id) {
+        const parent = (virtualFolders || []).find(f => f.id === currentVirtualFolder.parent_id);
+        if (parent) handleOpenFolder(parent);
+      } else {
+        setPage('virtual_folders');
+      }
+    }
+  };
+
+  const isPhys = page !== 'virtual_folder';
+  const canGoBack = isPhys ? physHistoryIdx > 0 : virtHistoryIdx > 0;
+  const canGoForward = isPhys ? physHistoryIdx < physHistory.length - 1 : virtHistoryIdx < virtHistory.length - 1;
+  const canGoUp = isPhys ? activeFolderPath !== null : currentVirtualFolder !== null;
+
+  const handleBack = isPhys ? goBackPhys : goBackVirt;
+  const handleForward = isPhys ? goForwardPhys : goForwardVirt;
+  const handleUp = isPhys ? goUpPhys : goUpVirt;
 
   async function loadVirtualFolders() {
     try {
@@ -36,6 +215,15 @@ export function useExplorer({
       setVirtualFolders(r.data);
     } catch (err) {
       console.warn('Failed to load virtual folders', err);
+    }
+  }
+
+  async function loadDirectories() {
+    try {
+      const r = await axios.get(`${API}/directories`);
+      setDirs(r.data);
+    } catch (err) {
+      console.warn('Failed to load directories', err);
     }
   }
 
@@ -107,10 +295,11 @@ export function useExplorer({
     }
   }
 
-  async function addFilesToVirtualFolder(folderId, fileIds) {
+  async function addFilesToVirtualFolder(folderId, fileIds, paths = []) {
     try {
-      const r = await axios.post(`${API}/virtual-folders/${folderId}/files`, { file_ids: fileIds });
+      const r = await axios.post(`${API}/virtual-folders/${folderId}/files`, { file_ids: fileIds, paths: paths });
       showToastMessage(`Successfully added ${r.data.added} file(s) to virtual folder.`);
+      await loadVirtualFolders();
       if (virtualFolderId === folderId) {
         setCheckedFiles(new Set());
         await loadFiles(0, false, filterCategory, sortBy, sortOrder);
@@ -121,10 +310,11 @@ export function useExplorer({
     }
   }
 
-  async function removeFilesFromVirtualFolder(folderId, fileIds) {
+  async function removeFilesFromVirtualFolder(folderId, fileIds, paths = []) {
     try {
-      await axios.delete(`${API}/virtual-folders/${folderId}/files`, { data: { file_ids: fileIds } });
+      await axios.delete(`${API}/virtual-folders/${folderId}/files`, { data: { file_ids: fileIds, paths: paths } });
       showToastMessage(`Removed file(s) from virtual folder.`);
+      await loadVirtualFolders();
       setCheckedFiles(new Set());
       await loadFiles(0, false, filterCategory, sortBy, sortOrder);
     } catch (err) {
@@ -134,7 +324,101 @@ export function useExplorer({
 
   useEffect(() => {
     loadVirtualFolders();
+    loadDirectories();
   }, []);
+
+  useEffect(() => {
+    if (page === 'explorer') {
+      if (suppressNextAutoLoad.current) {
+        suppressNextAutoLoad.current = false;
+        return;
+      }
+      loadFiles(0, false, filterCategory, sortBy, sortOrder, page, virtualFolderId, viewType, activeFolderPath);
+    }
+  }, [activeFolderPath, page]);
+
+  useEffect(() => {
+    const oldPage = prevPage.current;
+    const newPage = page;
+    const oldView = prevViewType.current;
+    const newView = viewType;
+
+    if (oldPage === newPage && oldView === newView) return;
+
+    const isOldPreserved = oldPage === 'explorer' || oldPage === 'virtual_folder';
+    const isNewPreserved = newPage === 'explorer' || newPage === 'virtual_folder';
+
+    if (isOldPreserved) {
+      const oldCacheKey = `${oldPage}_${oldView}`;
+      viewContexts.current[oldCacheKey] = {
+        ...viewContexts.current[oldCacheKey],
+        files: files,
+        offset: offset,
+        startOffset: startOffset,
+        hasMore: hasMore
+      };
+    }
+
+    if (isNewPreserved) {
+      const newCacheKey = `${newPage}_${newView}`;
+      const ctx = viewContexts.current[newCacheKey];
+
+      // Tree-view files are folder-specific. Cached files may belong to a different
+      // folder than the one currently active, and the cached startOffset may be
+      // non-zero (from a previous pagination session in that folder). Always force a
+      // fresh load so that startOffset is reset to 0 and the correct folder is shown.
+      const isTreeSwitch = newPage === 'explorer' && newView === 'tree';
+
+      setFiles(ctx.files);
+      setOffset(ctx.offset);
+      setStartOffset(isTreeSwitch ? 0 : ctx.startOffset); // reset startOffset for tree
+      setHasMore(ctx.hasMore);
+
+      prevPage.current = newPage;
+      prevViewType.current = newView;
+
+      if (ctx.files.length === 0 || isTreeSwitch) {
+        loadFiles(0, false, filterCategory, sortBy, sortOrder, newPage, virtualFolderId, newView, activeFolderPath);
+      } else {
+        setTimeout(() => {
+          const container = document.querySelector('.content');
+          if (container) {
+            container.scrollTop = ctx.scrollTop;
+          }
+        }, 120);
+      }
+    } else {
+      prevPage.current = newPage;
+      prevViewType.current = newView;
+    }
+  }, [viewType, page]);
+
+  useEffect(() => {
+    viewContexts.current.explorer_tree = {
+      files: [],
+      offset: 0,
+      startOffset: 0,
+      hasMore: true,
+      scrollTop: 0
+    };
+  }, [activeFolderPath]);
+
+  useEffect(() => {
+    viewContexts.current.virtual_folder_tree = {
+      files: [],
+      offset: 0,
+      startOffset: 0,
+      hasMore: true,
+      scrollTop: 0
+    };
+    viewContexts.current.virtual_folder_flat = {
+      files: [],
+      offset: 0,
+      startOffset: 0,
+      hasMore: true,
+      scrollTop: 0
+    };
+  }, [virtualFolderId]);
 
   const searchTimeout = useRef(null);
   const searchAbortController = useRef(null);
@@ -171,7 +455,7 @@ export function useExplorer({
   }, [checkedFiles, settings]);
 
   // Loads files in chunks from the backend with AbortController query cancellation support.
-  async function loadFiles(nextOffset = 0, append = false, cat = filterCategory, sBy = sortBy, sOrd = sortOrder, customPage = page, customFolderId = virtualFolderId) {
+  async function loadFiles(nextOffset = 0, append = false, cat = filterCategory, sBy = sortBy, sOrd = sortOrder, customPage = page, customFolderId = virtualFolderId, customViewType = viewType, customActiveFolder = activeFolderPath) {
     if (loadFilesAbortController.current) {
       loadFilesAbortController.current.abort();
     }
@@ -181,7 +465,11 @@ export function useExplorer({
     try {
       let url = `${API}/files?category=${cat}&offset=${nextOffset}&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
       if (customPage === 'virtual_folder' && customFolderId) {
-        url = `${API}/virtual-folders/${customFolderId}/files?category=${cat}&offset=${nextOffset}&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
+        const isRec = customViewType === 'flat';
+        url = `${API}/virtual-folders/${customFolderId}/files?category=${cat}&offset=${nextOffset}&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}&recursive=${isRec}`;
+      } else if (customViewType === 'tree' && customPage !== 'virtual_folder') {
+        const folderParam = customActiveFolder ? encodeURIComponent(customActiveFolder) : 'root';
+        url = `${API}/files?category=${cat}&offset=${nextOffset}&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}&folder=${folderParam}`;
       }
       const r = await axios.get(url, {
         signal: loadFilesAbortController.current.signal
@@ -325,7 +613,7 @@ export function useExplorer({
     const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
     const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
     if(page === 'explorer' || page === 'virtual_folder'){
-      await loadFiles(offset, true, filterCategory, sortBy, sortOrder);
+      await loadFiles(offset, true, filterCategory, sortBy, sortOrder, page, virtualFolderId, viewType, activeFolderPath);
     } else if(page === 'search'){
       if (searchAbortController.current) searchAbortController.current.abort();
       searchAbortController.current = new AbortController();
@@ -394,7 +682,11 @@ export function useExplorer({
       if(page === 'explorer' || page === 'virtual_folder'){
         let url = `${API}/files?category=${filterCategory}&offset=${nextStartOffset}&limit=${fetchLimit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
         if (page === 'virtual_folder' && virtualFolderId) {
-          url = `${API}/virtual-folders/${virtualFolderId}/files?category=${filterCategory}&offset=${nextStartOffset}&limit=${fetchLimit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+          const isRec = viewType === 'flat';
+          url = `${API}/virtual-folders/${virtualFolderId}/files?category=${filterCategory}&offset=${nextStartOffset}&limit=${fetchLimit}&sort_by=${sortBy}&sort_order=${sortOrder}&recursive=${isRec}`;
+        } else if (viewType === 'tree') {
+          const folderParam = activeFolderPath ? encodeURIComponent(activeFolderPath) : 'root';
+          url += `&folder=${folderParam}`;
         }
         r = await axios.get(url);
       } else if(page === 'search'){
@@ -479,6 +771,13 @@ export function useExplorer({
     if(scrollHeight - scrollTop - clientHeight < 120) loadMore();
     if(scrollTop < 120 && startOffset > 0) loadPrevious();
     syncActiveDate(e.currentTarget);
+
+    if (page === 'explorer' || page === 'virtual_folder') {
+      const cacheKey = `${page}_${viewType}`;
+      if (viewContexts.current[cacheKey]) {
+        viewContexts.current[cacheKey].scrollTop = scrollTop;
+      }
+    }
   }
 
   async function openFile(itemPath) {
@@ -531,14 +830,155 @@ export function useExplorer({
     }
   };
 
+  // ── Ancestry helper ────────────────────────────────────────────────────────
+  // Returns true if childId is a descendant of parentId in the virtual folder tree.
+  const isVirtualFolderChild = (childId, parentId) => {
+    let cur = (virtualFolders || []).find(f => f.id === childId);
+    while (cur && cur.parent_id) {
+      if (cur.parent_id === parentId) return true;
+      cur = (virtualFolders || []).find(f => f.id === cur.parent_id);
+    }
+    return false;
+  };
+
+  // ── Core implicit-coverage detector ───────────────────────────────────────
+  // Given a path (string) or virtual folder id (number), returns the entry in
+  // `fromSet` that implicitly covers it — or null if nothing does.
+  // Works identically for normal indexed files AND virtual folders.
+  const findImplicitCoverage = (pathOrId, isVirtualSubfolder, fromSet) => {
+    const pool = fromSet || checkedFiles;
+
+    if (isVirtualSubfolder) {
+      // Virtual subfolder: covered if an ancestor VF is in pool
+      const childId = typeof pathOrId === 'number' ? pathOrId : parseInt(pathOrId);
+      return Array.from(pool).find(p => {
+        if (!p.startsWith('virtual_folder:')) return false;
+        const pid = parseInt(p.split(':')[1]);
+        if (pid === childId) return false;            // same VF — already explicit
+        return isVirtualFolderChild(childId, pid);
+      }) || null;
+    }
+
+    // Physical file or folder path
+    if (typeof pathOrId === 'string') {
+      const norm = pathOrId.replace(/\\/g, '/').toLowerCase();
+
+      // (a) Covered by a selected physical ancestor folder
+      const physCover = Array.from(pool).find(p => {
+        if (p === pathOrId || p.startsWith('virtual_folder:')) return false;
+        const np = p.replace(/\\/g, '/').toLowerCase();
+        return norm.startsWith(np + '/');
+      });
+      if (physCover) return physCover;
+
+      // (b) Covered by a selected virtual folder — applies when the user is
+      //     browsing INSIDE a virtual folder that is (or whose ancestor is) checked
+      if (page === 'virtual_folder' && virtualFolderId) {
+        const vfCover = Array.from(pool).find(p => {
+          if (!p.startsWith('virtual_folder:')) return false;
+          const vid = parseInt(p.split(':')[1]);
+          return vid === virtualFolderId || isVirtualFolderChild(virtualFolderId, vid);
+        });
+        if (vfCover) return vfCover;
+      }
+    }
+
+    return null;
+  };
+
+  // ── Public helper consumed by DateGroup / Explorer subfolder cards ─────────
+  const getImplicitSelection = (pathOrId, isVirtualSubfolder = false) =>
+    !!findImplicitCoverage(pathOrId, isVirtualSubfolder);
+
+  // ── Unified toggleCheck ────────────────────────────────────────────────────
   const toggleCheck = (e, path) => {
     e.stopPropagation();
     lastCheckedPath.current = path;
     const next = new Set(checkedFiles);
-    if(next.has(path)) next.delete(path);
-    else next.add(path);
+
+    if (next.has(path)) {
+      // Explicitly checked → uncheck directly
+      next.delete(path);
+      setCheckedFiles(next);
+      return;
+    }
+
+    const isVirtualPath = path.startsWith('virtual_folder:');
+    const lookupKey    = isVirtualPath ? parseInt(path.split(':')[1]) : path;
+    const coveringEntry = findImplicitCoverage(lookupKey, isVirtualPath, next);
+
+    if (coveringEntry) {
+      // ── Expand-and-exclude ──────────────────────────────────────────────
+      // The user clicked on an item that is implicitly covered by a parent.
+      // Instead of wiping the entire parent selection, we:
+      //   1. Remove the covering parent token.
+      //   2. Re-add every OTHER member/sibling as an explicit individual entry.
+      //   3. Leave out only the one item the user clicked (deselecting it alone).
+      next.delete(coveringEntry);
+
+      if (coveringEntry.startsWith('virtual_folder:')) {
+        // Virtual-folder parent: siblings = all currently-loaded files
+        // that are NOT the item being deselected.
+        const filesSiblings = (files || []).filter(f => !f.is_folder && f.path !== path);
+        filesSiblings.forEach(f => next.add(f.path));
+
+        // Re-add any child VF subfolder cards visible in the current view
+        // (excluding the clicked item if it was a VF token).
+        const childVFCards = (files || []).filter(f => f.is_folder);
+        childVFCards.forEach(f => {
+          const token = `virtual_folder:${f.id}`;
+          if (token !== path) next.add(token);
+        });
+      } else {
+        // Physical-folder parent: siblings = all files whose path falls under
+        // the covering folder, minus the clicked item.
+        const norm = coveringEntry.replace(/\\/g, '/').toLowerCase();
+        const siblings = (files || []).filter(f => {
+          if (f.path === path) return false;
+          const fp = f.path.replace(/\\/g, '/').toLowerCase();
+          return fp.startsWith(norm + '/') || fp === norm;
+        });
+        // If files[] doesn't contain them (different folder loaded), try cache.
+        if (siblings.length === 0) {
+          for (const [p] of globalFileCache.current) {
+            if (p === path) continue;
+            const fp = p.replace(/\\/g, '/').toLowerCase();
+            if (fp.startsWith(norm + '/')) next.add(p);
+          }
+        } else {
+          siblings.forEach(f => next.add(f.path));
+        }
+      }
+
+      setCheckedFiles(next);
+      return;
+    }
+
+    // Not implicitly covered → check it
+    if (!isVirtualPath) {
+      const norm = path.replace(/\\/g, '/').toLowerCase();
+
+      // Guard: would this path itself be covered by something already in `next`?
+      // (Handles the case where the pool changed due to removals above — keep for safety)
+      const conflict = findImplicitCoverage(path, false, next);
+      if (conflict) {
+        const name = conflict.replace(/\\/g, '/').split('/').pop();
+        showToastMessage(`Already included in selected folder "${name}". Deselect that folder first to select individual items.`);
+        return;
+      }
+
+      // If selecting a FOLDER, deduplicate — remove any more-specific children
+      Array.from(next).forEach(p => {
+        if (p.startsWith('virtual_folder:')) return;
+        const np = p.replace(/\\/g, '/').toLowerCase();
+        if (np.startsWith(norm + '/')) next.delete(p);
+      });
+    }
+
+    next.add(path);
     setCheckedFiles(next);
   };
+
 
   const selectAll = () => {
     const visiblePaths = sortedFiles.map(f => f.path);
@@ -632,7 +1072,7 @@ export function useExplorer({
       }
     }
   
-    if(!window.confirm(`Are you sure you want to permanently delete ${checkedFiles.size} files from your disk and database? This action cannot be undone.`)) {
+    if(!window.confirm(`Are you sure you want to permanently delete ${checkedFiles.size} items from your disk and database? This action cannot be undone.`)) {
       window.wabs_action_in_progress = false;
       return;
     }
@@ -709,61 +1149,136 @@ export function useExplorer({
     }
   }
 
-  function locateSelectedFileInExplorer() {
+  async function locateSelectedFile(type) {
     if (checkedFiles.size !== 1) return;
     const path = Array.from(checkedFiles)[0];
     let file = globalFileCache.current.get(path);
     if (!file) return;
 
-    let q = '';
-    const d = parseFileDate(file);
-    if (d) {
-        const month = String(d.getMonth() + 1).padStart(2, '0');
-        const day = String(d.getDate()).padStart(2, '0');
-        q = `date:${d.getFullYear()}-${month}-${day}`;
-    } else {
-        q = `name:"${file.filename}"`;
-    }
-
     setFilterCategory('all');
-    setQuery(q);
-    setPage('search');
     setSelected(file);
     setCheckedFiles(new Set([file.path]));
-    
-    if (searchTimeout.current) clearTimeout(searchTimeout.current);
-    setLoadingMore(true);
-    
-    if (searchAbortController.current) searchAbortController.current.abort();
-    searchAbortController.current = new AbortController();
+
+    const normalized = file.path.replace(/\\/g, '/');
+    const lastSlash = normalized.lastIndexOf('/');
+    let parentFolder = null;
+    if (lastSlash !== -1) {
+      parentFolder = normalized.substring(0, lastSlash);
+    }
 
     const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
     const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
-    const safeQuery = q.replace(/,/g, ' ');
-    
-    axios.get(`${API}/search?query=${encodeURIComponent(safeQuery)}&category=all&offset=0&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`, {
-        signal: searchAbortController.current.signal
-    }).then(r => {
-        let newFiles = r.data;
-        if (!newFiles.some(f => f.path === file.path)) newFiles = [...newFiles, file];
-        setSearchCache(newFiles);
-        setFiles(newFiles);
-        setOffset(r.data.length);
-        setHasMore(r.data.length === limit);
-        setLoadingMore(false);
+
+    if (type === 'tree') {
+      setPage('explorer');
+      setViewType('tree');
+      navigateToPhys(parentFolder);
+    } else if (type === 'flat') {
+      let offsetVal = 0;
+      try {
+        const offsetRes = await axios.get(`${API}/files/${file.id}/offset?category=all&sort_by=${sortBy}&sort_order=${sortOrder}`);
+        offsetVal = offsetRes.data.offset || 0;
+      } catch (err) {
+        console.warn("Failed to fetch file offset", err);
+      }
+      const targetStartOffset = Math.max(0, Math.floor(offsetVal / limit) * limit);
+
+      try {
+        const url = `${API}/files?category=all&offset=${targetStartOffset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+        const r = await axios.get(url);
+        viewContexts.current.explorer_flat = {
+          files: r.data,
+          startOffset: targetStartOffset,
+          offset: targetStartOffset + r.data.length,
+          hasMore: r.data.length === limit,
+          scrollTop: 0
+        };
+      } catch (err) {
+        console.warn("Failed to pre-load flat files", err);
+      }
+
+      suppressNextAutoLoad.current = true;
+      setPage('explorer');
+      setViewType('flat');
+    } else if (type === 'virtual_folder') {
+      try {
+        const res = await axios.get(`${API}/files/${file.id}/virtual-folders`);
+        const matchedFolders = res.data || [];
+        if (matchedFolders.length === 0) {
+          showToastMessage("File is not in any virtual folder.");
+          return;
+        }
+        const targetFolder = matchedFolders[0];
+
+        let offsetVal = 0;
+        const isRec = viewType === 'flat';
+        try {
+          const offsetRes = await axios.get(`${API}/files/${file.id}/offset?category=all&sort_by=${sortBy}&sort_order=${sortOrder}&virtual_folder_id=${targetFolder.id}&recursive=${isRec}`);
+          offsetVal = offsetRes.data.offset || 0;
+        } catch (err) {
+          console.warn("Failed to fetch virtual folder file offset", err);
+        }
+        const targetStartOffset = Math.max(0, Math.floor(offsetVal / limit) * limit);
+
+        try {
+          const url = `${API}/virtual-folders/${targetFolder.id}/files?category=all&offset=${targetStartOffset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}&recursive=${isRec}`;
+          const r = await axios.get(url);
+          const cacheKey = `virtual_folder_${viewType}`;
+          viewContexts.current[cacheKey] = {
+            files: r.data,
+            startOffset: targetStartOffset,
+            offset: targetStartOffset + r.data.length,
+            hasMore: r.data.length === limit,
+            scrollTop: 0
+          };
+        } catch (err) {
+          console.warn("Failed to pre-load virtual folder files", err);
+        }
+
+        setPage('virtual_folder');
+        setVirtualFolderId(targetFolder.id);
+        setCurrentVirtualFolder(targetFolder);
+        showToastMessage(`Located in virtual folder: ${targetFolder.name}`);
+      } catch (err) {
+        console.warn("Failed to locate in virtual folder", err);
+      }
+    }
+
+    setTimeout(() => {
+      const d = parseFileDate(file);
+      const dateKey = filterCategory === 'duplicates' 
+        ? 'Duplicate Files' 
+        : (d ? dateFormatter.format(d) : 'Unknown Date');
+      const groupEl = document.getElementById(`date-group-${dateKey}`);
+      if (groupEl) {
+        groupEl.scrollIntoView({ behavior: 'auto', block: 'start' });
         setTimeout(() => {
-            const escapedPath = file.path.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-            const el = document.querySelector(`[data-path="${escapedPath}"]`);
-            if (el) {
-                el.scrollIntoView({ behavior: 'auto', block: 'center' });
-            } else {
-                const dateKey = d ? dateFormatter.format(d) : 'Unknown Date';
-                document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'auto', block: 'start' });
-            }
-        }, 300);
-    }).catch((err) => {
-        if (!axios.isCancel(err)) setLoadingMore(false);
-    });
+          const escapedPath = file.path.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          const el = document.querySelector(`[data-path="${escapedPath}"]`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'auto', block: 'center' });
+            el.style.outline = '2px solid #3b82f6';
+            el.style.outlineOffset = '2px';
+            setTimeout(() => {
+              el.style.outline = '';
+              el.style.outlineOffset = '';
+            }, 2000);
+          }
+        }, 100);
+      } else {
+        const escapedPath = file.path.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        const el = document.querySelector(`[data-path="${escapedPath}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'auto', block: 'center' });
+          el.style.outline = '2px solid #3b82f6';
+          el.style.outlineOffset = '2px';
+          setTimeout(() => {
+            el.style.outline = '';
+            el.style.outlineOffset = '';
+          }, 2000);
+        }
+      }
+    }, 450);
   }
 
   const handleFilterChange = (e) => {
@@ -800,6 +1315,8 @@ export function useExplorer({
     }
     loadFiles(0, false, category, category === 'duplicates' ? 'size' : sortBy, category === 'duplicates' ? 'desc' : sortOrder, 'explorer', null);
   };
+
+
 
   const sortedFiles = useMemo(() => {
     let baseFiles = files || [];
@@ -1018,7 +1535,7 @@ export function useExplorer({
   }, [groupedFiles, page]);
 
   return {
-    files, setFiles, selected, setSelected, searchCache, setSearchCache, offset, setOffset,
+    files, setFiles, directories, setDirs, loadDirectories, selected, setSelected, searchCache, setSearchCache, offset, setOffset,
     startOffset, setStartOffset, hasMore, setHasMore, loadingMore, setLoadingMore,
     loadingPrevious, setLoadingPrevious, sortBy, setSortBy, sortOrder, setSortOrder,
     filterCategory, setFilterCategory, viewMode, setViewMode, checkedFiles, setCheckedFiles,
@@ -1026,14 +1543,19 @@ export function useExplorer({
     checkFileReadOnly, isSelectionReadOnly, loadFiles, doSearch, goToSearch, loadMore,
     loadPrevious, syncActiveDate, handleScroll, openFile, openContainingFolder, handleItemClick,
     toggleCheck, selectAll, selectVerifiedDuplicates, deleteSelected, openSelected,
-    copySelected, moveSelected, locateSelectedFileInExplorer, handleFilterChange,
-    handleCategoryClick, sortedFiles, groupedFiles,
+    copySelected, moveSelected, locateSelectedFile, handleFilterChange,
+    handleCategoryClick, sortedFiles, groupedFiles, getImplicitSelection,
+
+    // Physical Navigation
+    activeFolderPath, setActiveFolderPath, physHistory, setPhysHistory, physHistoryIdx, setPhysHistoryIdx,
+    navigateToPhys, goBackPhys, goForwardPhys, goUpPhys,
+    isPhys, canGoBack, canGoForward, canGoUp, handleBack, handleForward, handleUp,
     
     // Virtual Folder exports
     virtualFolderId, setVirtualFolderId, currentVirtualFolder, setCurrentVirtualFolder,
     virtualFolders, setVirtualFolders, loadVirtualFolders, createVirtualFolder,
     deleteVirtualFolder, renameVirtualFolder, updateVirtualFolderQuery,
-    addFilesToVirtualFolder, removeFilesFromVirtualFolder,
+    addFilesToVirtualFolder, removeFilesFromVirtualFolder, handleOpenFolder,
     
     // Data Management
     exportVirtualFolders, importVirtualFolders, exportAllWabs, importAllWabs

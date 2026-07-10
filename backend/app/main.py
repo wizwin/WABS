@@ -96,17 +96,45 @@ async def suppress_harmless_asyncio_errors():
                 loop.default_exception_handler(context)
         loop.set_exception_handler(custom_exception_handler)
 
+    # POST-STARTUP MEMORY TRIM:
+    # After the server starts, the frontend immediately fetches /directories (Tree View) and
+    # /virtual-folders — both of which allocate temporary Python objects. We schedule a GC
+    # and working-set trim 10 seconds after startup (enough time for those calls to complete)
+    # to return the memory to the OS before the 30-minute idle timer would normally kick in.
+    async def post_startup_trim():
+        await asyncio.sleep(10)
+        try:
+            import gc
+            gc.collect()
+            # On Windows, trim the process working set to release pages the GC freed
+            if sys.platform == 'win32':
+                import ctypes
+                import os as _os
+                PROCESS_QUERY_INFORMATION = 0x0400
+                PROCESS_SET_QUOTA = 0x0100
+                handle = ctypes.windll.kernel32.OpenProcess(
+                    PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, False, _os.getpid()
+                )
+                if handle:
+                    ctypes.windll.psapi.EmptyWorkingSet(handle)
+                    ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception as e:
+            print(f"Post-startup memory trim failed (non-critical): {e}")
+
+    asyncio.create_task(post_startup_trim())
+
 @app.on_event("shutdown")
 def graceful_os_shutdown():
     shared_state.APP_SHUTTING_DOWN = True
     import time
     import logging
 
-    try:
-        from backend.app.utils.tray import stop_tray_icon
-        stop_tray_icon()
-    except Exception:
-        pass
+    if sys.platform != "win32":
+        try:
+            from backend.app.utils.tray import stop_tray_icon
+            stop_tray_icon()
+        except Exception:
+            pass
 
     try:
         if shared_state.LOGGING_ENABLED:
@@ -214,10 +242,19 @@ sys.stderr = PrintLogger(sys.stderr)
 @app.middleware("http")
 async def track_activity_and_cache(request: Request, call_next):
     path = request.url.path
+    # These paths are excluded from the idle activity timer so they don't prevent
+    # the idle memory unload from firing after 30 minutes of genuine inactivity.
+    # - /assets, /, /indexer/status, /stats: original exclusions (polling/static)
+    # - /virtual-folders: called at startup and on every folder operation (Virtual Folder feature)
+    # - /directories: called at startup to build the Tree View (Tree View feature)
+    # Without these exclusions, the 30-min idle clock would reset on every page load,
+    # keeping 240+ MB of memory allocated indefinitely.
     if not (path.startswith("/assets") or 
             path == "/" or 
             path == "/indexer/status" or 
-            path == "/stats"):
+            path == "/stats" or
+            path == "/virtual-folders" or   # Virtual Folder list — loaded at startup
+            path == "/directories"):         # Tree View directory list — loaded at startup
         shared_state.LAST_ACTIVITY_TIME = time.time()
 
     response = await call_next(request)

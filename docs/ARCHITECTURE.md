@@ -97,3 +97,118 @@ To make the contents of PDFs, documents, code files, and photos searchable witho
 For Windows distribution, standalone executables require a digital signature to bypass **Windows Smart App Control (SAC)** and **SmartScreen** blocks.
 * **Current Implementation:** WABS integrates `signtool.exe` in both local build scripts (`scripts/build_windows.ps1`) and GitHub Actions CI (`build.yml`), which signs the executable using a base64-encoded certificate from private secrets. If the certificate is not configured, the signing steps are gracefully skipped.
 * **Future Action / TODO:** Obtain a publicly-trusted IV/OV or EV Code Signing Certificate from a Microsoft-trusted Certificate Authority (CA) to sign official releases. This will establish permanent brand reputation and completely eliminate safety warnings for new users.
+
+---
+
+### 10. Virtual Folders (`virtual_folders.py`, `useExplorer.jsx`)
+
+Virtual Folders are an organisational layer that lives entirely inside the WABS database. They let users group any combination of physical files (from different directories, drives, or archive roots) into named folder hierarchies — without moving or copying a single byte on disk.
+
+#### 10.1 Database Models
+
+Two SQLAlchemy models back the feature:
+
+| Model | Table | Key Columns |
+|---|---|---|
+| `VirtualFolder` | `virtual_folders` | `id`, `name`, `parent_id` (self-referential FK), `is_dynamic` (0/1), `query` (saved search string), `created_at`, `metadata_json` |
+| `VirtualFolderFile` | `virtual_folder_files` | `id`, `virtual_folder_id` (FK → `virtual_folders.id`), `file_id` (FK → `files.id`) |
+
+`parent_id` is a nullable self-referential foreign key that enables an arbitrarily deep folder tree. Orphan cleanup runs on every `GET /virtual-folders` call via `cleanup_orphans()`, which deletes associations pointing to non-existent folders and child folders pointing to non-existent parents — keeping the tree consistent without requiring cascaded deletes at the DB level.
+
+#### 10.2 File Membership: Manual vs Dynamic
+
+Each virtual folder can hold files in two complementary ways that are **unioned together** at query time:
+
+**Manual Links** — explicit `VirtualFolderFile` rows inserted when the user drags files or physical folders into a virtual folder. The file's physical path is never duplicated; only its integer `file_id` is stored.
+
+**Dynamic Query Rule** — an optional `query` string saved on the `VirtualFolder` row. When resolving the folder's contents the backend evaluates the query against the FTS5 index in three modes (tried in order):
+
+1. **Regex** — if the query matches `/_pattern_/flags` syntax, a compiled Python `re` object is applied against a concatenated `filename|path|tags|metadata_json` haystack for every file (streamed in 1,000-row batches via `yield_per`).
+2. **Advanced Search** — if the query uses any known `SEARCH_PREFIX` (e.g. `person:`, `object:`, `tag:`, `ext:`, date ranges) or Boolean operators (`+`, `-`, `*`), it is fed into `_build_search_query` — the same engine that powers the main Explorer search bar.
+3. **FTS5 Phrase Match** — plain text queries are split into words and rewritten as `"word" *` FTS5 prefix terms, then run against both `files_fts` and `file_text_fts` virtual tables via a `UNION`.
+
+The resolved `manual_ids ∪ dynamic_ids` set is deduplicated in Python before being passed to the paginated file query.
+
+#### 10.3 Recursive File & Count Resolution
+
+Several helpers walk the folder tree efficiently:
+
+| Helper | Strategy |
+|---|---|
+| `get_folder_files_recursive(s, folder_id)` | Depth-first recursion; unions manual + dynamic IDs at each level, then recurses into children. Used for per-folder file counts. |
+| `get_folder_and_descendants_ids(s, folder_id)` | Single SQL query fetches **all** `(id, parent_id)` pairs into memory, then BFS produces the full descendant ID list in one pass. O(N) where N is total folder count. |
+| `get_virtual_folder_file_ids_recursive(s, folder_id)` | Uses `get_folder_and_descendants_ids` to bulk-query all manual links in one `IN (…)` clause, then evaluates dynamic queries for each descendant folder in batches. Used by `GET /virtual-folders/{id}/files?recursive=true`. |
+
+The `recursive` query parameter on the files endpoint controls whether only the requested folder's direct files are returned or the entire subtree is included.
+
+#### 10.4 Physical Folder → Virtual Hierarchy Mirroring
+
+When the user adds a **physical directory path** via `POST /virtual-folders/{id}/files`, the backend mirrors the physical directory tree inside the virtual folder:
+
+1. The selected folder's name becomes a new virtual subfolder directly under the target.
+2. Every file is placed in a virtual subfolder that matches its relative path segments below the physical root — creating intermediate virtual folders on-the-fly with `s.flush()` to obtain IDs before the next level.
+3. Files that sit at the root of the selected folder (zero relative path segments) are placed directly in the top-level mirrored subfolder.
+
+This allows an entire physical archive branch to be transplanted into a virtual folder in a single operation while preserving the original directory structure.
+
+#### 10.5 Virtual Folder Copying
+
+`copy_virtual_folder_hierarchy(s, src_folder_id, dest_parent_id)` performs a deep copy of a virtual folder tree: it creates a matching subfolder (by name, case-insensitive) under the destination, copies all `VirtualFolderFile` rows, then recurses into children. Duplicate file associations are skipped via existence checks.
+
+#### 10.6 Export to Disk
+
+`POST /virtual-folders/{id}/export` runs a background thread (`run_export_background`) that mirrors the virtual folder tree onto the real filesystem using `shutil.copy2`. Progress is tracked in `STATE["export_current"]` / `STATE["export_total"]` and surfaced to the frontend via the indexer status poll. Filename collisions are resolved by appending `_N` counters.
+
+#### 10.7 REST API Surface
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/virtual-folders` | List all folders with recursive file & subfolder counts |
+| `POST` | `/virtual-folders` | Create a new folder (manual or dynamic) |
+| `PUT` | `/virtual-folders/{id}` | Rename, re-parent, change query, toggle dynamic |
+| `DELETE` | `/virtual-folders/{id}` | Delete folder and entire subtree recursively |
+| `GET` | `/virtual-folders/{id}/files` | Paginated, sorted, categorised file list (`?recursive`) |
+| `POST` | `/virtual-folders/{id}/files` | Add files by ID list and/or path list (file, dir, or `virtual_folder:N`) |
+| `DELETE` | `/virtual-folders/{id}/files` | Remove file associations by ID or path |
+| `GET` | `/virtual-folders/{id}/subfolders` | List immediate child folders |
+| `POST` | `/virtual-folders/{id}/export` | Export tree to a chosen disk path (background) |
+
+#### 10.8 Frontend State Management (`useExplorer.jsx`)
+
+All virtual folder state and operations live inside the `useExplorer` custom hook and are spread into `appState`, making them available everywhere in the component tree.
+
+**Key state:**
+
+| State | Description |
+|---|---|
+| `virtualFolders` | Flat list of all VF metadata objects fetched from the API |
+| `currentVirtualFolder` | The VF currently being browsed (drives the right-pane file list) |
+| `virtualFolderId` | Integer ID of the current VF context |
+| `checkedFiles` | `Set<string>` of selected paths — entries are either file paths (`C:/…/file.jpg`) or virtual folder tokens (`virtual_folder:N`) |
+
+**Selection model — unified implicit coverage:**
+
+The `checkedFiles` set uses two distinct entry types. A single `findImplicitCoverage(pathOrId, isVirtualSubfolder, pool)` function unifies all coverage detection:
+
+- **Physical ancestor** — a file path is implicitly covered if any checked entry is a path prefix of it.
+- **Virtual folder context** — a file shown inside a virtual folder view is implicitly covered if the viewed VF's ID (or any of its ancestors) is in `checkedFiles`.
+- **Virtual subfolder ancestry** — a virtual subfolder card is implicitly covered if any ancestor VF ID is in `checkedFiles`, detected by walking `parent_id` links.
+
+`getImplicitSelection` is a one-liner (`!!findImplicitCoverage(…)`) consumed by `DateGroup`, `FileCard`, and the subfolder card renderer in `Explorer.jsx`. `toggleCheck` also calls `findImplicitCoverage` so that clicking an implicitly-covered item **removes the covering parent** (instead of silently adding a redundant entry), with a toast message explaining the change.
+
+When selecting a physical **folder** (subfolder card checkbox), any more-specific children already individually checked are automatically deduplicated (removed) from `checkedFiles`.
+
+#### 10.9 Frontend UI (`Explorer.jsx`, `FolderTree.jsx`)
+
+**Left-pane tree** — `FolderTree.jsx` renders the virtual folder hierarchy alongside the physical directory tree. Each VF node shows its name and file count, and clicking navigates into it (sets `page='virtual_folder'`, `virtualFolderId`).
+
+**Right-pane subfolder grid** — when browsing a virtual folder, the top of the file list shows immediate child VFs as subfolder cards. Each card displays: folder icon, name, file/subfolder counts, a teal/blue checkbox (teal = implicitly covered by a parent selection), and a context menu for rename/delete/export.
+
+**Breadcrumb** — a path bar shows the ancestry chain of the current VF, with each segment clickable to navigate up.
+
+**Dynamic query badge** — VFs with an active `query` show a purple label and the query string, making Smart Folders visually distinct from manual folders.
+
+**Actions available on selected virtual folders** (via the selection action bar):
+- Add to another Virtual Folder (moves the VF hierarchy by copy)
+- Delete (removes the VF and its subtree; does **not** touch files on disk)
+- Export to disk (copies files replicating the VF tree structure)

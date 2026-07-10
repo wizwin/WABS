@@ -309,3 +309,16 @@ cursor:pointer;
   margin: 0;
   flex-shrink: 0;
 }
+
+.folder-cb {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease-in-out;
+}
+
+.subfolder-card-hover:hover .folder-cb,
+.folder-cb:checked,
+.has-selections .folder-cb {
+  opacity: 1;
+  pointer-events: auto;
+}
