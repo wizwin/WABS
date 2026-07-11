@@ -157,6 +157,7 @@ def graceful_os_shutdown():
             app_state.face_scanner_running,
             app_state.object_scanner_running,
             app_state.document_scanner_running,
+            app_state.STATE.get("export_running", False),
         ])
         if not is_running:
             break

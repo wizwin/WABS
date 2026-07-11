@@ -849,6 +849,14 @@ def export_virtual_folder(folder_id: int, req: ExportFolderRequest):
             
         export_root = os.path.join(target_path, folder.name)
         
+        from backend.app.state import STATE
+        STATE["export_running"] = True
+        STATE["export_folder_id"] = folder_id
+        STATE["export_current"] = 0
+        STATE["export_total"] = 0
+        STATE["export_current_file"] = ""
+        STATE["export_error"] = None
+        
         import threading
         t = threading.Thread(target=run_export_background, args=(folder_id, export_root), daemon=True)
         t.start()
