@@ -1169,40 +1169,90 @@ def import_folders(payload: list = Body(...)):
 
 @router.get("/system/export-all", dependencies=[Depends(lock_data_operation)])
 def export_all():
-    people_data = export_people()
-    with SessionLocal() as s:
-        folders_data = export_folders_internal(s)
-        tags_data = export_tags_internal(s)
-    return {
-        "people": people_data,
-        "folders": folders_data,
-        "tags": tags_data
-    }
+    from backend.app.config import load_config
+    cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info("Combined WABS export started.")
+    try:
+        people_data = export_people()
+        with SessionLocal() as s:
+            folders_data = export_folders_internal(s)
+            tags_data = export_tags_internal(s)
+        config_data = cfg
+        if cfg.get("enable_logging"):
+            import logging
+            logging.info("Combined WABS export completed successfully.")
+        return {
+            "people": people_data,
+            "folders": folders_data,
+            "tags": tags_data,
+            "config": config_data
+        }
+    except Exception as e:
+        if cfg.get("enable_logging"):
+            import logging
+            logging.error(f"Error during combined WABS export: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/system/import-all", dependencies=[Depends(lock_data_operation)])
 def import_all(payload: dict = Body(...)):
-    imported_people_count = 0
-    imported_faces_count = 0
-    
-    people_data = payload.get("people")
-    if people_data:
-        res = import_people(people_data)
-        imported_people_count = res.get("imported_people", 0)
-        imported_faces_count = res.get("imported_faces", 0)
+    from backend.app.config import load_config, save_config
+    cfg = load_config()
+    if cfg.get("enable_logging"):
+        import logging
+        logging.info("Combined WABS import started.")
+    try:
+        imported_people_count = 0
+        imported_faces_count = 0
+        config_imported = False
         
-    with SessionLocal() as s:
-        folders_data = payload.get("folders")
-        if folders_data:
-            import_folders_internal(s, folders_data)
+        people_data = payload.get("people")
+        if people_data:
+            res = import_people(people_data)
+            imported_people_count = res.get("imported_people", 0)
+            imported_faces_count = res.get("imported_faces", 0)
             
-        tags_data = payload.get("tags")
-        if tags_data:
-            import_tags_internal(s, tags_data)
+        with SessionLocal() as s:
+            folders_data = payload.get("folders")
+            if folders_data:
+                import_folders_internal(s, folders_data)
+                
+            tags_data = payload.get("tags")
+            if tags_data:
+                import_tags_internal(s, tags_data)
+                
+        config_data = payload.get("config")
+        if config_data:
+            current_cfg = load_config()
+            db_path = current_cfg.get("database_path")
+            thumb_path = current_cfg.get("thumbnail_path")
             
-    return {
-        "success": True,
-        "imported_people": imported_people_count,
-        "imported_faces": imported_faces_count,
-        "imported_folders": len(folders_data) if folders_data else 0,
-        "imported_tags": len(tags_data) if tags_data else 0
-    }
+            current_cfg.update(config_data)
+            
+            if db_path:
+                current_cfg["database_path"] = db_path
+            if thumb_path:
+                current_cfg["thumbnail_path"] = thumb_path
+                
+            save_config(current_cfg)
+            config_imported = True
+            
+        folders_count = len(folders_data) if folders_data else 0
+        tags_count = len(tags_data) if tags_data else 0
+        if cfg.get("enable_logging"):
+            import logging
+            logging.info(f"Combined WABS import completed successfully. Imported {imported_people_count} profiles, {imported_faces_count} faces, {folders_count} folders, {tags_count} tags, config_imported={config_imported}.")
+        return {
+            "success": True,
+            "imported_people": imported_people_count,
+            "imported_faces": imported_faces_count,
+            "imported_folders": folders_count,
+            "imported_tags": tags_count,
+            "config_imported": config_imported
+        }
+    except Exception as e:
+        if cfg.get("enable_logging"):
+            import logging
+            logging.error(f"Error during combined WABS import: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

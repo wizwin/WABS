@@ -19,6 +19,7 @@ import BookmarkIcon from '@mui/icons-material/Bookmark';
 import WorkIcon from '@mui/icons-material/Work';
 import PersonIcon from '@mui/icons-material/Person';
 import HomeIcon from '@mui/icons-material/Home';
+import RefreshIcon from '@mui/icons-material/Refresh';
 
 import { ActionButton } from '../components/ui/ActionButton';
 import { ProgressBar } from '../components/ui/ProgressBar';
@@ -95,7 +96,9 @@ export default function VirtualFolders(props) {
     setFilterCategory,
     sortBy,
     sortOrder,
-    indexer
+    indexer,
+    virtualFolderCounts,
+    fetchFolderCount
   } = props;
 
   const { animationsEnabled } = useContext(SettingsContext);
@@ -112,38 +115,11 @@ export default function VirtualFolders(props) {
   const [selectedColor, setSelectedColor] = useState('#3b82f6');
   const [selectedIcon, setSelectedIcon] = useState('folder');
 
-  // Lazy file counts: keyed by folder id, populated asynchronously via /virtual-folders/{id}/count.
-  // This avoids running expensive recursive DB queries in the main list endpoint on every startup.
-  const [folderCounts, setFolderCounts] = useState({});
-
   useEffect(() => {
     if (page === 'virtual_folders' && loadVirtualFolders) {
       loadVirtualFolders();
     }
   }, [page]);
-
-  // When the VirtualFolders page opens, fetch file counts for ALL folders in parallel.
-  // Counts are fetched lazily here (not at startup) to avoid the memory spike from recursive queries.
-  // All folders (root and subfolders) are included so every card shows its correct file count.
-  useEffect(() => {
-    if (page !== 'virtual_folders') return;
-    const allFolderIds = (virtualFolders || []).map(f => f.id);
-    if (allFolderIds.length === 0) return;
-
-    // Reset counts for the current folder list
-    setFolderCounts({});
-
-    // Fetch each folder's count independently so UI updates progressively as each one arrives
-    allFolderIds.forEach(id => {
-      axios.get(`${API}/virtual-folders/${id}/count`)
-        .then(r => {
-          setFolderCounts(prev => ({ ...prev, [id]: r.data.file_count }));
-        })
-        .catch(() => {
-          // Silently ignore on error — count will remain '…' rather than showing a wrong value
-        });
-    });
-  }, [page, virtualFolders]);
 
   if (page !== 'virtual_folders') return null;
 
@@ -292,8 +268,67 @@ export default function VirtualFolders(props) {
                 </h3>
 
                 <p style={{ margin: '0 0 6px 0', fontSize: '13px', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  {/* file_count is null from the list endpoint; resolved lazily via /count */}
-                  <span style={{ color: '#38bdf8', fontWeight: 'bold' }}>{folderCounts[folder.id] ?? '…'}</span> file{(folderCounts[folder.id] ?? 2) !== 1 ? 's' : ''}
+                  {(() => {
+                    const count = virtualFolderCounts[folder.id];
+                    if (count === 'loading') {
+                      return (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#94a3b8' }}>
+                          <RefreshIcon 
+                            style={{ 
+                              fontSize: '14px', 
+                              color: '#38bdf8', 
+                              animation: 'spin 1s linear infinite' 
+                            }} 
+                          />
+                          loading...
+                        </span>
+                      );
+                    }
+                    if (count === undefined || count === null) {
+                      return (
+                        <span 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            fetchFolderCount(folder.id);
+                          }}
+                          title="Click to load file count"
+                          style={{ 
+                            cursor: 'pointer', 
+                            color: '#38bdf8', 
+                            display: 'inline-flex', 
+                            alignItems: 'center', 
+                            gap: '2px',
+                            background: 'rgba(56, 189, 248, 0.1)',
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            fontWeight: 'bold'
+                          }}
+                        >
+                          <RefreshIcon style={{ fontSize: '12px' }} /> Load Count
+                        </span>
+                      );
+                    }
+                    return (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                        <span style={{ color: '#38bdf8', fontWeight: 'bold' }}>{count}</span>
+                        <span>file{count !== 1 ? 's' : ''}</span>
+                        <RefreshIcon 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            fetchFolderCount(folder.id);
+                          }}
+                          title="Refresh count"
+                          style={{ 
+                            fontSize: '12px', 
+                            color: '#64748b', 
+                            cursor: 'pointer',
+                            marginLeft: '2px'
+                          }} 
+                        />
+                      </span>
+                    );
+                  })()}
                   <span style={{ color: '#64748b' }}>•</span>
                   <span style={{ color: '#10b981', fontWeight: 'bold' }}>{subCount}</span> subfolder{subCount !== 1 ? 's' : ''}
                 </p>
@@ -356,6 +391,14 @@ export default function VirtualFolders(props) {
 
   return (
     <div style={{ padding: '20px', overflowY: 'auto', height: '100%' }}>
+      <style>
+        {`
+          @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+          }
+        `}
+      </style>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
         <div>
           <h1 style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: 0, marginBottom: '8px', fontSize: '28px', color: '#f8fafc', fontWeight: '700' }}>

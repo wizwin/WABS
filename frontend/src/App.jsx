@@ -44,6 +44,7 @@ const [isShuttingDown, setIsShuttingDown] = useState(false)
 const [toastMessage, setToastMessage] = useState('');
 const [showToast, setShowToast] = useState(false);
 const [toastAction, setToastAction] = useState(null);
+const [toastType, setToastType] = useState('success');
 const toastTimeoutRef = useRef(null);
 const wasRunningRef = useRef(false);
 const [suggestionsData, setSuggestionsData] = useState({ type: 'none', suggestions: [], lastWord: '' });
@@ -69,15 +70,17 @@ const [testingAI, setTestingAI] = useState(false);
 const [aiSearchPrompt, setAiSearchPrompt] = useState('');
 const [generatingSearch, setGeneratingSearch] = useState(false);
 
-const showToastMessage = (message, action = null) => {
+const showToastMessage = (message, action = null, type = 'success') => {
   setToastMessage(message);
   setToastAction(action);
+  setToastType(type);
   setShowToast(true);
   if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
   toastTimeoutRef.current = setTimeout(() => {
     setShowToast(false);
     setToastMessage('');
     setToastAction(null);
+    setToastType('success');
   }, action ? 6000 : 3000);
 };
 
@@ -340,7 +343,7 @@ async function testAIConnection() {
     const r = await axios.post(`${API}/system/test-ai`, payload);
     showToastMessage(`Success! Model replied: ${r.data.reply}`);
   } catch (err) {
-    alert(`Connection failed: ${err?.response?.data?.detail || err.message}`);
+    showToastMessage(`Connection failed: ${err?.response?.data?.detail || err.message}`, null, 'error');
   } finally {
     setTestingAI(false);
   }
@@ -792,7 +795,7 @@ function renderValue(value){
     viewType, setViewType: changeViewType,
     sidebarWidth, setSidebarWidth, timelineWidth, setTimelineWidth, detailsWidth, setDetailsWidth,
     isResizing, setIsResizing,
-    showSearchHelp, setShowSearchHelp, toastMessage, setToastMessage, showToast, setShowToast,
+    showSearchHelp, setShowSearchHelp, toastMessage, setToastMessage, showToast, setShowToast, toastType, setToastType,
     suggestionsData, setSuggestionsData, focusedSuggestionIndex, setFocusedSuggestionIndex,
     combinedOptions, setCombinedOptions, settingsTab, setSettingsTab, testingAI, setTestingAI, aiSearchPrompt, setAiSearchPrompt,
     generatingSearch, setGeneratingSearch, actionInProgress, setActionInProgress, dataOpProgress, setDataOpProgress,
@@ -835,7 +838,7 @@ export default function App() {
     showSidebar, setShowSidebar, showTimeline, setShowTimeline, showTreeView, setShowTreeView, showDetails, setShowDetails,
     viewType, setViewType,
     sidebarWidth, setSidebarWidth, timelineWidth, setTimelineWidth, detailsWidth, setDetailsWidth,
-    showSearchHelp, setShowSearchHelp, toastMessage, setToastMessage, showToast, setShowToast,
+    showSearchHelp, setShowSearchHelp, toastMessage, setToastMessage, showToast, setShowToast, toastType, setToastType,
     suggestionsData, setSuggestionsData, focusedSuggestionIndex, setFocusedSuggestionIndex,
     combinedOptions, setCombinedOptions, settingsTab, setSettingsTab, testingAI, setTestingAI, aiSearchPrompt, setAiSearchPrompt,
     generatingSearch, setGeneratingSearch, isFindingSimilar, setIsFindingSimilar, actionInProgress, setActionInProgress, dataOpProgress, setDataOpProgress,
@@ -1146,7 +1149,7 @@ export default function App() {
     position: 'fixed',
     bottom: '24px',
     right: '24px',
-    background: '#10b981',
+    background: toastType === 'error' ? '#ef4444' : '#10b981',
     color: '#ffffff',
     padding: '12px 24px',
     borderRadius: '8px',

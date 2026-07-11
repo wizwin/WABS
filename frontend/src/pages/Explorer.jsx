@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState, useMemo } from 'react';
 import axios from 'axios';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import FolderIcon from '@mui/icons-material/Folder';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import SettingsIcon from '@mui/icons-material/Settings';
 import AddToFolderModal from '../components/ui/AddToFolderModal';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
@@ -50,6 +51,9 @@ export default function Explorer(props) {
     deleteVirtualFolder, renameVirtualFolder, updateVirtualFolderQuery,
     addFilesToVirtualFolder, removeFilesFromVirtualFolder,
     setVirtualFolderId, setCurrentVirtualFolder, setPage, handleOpenFolder,
+    virtualFolderCounts, fetchFolderCount,
+    virtualFolderViewType, setVirtualFolderViewType,
+    folderTreeScrollTopRef, timelineScrollTopRef,
 
     // Navigation props
     activeFolderPath, navigateToPhys, canGoBack, canGoForward, canGoUp,
@@ -57,6 +61,7 @@ export default function Explorer(props) {
   } = props;
 
   const isPhys = page !== 'virtual_folder';
+  const activeViewType = page === 'virtual_folder' ? virtualFolderViewType : viewType;
   const [isAddToFolderOpen, setIsAddToFolderOpen] = useState(false);
   const [isSelectionListOpen, setIsSelectionListOpen] = useState(false);
   const [isLocateMenuOpen, setIsLocateMenuOpen] = useState(false);
@@ -81,7 +86,7 @@ export default function Explorer(props) {
 
   // Filtered files for physical tree path
   const displayedFiles = useMemo(() => {
-    if (viewType === 'flat' || page === 'virtual_folder' || page === 'search') {
+    if (activeViewType === 'flat' || page === 'virtual_folder' || page === 'search') {
       return sortedFiles || [];
     }
     const cleanActive = activeFolderPath ? activeFolderPath.replace(/\\/g, '/').toLowerCase() : null;
@@ -95,7 +100,7 @@ export default function Explorer(props) {
       const fileParent = cleanFile.substring(0, lastSlash).toLowerCase();
       return cleanActive !== null && fileParent === cleanActive;
     });
-  }, [sortedFiles, activeFolderPath, viewType, page]);
+  }, [sortedFiles, activeFolderPath, activeViewType, page]);
 
   // Grouped files for display
   const displayedGroupedFiles = useMemo(() => {
@@ -392,10 +397,23 @@ export default function Explorer(props) {
         (page==='explorer' || page==='search' || page==='virtual_folder') &&
         <div className='explorer'>
 
-        {viewType === 'tree' ? (
+        {activeViewType === 'tree' ? (
         showTreeView && (
         <>
-        <div className='timeline' style={{ width: timelineWidth, position: 'relative' }}>
+        <div 
+          className='timeline' 
+          style={{ width: timelineWidth, position: 'relative' }}
+          onScroll={(e) => {
+            if (folderTreeScrollTopRef) {
+              folderTreeScrollTopRef.current = e.currentTarget.scrollTop;
+            }
+          }}
+          ref={(el) => {
+            if (el && folderTreeScrollTopRef) {
+              el.scrollTop = folderTreeScrollTopRef.current;
+            }
+          }}
+        >
           <FolderTree 
             page={page}
             setPage={setPage}
@@ -417,7 +435,20 @@ export default function Explorer(props) {
         ) : (
         showTimeline && (
         <>
-        <div className='timeline' style={{ width: timelineWidth, position: 'relative' }}>
+        <div 
+          className='timeline' 
+          style={{ width: timelineWidth, position: 'relative' }}
+          onScroll={(e) => {
+            if (timelineScrollTopRef) {
+              timelineScrollTopRef.current = e.currentTarget.scrollTop;
+            }
+          }}
+          ref={(el) => {
+            if (el && timelineScrollTopRef) {
+              el.scrollTop = timelineScrollTopRef.current;
+            }
+          }}
+        >
         {timelineItems.length > 0 && (
             <ActionButton
             className="btn btn-secondary"
@@ -662,22 +693,22 @@ export default function Explorer(props) {
         <div style={{ flex: 1 }}></div>
 
         <div style={{ display: 'flex', gap: '4px', background: '#111827', padding: '4px', borderRadius: '8px', marginRight: '6px' }}>
-            <ActionButton 
-            className=""
-            onClick={() => setViewType('flat')} 
-            style={{ padding: '6px 10px', background: viewType === 'flat' ? '#3b82f6' : 'transparent', color: viewType === 'flat' ? 'white' : '#94a3b8', borderRadius: '6px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 'bold' }}
-            title="Flat View"
-            >
-            <TableRowsIcon style={{ fontSize: '16px' }} /> Flat
-            </ActionButton>
-            <ActionButton 
-            className=""
-            onClick={() => setViewType('tree')} 
-            style={{ padding: '6px 10px', background: viewType === 'tree' ? '#3b82f6' : 'transparent', color: viewType === 'tree' ? 'white' : '#94a3b8', borderRadius: '6px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 'bold' }}
-            title="Tree View"
-            >
-            <AccountTreeIcon style={{ fontSize: '16px' }} /> Tree
-            </ActionButton>
+             <ActionButton 
+             className=""
+             onClick={() => page === 'virtual_folder' ? setVirtualFolderViewType('flat') : setViewType('flat')} 
+             style={{ padding: '6px 10px', background: activeViewType === 'flat' ? '#3b82f6' : 'transparent', color: activeViewType === 'flat' ? 'white' : '#94a3b8', borderRadius: '6px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 'bold' }}
+             title="Flat View"
+             >
+             <TableRowsIcon style={{ fontSize: '16px' }} /> Flat
+             </ActionButton>
+             <ActionButton 
+             className=""
+             onClick={() => page === 'virtual_folder' ? setVirtualFolderViewType('tree') : setViewType('tree')} 
+             style={{ padding: '6px 10px', background: activeViewType === 'tree' ? '#3b82f6' : 'transparent', color: activeViewType === 'tree' ? 'white' : '#94a3b8', borderRadius: '6px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 'bold' }}
+             title="Tree View"
+             >
+             <AccountTreeIcon style={{ fontSize: '16px' }} /> Tree
+             </ActionButton>
         </div>
 
         <div style={{ display: 'flex', gap: '4px', background: '#111827', padding: '4px', borderRadius: '8px' }}>
@@ -1008,7 +1039,7 @@ export default function Explorer(props) {
             )}
 
         <div className={`content ${checkedFiles.size > 0 ? 'has-selections' : ''}`} onScroll={handleScroll} style={{ paddingTop: '18px' }}>
-        {viewType === 'tree' && (
+        {(activeViewType === 'tree' || page === 'virtual_folder') && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '0 20px 14px 20px', borderBottom: '1px solid #1f2937', marginBottom: '18px' }}>
             <div style={{ display: 'flex', gap: '6px' }}>
               <ActionButton 
@@ -1167,7 +1198,7 @@ export default function Explorer(props) {
                         showToastMessage(r.data.message || "Folder exported successfully!");
                       } catch (err) {
                         alert("Export failed: " + (err.response?.data?.detail || err.message));
-                        showToastMessage("Export failed.");
+                        showToastMessage("Export failed.", null, 'error');
                       }
                     }}
                   >
@@ -1193,7 +1224,7 @@ export default function Explorer(props) {
           </div>
         )}
 
-        {viewType === 'tree' && page !== 'virtual_folder' && directSubfolders.length > 0 && (
+        {activeViewType === 'tree' && page !== 'virtual_folder' && directSubfolders.length > 0 && (
           <div style={{ padding: '0 20px', marginBottom: '24px' }}>
             <h3 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 'bold' }}>Folders</h3>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '12px' }}>
@@ -1239,7 +1270,7 @@ export default function Explorer(props) {
 
         {(() => {
           const currentSubfolders = (virtualFolders || []).filter(f => f.parent_id === virtualFolderId);
-          if (page === 'virtual_folder' && viewType === 'tree') {
+          if (page === 'virtual_folder' && activeViewType === 'tree') {
             return (
               <div style={{ padding: '0 20px', marginBottom: '24px' }}>
                 <style>
@@ -1251,6 +1282,10 @@ export default function Explorer(props) {
                       border-color: #3b82f6 !important;
                       background-color: #1e293b !important;
                       transform: translateY(-2px);
+                    }
+                    @keyframes spin {
+                      from { transform: rotate(0deg); }
+                      to { transform: rotate(360deg); }
                     }
                   `}
                 </style>
@@ -1290,7 +1325,67 @@ export default function Explorer(props) {
                       <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
                         <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#f8fafc' }} title={sub.name}>{sub.name}</div>
                         <div style={{ fontSize: '11px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <span>{sub.file_count || 0} file{sub.file_count !== 1 ? 's' : ''}</span>
+                          {(() => {
+                            const count = virtualFolderCounts[sub.id];
+                            if (count === 'loading') {
+                              return (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', color: '#94a3b8' }}>
+                                  <RefreshIcon 
+                                    style={{ 
+                                      fontSize: '12px', 
+                                      color: '#3b82f6', 
+                                      animation: 'spin 1s linear infinite' 
+                                    }} 
+                                  />
+                                  loading...
+                                </span>
+                              );
+                            }
+                            if (count === undefined || count === null) {
+                              return (
+                                <span 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    fetchFolderCount(sub.id);
+                                  }}
+                                  title="Click to load file count"
+                                  style={{ 
+                                    cursor: 'pointer', 
+                                    color: '#3b82f6', 
+                                    display: 'inline-flex', 
+                                    alignItems: 'center', 
+                                    gap: '2px',
+                                    background: 'rgba(59, 130, 246, 0.1)',
+                                    padding: '1px 5px',
+                                    borderRadius: '3px',
+                                    fontSize: '10px',
+                                    fontWeight: 'bold'
+                                  }}
+                                >
+                                  <RefreshIcon style={{ fontSize: '11px' }} /> Load
+                                </span>
+                              );
+                            }
+                            return (
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                                <span style={{ color: '#3b82f6', fontWeight: 'bold' }}>{count}</span>
+                                <span>file{count !== 1 ? 's' : ''}</span>
+                                <RefreshIcon 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    fetchFolderCount(sub.id);
+                                  }}
+                                  title="Refresh count"
+                                  style={{ 
+                                    fontSize: '11px', 
+                                    color: '#64748b', 
+                                    cursor: 'pointer',
+                                    marginLeft: '1px'
+                                  }} 
+                                />
+                              </span>
+                            );
+                          })()}
                           {sub.query && (
                             <>
                               <span style={{ color: '#475569' }}>•</span>

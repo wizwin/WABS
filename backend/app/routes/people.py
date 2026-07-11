@@ -754,6 +754,14 @@ def rename_person(person_id: int, payload: dict = Body(...)):
         new_ident = new_name if (new_name and not new_name.startswith("Unknown Person")) else person_id
         _sync_people_preferences([person_id, old_name], new_ident, action="rename")
         
+    if old_name and not old_name.startswith("Unknown Person"):
+        with SessionLocal() as s:
+            pattern = f"%{old_name}%"
+            matching_files = s.query(FileIndex.id).filter(FileIndex.tags.like(pattern)).all()
+            extra_ids = [f[0] for f in matching_files]
+            if extra_ids:
+                file_ids = list(set(file_ids + extra_ids))
+
     if file_ids:
         with SessionLocal() as s:
             for i in range(0, len(file_ids), 900):
@@ -763,13 +771,44 @@ def rename_person(person_id: int, payload: dict = Body(...)):
                 files_to_update = s.query(FileIndex.id, FileIndex.tags).filter(FileIndex.id.in_(chunk)).all()
                 mappings = []
                 for f_id, tags in files_to_update:
+                    if not tags:
+                        continue
                     current_tags_set = parse_tags(tags)
-                    if old_name and not old_name.startswith("Unknown Person"):
-                        current_tags_set.discard(f"person:{old_name}")
+                    updated_tags_set = set()
+                    
+                    old_name_lower = old_name.lower() if old_name else ""
+                    old_person_tag_lower = f"person:{old_name_lower}" if old_name_lower else ""
+                    
+                    for t in current_tags_set:
+                        t_lower = t.lower()
+                        if old_name_lower and (t_lower == old_name_lower or t_lower == old_person_tag_lower):
+                            if new_name and not new_name.startswith("Unknown Person"):
+                                if t_lower == old_person_tag_lower:
+                                    updated_tags_set.add(f"person:{new_name}")
+                                else:
+                                    updated_tags_set.add(new_name)
+                        elif ' ' in t:
+                            words = t.split()
+                            new_words = []
+                            for w in words:
+                                w_lower = w.lower()
+                                if old_name_lower and w_lower == old_name_lower:
+                                    if new_name and not new_name.startswith("Unknown Person"):
+                                        new_words.append(new_name)
+                                elif old_name_lower and w_lower == old_person_tag_lower:
+                                    if new_name and not new_name.startswith("Unknown Person"):
+                                        new_words.append(f"person:{new_name}")
+                                else:
+                                    new_words.append(w)
+                            if new_words:
+                                updated_tags_set.add(" ".join(new_words))
+                        else:
+                            updated_tags_set.add(t)
+                            
                     if new_name and not new_name.startswith("Unknown Person"):
-                        current_tags_set.add(f"person:{new_name}")
+                        updated_tags_set.add(f"person:{new_name}")
                         
-                    new_tags_str = ",".join(sorted(current_tags_set))
+                    new_tags_str = ",".join(sorted(updated_tags_set))
                     if new_tags_str != tags:
                         mappings.append({"id": f_id, "tags": new_tags_str})
                 if mappings:
@@ -824,6 +863,14 @@ def delete_person(person_id: int):
     _sync_people_preferences([person_id, old_name], action="delete")
         
     # Clean up any tags from the main index
+    if old_name and not old_name.startswith("Unknown Person"):
+        with SessionLocal() as s:
+            pattern = f"%{old_name}%"
+            matching_files = s.query(FileIndex.id).filter(FileIndex.tags.like(pattern)).all()
+            extra_ids = [f[0] for f in matching_files]
+            if extra_ids:
+                file_ids = list(set(file_ids + extra_ids))
+
     if file_ids and old_name and not old_name.startswith("Unknown Person"):
         with SessionLocal() as s:
             for i in range(0, len(file_ids), 900):
@@ -835,8 +882,24 @@ def delete_person(person_id: int):
                 for f_id, tags in files_to_update:
                     if tags:
                         current_tags_set = parse_tags(tags)
-                        current_tags_set.discard(f"person:{old_name}")
-                        new_tags_str = ",".join(sorted(current_tags_set))
+                        updated_tags_set = set()
+                        
+                        old_name_lower = old_name.lower()
+                        old_person_tag_lower = f"person:{old_name_lower}"
+                        
+                        for t in current_tags_set:
+                            t_lower = t.lower()
+                            if t_lower == old_name_lower or t_lower == old_person_tag_lower:
+                                continue
+                            elif ' ' in t:
+                                words = t.split()
+                                new_words = [w for w in words if w.lower() != old_name_lower and w.lower() != old_person_tag_lower]
+                                if new_words:
+                                    updated_tags_set.add(" ".join(new_words))
+                            else:
+                                updated_tags_set.add(t)
+                                
+                        new_tags_str = ",".join(sorted(updated_tags_set))
                         if new_tags_str != tags:
                             mappings.append({"id": f_id, "tags": new_tags_str})
                 if mappings:

@@ -60,6 +60,8 @@ export function useExplorer({
   });
   const prevViewType = useRef(viewType);
   const prevPage = useRef(page);
+  const folderTreeScrollTopRef = useRef(0);
+  const timelineScrollTopRef = useRef(0);
 
   // Physical Navigation states
   const [activeFolderPath, setActiveFolderPath] = useState(null);
@@ -133,6 +135,24 @@ export function useExplorer({
   const [virtualFolderId, setVirtualFolderId] = useState(null);
   const [currentVirtualFolder, setCurrentVirtualFolder] = useState(null);
   const [virtualFolders, setVirtualFolders] = useState([]);
+  const [virtualFolderViewType, setVirtualFolderViewType] = useState('tree');
+  // Lazy file counts: keyed by folder id. Populated on-demand via fetchFolderCount.
+  const [virtualFolderCounts, setVirtualFolderCounts] = useState({});
+
+  const fetchFolderCount = (id) => {
+    setVirtualFolderCounts(prev => ({ ...prev, [id]: 'loading' }));
+    axios.get(`${API}/virtual-folders/${id}/count`)
+      .then(r => {
+        setVirtualFolderCounts(prev => ({ ...prev, [id]: r.data.file_count }));
+      })
+      .catch(() => {
+        setVirtualFolderCounts(prev => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+      });
+  };
 
   const handleOpenFolder = (folder) => {
     setVirtualFolderId(folder.id);
@@ -163,13 +183,15 @@ export function useExplorer({
 
   const goBackVirt = () => {
     if (virtHistoryIdx > 0) {
-      const idx = virtHistoryIdx - 1;
-      setVirtHistoryIdx(idx);
+      const prevIdx = virtHistoryIdx - 1;
+      const prevFolderId = virtHistory[prevIdx];
+      const prevFolder = (virtualFolders || []).find(f => f.id === prevFolderId);
       setIsNavigatingVirt(true);
-      const targetId = virtHistory[idx];
-      if (targetId) {
-        const folder = (virtualFolders || []).find(f => f.id === targetId);
-        if (folder) handleOpenFolder(folder);
+      setVirtHistoryIdx(prevIdx);
+      setVirtualFolderId(prevFolderId);
+      setCurrentVirtualFolder(prevFolder || null);
+      if (prevFolderId) {
+        loadFiles(0, false, filterCategory, sortBy, sortOrder, 'virtual_folder', prevFolderId);
       } else {
         setPage('virtual_folders');
       }
@@ -178,22 +200,29 @@ export function useExplorer({
 
   const goForwardVirt = () => {
     if (virtHistoryIdx < virtHistory.length - 1) {
-      const idx = virtHistoryIdx + 1;
-      setVirtHistoryIdx(idx);
+      const nextIdx = virtHistoryIdx + 1;
+      const nextFolderId = virtHistory[nextIdx];
+      const nextFolder = (virtualFolders || []).find(f => f.id === nextFolderId);
       setIsNavigatingVirt(true);
-      const targetId = virtHistory[idx];
-      if (targetId) {
-        const folder = (virtualFolders || []).find(f => f.id === targetId);
-        if (folder) handleOpenFolder(folder);
+      setVirtHistoryIdx(nextIdx);
+      setVirtualFolderId(nextFolderId);
+      setCurrentVirtualFolder(nextFolder || null);
+      if (nextFolderId) {
+        loadFiles(0, false, filterCategory, sortBy, sortOrder, 'virtual_folder', nextFolderId);
+      } else {
+        setPage('virtual_folders');
       }
     }
   };
 
   const goUpVirt = () => {
     if (currentVirtualFolder) {
-      if (currentVirtualFolder.parent_id) {
-        const parent = (virtualFolders || []).find(f => f.id === currentVirtualFolder.parent_id);
-        if (parent) handleOpenFolder(parent);
+      const parentId = currentVirtualFolder.parent_id;
+      const parent = parentId ? (virtualFolders || []).find(f => f.id === parentId) : null;
+      setVirtualFolderId(parentId);
+      setCurrentVirtualFolder(parent);
+      if (parentId) {
+        loadFiles(0, false, filterCategory, sortBy, sortOrder, 'virtual_folder', parentId);
       } else {
         setPage('virtual_folders');
       }
@@ -341,7 +370,7 @@ export function useExplorer({
     const oldPage = prevPage.current;
     const newPage = page;
     const oldView = prevViewType.current;
-    const newView = viewType;
+    const newView = page === 'virtual_folder' ? virtualFolderViewType : viewType;
 
     if (oldPage === newPage && oldView === newView) return;
 
@@ -355,7 +384,13 @@ export function useExplorer({
         files: files,
         offset: offset,
         startOffset: startOffset,
-        hasMore: hasMore
+        hasMore: hasMore,
+        // Store parameters to validate cache status on next restore
+        filterCategory: filterCategory,
+        sortBy: sortBy,
+        sortOrder: sortOrder,
+        activeFolderPath: activeFolderPath,
+        virtualFolderId: virtualFolderId
       };
     }
 
@@ -363,35 +398,59 @@ export function useExplorer({
       const newCacheKey = `${newPage}_${newView}`;
       const ctx = viewContexts.current[newCacheKey];
 
+      // Check if the cached parameters match our current view parameters
+      const isCacheValid = ctx && 
+        ctx.filterCategory === filterCategory &&
+        ctx.sortBy === sortBy &&
+        ctx.sortOrder === sortOrder &&
+        ctx.activeFolderPath === activeFolderPath &&
+        ctx.virtualFolderId === virtualFolderId;
+
       // Tree-view files are folder-specific. Cached files may belong to a different
       // folder than the one currently active, and the cached startOffset may be
       // non-zero (from a previous pagination session in that folder). Always force a
       // fresh load so that startOffset is reset to 0 and the correct folder is shown.
       const isTreeSwitch = newPage === 'explorer' && newView === 'tree';
 
-      setFiles(ctx.files);
-      setOffset(ctx.offset);
-      setStartOffset(isTreeSwitch ? 0 : ctx.startOffset); // reset startOffset for tree
-      setHasMore(ctx.hasMore);
+      if (isCacheValid && !isTreeSwitch) {
+        setFiles(ctx.files);
+        setOffset(ctx.offset);
+        setStartOffset(ctx.startOffset);
+        setHasMore(ctx.hasMore);
 
-      prevPage.current = newPage;
-      prevViewType.current = newView;
-
-      if (ctx.files.length === 0 || isTreeSwitch) {
-        loadFiles(0, false, filterCategory, sortBy, sortOrder, newPage, virtualFolderId, newView, activeFolderPath);
+        prevPage.current = newPage;
+        prevViewType.current = newView;
       } else {
-        setTimeout(() => {
-          const container = document.querySelector('.content');
-          if (container) {
-            container.scrollTop = ctx.scrollTop;
-          }
-        }, 120);
+        // Cache is stale/invalid or we are switching to Explorer Tree: reset states and force reload
+        setFiles([]);
+        setOffset(0);
+        setStartOffset(0);
+        setHasMore(true);
+
+        prevPage.current = newPage;
+        prevViewType.current = newView;
+
+        loadFiles(0, false, filterCategory, sortBy, sortOrder, newPage, virtualFolderId, newView, activeFolderPath);
       }
     } else {
       prevPage.current = newPage;
       prevViewType.current = newView;
     }
-  }, [viewType, page]);
+  }, [viewType, virtualFolderViewType, page]);
+
+  // Robust Content Pane Scroll Restorer:
+  // Fires when files/directories update and render in the DOM to ensure stable height.
+  useEffect(() => {
+    const container = document.querySelector('.content');
+    if (container) {
+      const activeView = page === 'virtual_folder' ? virtualFolderViewType : viewType;
+      const cacheKey = `${page}_${activeView}`;
+      const ctx = viewContexts.current[cacheKey];
+      if (ctx && ctx.scrollTop) {
+        container.scrollTop = ctx.scrollTop;
+      }
+    }
+  }, [files, directories, page, viewType, virtualFolderViewType]);
 
   useEffect(() => {
     viewContexts.current.explorer_tree = {
@@ -455,19 +514,25 @@ export function useExplorer({
   }, [checkedFiles, settings]);
 
   // Loads files in chunks from the backend with AbortController query cancellation support.
-  async function loadFiles(nextOffset = 0, append = false, cat = filterCategory, sBy = sortBy, sOrd = sortOrder, customPage = page, customFolderId = virtualFolderId, customViewType = viewType, customActiveFolder = activeFolderPath) {
+  async function loadFiles(nextOffset = 0, append = false, cat = filterCategory, sBy = sortBy, sOrd = sortOrder, customPage = page, customFolderId = virtualFolderId, customViewType = undefined, customActiveFolder = activeFolderPath) {
     if (loadFilesAbortController.current) {
       loadFilesAbortController.current.abort();
     }
     loadFilesAbortController.current = new AbortController();
     const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
     const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
+
+    // Resolve active view type context-based
+    const activeView = customViewType !== undefined 
+      ? customViewType 
+      : (customPage === 'virtual_folder' ? virtualFolderViewType : viewType);
+
     try {
       let url = `${API}/files?category=${cat}&offset=${nextOffset}&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
       if (customPage === 'virtual_folder' && customFolderId) {
-        const isRec = customViewType === 'flat';
+        const isRec = activeView === 'flat';
         url = `${API}/virtual-folders/${customFolderId}/files?category=${cat}&offset=${nextOffset}&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}&recursive=${isRec}`;
-      } else if (customViewType === 'tree' && customPage !== 'virtual_folder') {
+      } else if (activeView === 'tree' && customPage !== 'virtual_folder') {
         const folderParam = customActiveFolder ? encodeURIComponent(customActiveFolder) : 'root';
         url = `${API}/files?category=${cat}&offset=${nextOffset}&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}&folder=${folderParam}`;
       }
@@ -1191,7 +1256,12 @@ export function useExplorer({
           startOffset: targetStartOffset,
           offset: targetStartOffset + r.data.length,
           hasMore: r.data.length === limit,
-          scrollTop: 0
+          scrollTop: 0,
+          filterCategory: 'all',
+          sortBy: sortBy,
+          sortOrder: sortOrder,
+          activeFolderPath: null,
+          virtualFolderId: null
         };
       } catch (err) {
         console.warn("Failed to pre-load flat files", err);
@@ -1205,7 +1275,7 @@ export function useExplorer({
         const res = await axios.get(`${API}/files/${file.id}/virtual-folders`);
         const matchedFolders = res.data || [];
         if (matchedFolders.length === 0) {
-          showToastMessage("File is not in any virtual folder.");
+          showToastMessage("File is not in any virtual folder.", null, 'error');
           return;
         }
         const targetFolder = matchedFolders[0];
@@ -1229,7 +1299,12 @@ export function useExplorer({
             startOffset: targetStartOffset,
             offset: targetStartOffset + r.data.length,
             hasMore: r.data.length === limit,
-            scrollTop: 0
+            scrollTop: 0,
+            filterCategory: 'all',
+            sortBy: sortBy,
+            sortOrder: sortOrder,
+            activeFolderPath: activeFolderPath,
+            virtualFolderId: targetFolder.id
           };
         } catch (err) {
           console.warn("Failed to pre-load virtual folder files", err);
@@ -1287,20 +1362,38 @@ export function useExplorer({
     setCheckedFiles(new Set());
     setSelected(null);
 
-    setFilterCategory(val);
-    setVirtualFolderId(null);
-    setCurrentVirtualFolder(null);
-    setPage('explorer');
-    
-    if (val === 'duplicates') {
-      setSortBy('size');
-      setSortOrder('desc');
+    if (val.startsWith('virtual_folder_')) {
+      const vfId = parseInt(val.replace('virtual_folder_', ''), 10);
+      const folder = (virtualFolders || []).find(f => f.id === vfId);
+      setPage('virtual_folder');
+      setVirtualFolderId(vfId);
+      setCurrentVirtualFolder(folder);
+      
+      const activeViewType = virtualFolderViewType;
+      loadFiles(0, false, filterCategory, sortBy, sortOrder, 'virtual_folder', vfId, activeViewType);
+    } else {
+      setFilterCategory(val);
+      
+      if (val === 'duplicates') {
+        setSortBy('size');
+        setSortOrder('desc');
+      }
+
+      const activeSortBy = val === 'duplicates' ? 'size' : sortBy;
+      const activeSortOrder = val === 'duplicates' ? 'desc' : sortOrder;
+
+      if (page === 'virtual_folder' && virtualFolderId) {
+        // Keep in the current virtual folder
+        const activeViewType = virtualFolderViewType;
+        loadFiles(0, false, val, activeSortBy, activeSortOrder, 'virtual_folder', virtualFolderId, activeViewType);
+      } else {
+        // Go to explorer/search
+        setVirtualFolderId(null);
+        setCurrentVirtualFolder(null);
+        setPage('explorer');
+        loadFiles(0, false, val, activeSortBy, activeSortOrder, 'explorer', null);
+      }
     }
-
-    const activeSortBy = val === 'duplicates' ? 'size' : sortBy;
-    const activeSortOrder = val === 'duplicates' ? 'desc' : sortOrder;
-
-    loadFiles(0, false, val, activeSortBy, activeSortOrder, 'explorer', null);
   };
   
   const handleCategoryClick = (category) => {
@@ -1515,9 +1608,14 @@ export function useExplorer({
           const payload = JSON.parse(event.target.result);
           if (typeof payload !== 'object' || Array.isArray(payload)) throw new Error("Invalid WABS backup JSON format");
           const r = await axios.post(`${API}/system/import-all`, payload);
-          showToastMessage(`Successfully imported: ${r.data.imported_people} profiles, ${r.data.imported_faces} faces, ${r.data.imported_folders} folders, and ${r.data.imported_tags} file tags.`);
+          showToastMessage(`Successfully imported: ${r.data.imported_people} profiles, ${r.data.imported_faces} faces, ${r.data.imported_folders} folders, ${r.data.imported_tags} file tags${r.data.config_imported ? ', and configuration settings' : ''}.`);
           loadVirtualFolders();
           if (window.loadPeople) window.loadPeople();
+          if (r.data.config_imported) {
+            setTimeout(() => {
+              window.location.reload();
+            }, 2000);
+          }
         } catch (err) {
           alert('Error importing WABS data: ' + (err?.response?.data?.detail || err.message));
         } finally {
@@ -1556,6 +1654,9 @@ export function useExplorer({
     virtualFolders, setVirtualFolders, loadVirtualFolders, createVirtualFolder,
     deleteVirtualFolder, renameVirtualFolder, updateVirtualFolderQuery,
     addFilesToVirtualFolder, removeFilesFromVirtualFolder, handleOpenFolder,
+    virtualFolderCounts, fetchFolderCount,
+    virtualFolderViewType, setVirtualFolderViewType,
+    folderTreeScrollTopRef, timelineScrollTopRef,
     
     // Data Management
     exportVirtualFolders, importVirtualFolders, exportAllWabs, importAllWabs

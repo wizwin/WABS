@@ -1,6 +1,6 @@
 # WABS Changelog
 
-## v1.0.2
+## v1.2.0
 
 ### 🚀 Major New Features & Enhancements
 *   **Settings Tab Layout Optimization:** Reordered the Settings tabs to make the "Backups" (locations) tab the second option and the "Data Management" tab the last option, improving the default settings setup and configuration flow.
