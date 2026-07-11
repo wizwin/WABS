@@ -597,12 +597,70 @@ export default function Explorer(props) {
         )}
 
         {page === 'virtual_folder' && currentVirtualFolder && indexer && indexer.export_running && indexer.export_folder_id === currentVirtualFolder.id && (
-          <div style={{ margin: '14px 20px 0 20px', padding: '12px 16px', background: '#1e293b', borderRadius: '8px', border: '1px solid #334155' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#f8fafc', fontWeight: 'bold', marginBottom: '6px' }}>
-              <span>Exporting Virtual Folder...</span>
-              <span style={{ color: '#94a3b8' }}>{indexer.export_current_file || ''}</span>
+          <div style={{ 
+            margin: '16px 20px 0 20px', 
+            padding: '16px', 
+            background: 'rgba(30, 41, 59, 0.7)', 
+            backdropFilter: 'blur(8px)',
+            borderRadius: '12px', 
+            border: '1px solid #334155',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+              <span style={{ fontSize: '14px', color: '#f8fafc', fontWeight: '600', letterSpacing: '0.3px' }}>
+                Exporting Folder
+              </span>
+              <button 
+                style={{ 
+                  background: 'rgba(239, 68, 68, 0.1)', 
+                  color: '#ef4444', 
+                  border: '1px solid rgba(239, 68, 68, 0.2)', 
+                  borderRadius: '6px', 
+                  padding: '4px 10px', 
+                  fontSize: '11px', 
+                  cursor: 'pointer',
+                  fontWeight: '600',
+                  transition: 'all 0.2s'
+                }}
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (confirm("Are you sure you want to cancel the export?")) {
+                    try {
+                      await axios.post(`${API}/system/cancel-data-operation`);
+                    } catch(err) {
+                      console.error(err);
+                    }
+                  }
+                }}
+              >
+                Cancel Export
+              </button>
             </div>
+            
             <ProgressBar current={indexer.export_current} total={indexer.export_total} color="#10b981" />
+            
+            {indexer.export_current_file && (
+              <div style={{ 
+                marginTop: '8px', 
+                fontSize: '11px', 
+                color: '#94a3b8', 
+                display: 'flex', 
+                justifyContent: 'space-between',
+                gap: '12px'
+              }}>
+                <span style={{ 
+                  overflow: 'hidden', 
+                  textOverflow: 'ellipsis', 
+                  whiteSpace: 'nowrap',
+                  maxWidth: '70%' 
+                }}>
+                  Copying: {indexer.export_current_file}
+                </span>
+                <span style={{ fontWeight: '500', color: '#38bdf8' }}>
+                  {indexer.export_current} / {indexer.export_total} files
+                </span>
+              </div>
+            )}
           </div>
         )}
         <div className='sort-options' style={{ padding: '18px 18px 10px 18px', margin: 0, borderBottom: checkedFiles.size > 0 ? 'none' : '1px solid #1f2937' }}>

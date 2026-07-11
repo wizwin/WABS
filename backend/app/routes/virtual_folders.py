@@ -618,67 +618,84 @@ def get_virtual_folder_files(
 
     def generate():
         with SessionLocal() as s:
-            if recursive:
-                combined_ids = get_virtual_folder_file_ids_recursive(s, folder_id)
-            else:
-                combined_ids = get_virtual_folder_file_ids(s, folder_id)
-            if not combined_ids:
-                yield "[]"
-                return
-            
-            q_base = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
-            q = q_base.filter(FileIndex.id.in_(combined_ids))
-
-            # Apply category filtering
-            if category != "all":
-                if category == "other":
-                    q = q.filter(~FileIndex.category.in_(STANDARD_CATEGORIES))
-                elif category == "duplicates":
-                    dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
-                    q = q.filter(FileIndex.size.in_(dup_sizes))
-                    q = q.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
-                elif category == "searchable_documents":
-                    q = q.filter(FileIndex.category.in_(SEARCHABLE_DOCUMENT_CATEGORIES), text("files.id IN (SELECT file_id FROM processed_text)"))
-                elif category == "tagged_objects":
-                    q = q.filter(FileIndex.tags.like('%object:%'))
-                elif category == "untagged":
-                    q = q.filter(FileIndex.category == 'photo', (FileIndex.tags.is_(None) | (FileIndex.tags == '') | (~FileIndex.tags.like('%object:%') & ~FileIndex.tags.like('%person:%') & ~FileIndex.tags.like('%ocr%'))))
+            try:
+                if recursive:
+                    combined_ids = get_virtual_folder_file_ids_recursive(s, folder_id)
                 else:
-                    q = q.filter(FileIndex.category == category)
+                    combined_ids = get_virtual_folder_file_ids(s, folder_id)
+                if not combined_ids:
+                    yield "[]"
+                    return
+                
+                # Use a temp table to avoid "too many SQL variables" sqlite error for large folders
+                s.execute(text("CREATE TEMP TABLE IF NOT EXISTS temp_combined_ids (id INTEGER PRIMARY KEY)"))
+                s.execute(text("DELETE FROM temp_combined_ids"))
+                
+                id_list = list(combined_ids)
+                for i in range(0, len(id_list), 900):
+                    chunk = id_list[i:i+900]
+                    placeholders = ",".join(f"({x})" for x in chunk)
+                    s.execute(text(f"INSERT INTO temp_combined_ids (id) VALUES {placeholders}"))
+                
+                q_base = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
+                q = q_base.filter(text("files.id IN (SELECT id FROM temp_combined_ids)"))
 
-            # Apply sorting
-            if category != "duplicates":
-                if sort_by == "date":
-                    order_expr = "coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))"
-                    if sort_order == "asc":
-                        q = q.order_by(text(f"{order_expr} ASC"), FileIndex.id)
+                # Apply category filtering
+                if category != "all":
+                    if category == "other":
+                        q = q.filter(~FileIndex.category.in_(STANDARD_CATEGORIES))
+                    elif category == "duplicates":
+                        dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
+                        q = q.filter(FileIndex.size.in_(dup_sizes))
+                        q = q.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
+                    elif category == "searchable_documents":
+                        q = q.filter(FileIndex.category.in_(SEARCHABLE_DOCUMENT_CATEGORIES), text("files.id IN (SELECT file_id FROM processed_text)"))
+                    elif category == "tagged_objects":
+                        q = q.filter(FileIndex.tags.like('%object:%'))
+                    elif category == "untagged":
+                        q = q.filter(FileIndex.category == 'photo', (FileIndex.tags.is_(None) | (FileIndex.tags == '') | (~FileIndex.tags.like('%object:%') & ~FileIndex.tags.like('%person:%') & ~FileIndex.tags.like('%ocr%'))))
                     else:
-                        q = q.order_by(text(f"{order_expr} DESC"), FileIndex.id)
-                elif sort_by == "size":
-                    if sort_order == "asc":
-                        q = q.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id)
-                    else:
-                        q = q.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id)
-                elif sort_by == "filename":
-                    if sort_order == "asc":
-                        q = q.order_by(FileIndex.filename.asc(), FileIndex.id)
-                    else:
-                        q = q.order_by(FileIndex.filename.desc(), FileIndex.id)
-                elif sort_by == "extension":
-                    if sort_order == "asc":
-                        q = q.order_by(FileIndex.extension.asc(), FileIndex.id)
-                    else:
-                        q = q.order_by(FileIndex.extension.desc(), FileIndex.id)
+                        q = q.filter(FileIndex.category == category)
 
-            yield "["
-            first = True
-            for r in q.offset(offset).limit(limit).yield_per(1000):
-                if shared_state.APP_SHUTTING_DOWN:
-                    break
-                if not first: yield ","
-                first = False
-                yield json.dumps(_build_item(r, cache_flag))
-            yield "]"
+                # Apply sorting
+                if category != "duplicates":
+                    if sort_by == "date":
+                        order_expr = "coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))"
+                        if sort_order == "asc":
+                            q = q.order_by(text(f"{order_expr} ASC"), FileIndex.id)
+                        else:
+                            q = q.order_by(text(f"{order_expr} DESC"), FileIndex.id)
+                    elif sort_by == "size":
+                        if sort_order == "asc":
+                            q = q.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id)
+                        else:
+                            q = q.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id)
+                    elif sort_by == "filename":
+                        if sort_order == "asc":
+                            q = q.order_by(FileIndex.filename.asc(), FileIndex.id)
+                        else:
+                            q = q.order_by(FileIndex.filename.desc(), FileIndex.id)
+                    elif sort_by == "extension":
+                        if sort_order == "asc":
+                            q = q.order_by(FileIndex.extension.asc(), FileIndex.id)
+                        else:
+                            q = q.order_by(FileIndex.extension.desc(), FileIndex.id)
+
+                yield "["
+                first = True
+                for r in q.offset(offset).limit(limit).yield_per(1000):
+                    if shared_state.APP_SHUTTING_DOWN:
+                        break
+                    if not first: yield ","
+                    first = False
+                    yield json.dumps(_build_item(r, cache_flag))
+                yield "]"
+            finally:
+                try:
+                    s.execute(text("DROP TABLE IF EXISTS temp_combined_ids"))
+                    s.commit()
+                except Exception:
+                    pass
 
     return StreamingResponse(generate(), media_type="application/json")
 
@@ -733,7 +750,11 @@ def get_folder_files_internal(s, folder_id: int):
     if not combined_ids:
         return []
         
-    return s.query(FileIndex).filter(FileIndex.id.in_(combined_ids)).all()
+    results = []
+    for i in range(0, len(combined_ids), 900):
+        chunk = combined_ids[i:i+900]
+        results.extend(s.query(FileIndex).filter(FileIndex.id.in_(chunk)).all())
+    return results
 
 def count_folder_files_recursive(s, folder_id: int) -> int:
     descendant_ids = get_folder_and_descendants_ids(s, folder_id)
@@ -748,6 +769,8 @@ def run_export_background(folder_id: int, target_root: str):
     import backend.app.shared_state as shared_state
     
     try:
+        STATE["export_error"] = ""
+        STATE["cancel_data_operation"] = False
         with SessionLocal() as s:
             folder = s.get(VirtualFolder, folder_id)
             if not folder:
@@ -766,6 +789,8 @@ def run_export_background(folder_id: int, target_root: str):
                 
                 files = get_folder_files_internal(s, folder_obj.id)
                 for f in files:
+                    if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
+                        return False
                     if os.path.exists(f.path):
                         try:
                             STATE["export_current_file"] = os.path.basename(f.path)
@@ -789,11 +814,16 @@ def run_export_background(folder_id: int, target_root: str):
                 children = s.query(VirtualFolder).filter(VirtualFolder.parent_id == folder_obj.id).all()
                 for child in children:
                     child_target = os.path.join(current_target, child.name)
-                    export_recurse(child, child_target)
+                    if not export_recurse(child, child_target):
+                        return False
+                return True
             
-            export_recurse(folder, target_root)
+            success = export_recurse(folder, target_root)
+            if not success:
+                STATE["export_error"] = "Cancelled"
             
     except Exception as e:
+        STATE["export_error"] = str(e)
         if shared_state.LOGGING_ENABLED:
             logging.error(f"Failed exporting virtual folder {folder_id}: {e}", exc_info=True)
         else:
@@ -838,151 +868,174 @@ def search_virtual_folder_internal(query: str = "", category: str = "all", offse
 
     def generate():
         with SessionLocal() as s:
-            descendant_ids = get_folder_and_descendants_ids(s, virtual_folder_id)
-            q_base = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
-            folder_file_ids = get_virtual_folder_file_ids_recursive(s, virtual_folder_id)
-            q_base = q_base.filter(FileIndex.id.in_(folder_file_ids))
-
-            if category != "all":
-                if category == "other":
-                    q_base = q_base.filter(~FileIndex.category.in_(STANDARD_CATEGORIES))
-                elif category == "duplicates":
-                    dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
-                    q_base = q_base.filter(FileIndex.size.in_(dup_sizes))
-                    q_base = q_base.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
-                elif category == "searchable_documents":
-                    q_base = q_base.filter(FileIndex.category.in_(SEARCHABLE_DOCUMENT_CATEGORIES), text("files.id IN (SELECT file_id FROM processed_text)"))
-                elif category == "tagged_objects":
-                    q_base = q_base.filter(FileIndex.tags.like('%object:%'))
+            try:
+                descendant_ids = get_folder_and_descendants_ids(s, virtual_folder_id)
+                q_base = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
+                folder_file_ids = get_virtual_folder_file_ids_recursive(s, virtual_folder_id)
+                
+                if folder_file_ids:
+                    s.execute(text("CREATE TEMP TABLE IF NOT EXISTS temp_search_ids (id INTEGER PRIMARY KEY)"))
+                    s.execute(text("DELETE FROM temp_search_ids"))
+                    
+                    id_list = list(folder_file_ids)
+                    for i in range(0, len(id_list), 900):
+                        chunk = id_list[i:i+900]
+                        placeholders = ",".join(f"({x})" for x in chunk)
+                        s.execute(text(f"INSERT INTO temp_search_ids (id) VALUES {placeholders}"))
+                    
+                    q_base = q_base.filter(text("files.id IN (SELECT id FROM temp_search_ids)"))
                 else:
-                    q_base = q_base.filter(FileIndex.category == category)
+                    q_base = q_base.filter(text("1 = 0"))
 
-            if category != "duplicates":
-                if sort_by == "date":
-                    order_expr = "coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))"
-                    if sort_order == "asc":
-                        q_base = q_base.order_by(text(f"{order_expr} ASC"), FileIndex.id)
+                if category != "all":
+                    if category == "other":
+                        q_base = q_base.filter(~FileIndex.category.in_(STANDARD_CATEGORIES))
+                    elif category == "duplicates":
+                        dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
+                        q_base = q_base.filter(FileIndex.size.in_(dup_sizes))
+                        q_base = q_base.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
+                    elif category == "searchable_documents":
+                        q_base = q_base.filter(FileIndex.category.in_(SEARCHABLE_DOCUMENT_CATEGORIES), text("files.id IN (SELECT file_id FROM processed_text)"))
+                    elif category == "tagged_objects":
+                        q_base = q_base.filter(FileIndex.tags.like('%object:%'))
                     else:
-                        q_base = q_base.order_by(text(f"{order_expr} DESC"), FileIndex.id)
-                elif sort_by == "size":
-                    if sort_order == "asc":
-                        q_base = q_base.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id)
-                    else:
-                        q_base = q_base.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id)
-                elif sort_by == "filename":
-                    if sort_order == "asc":
-                        q_base = q_base.order_by(FileIndex.filename.asc(), FileIndex.id)
-                    else:
-                        q_base = q_base.order_by(FileIndex.filename.desc(), FileIndex.id)
-                elif sort_by == "extension":
-                    if sort_order == "asc":
-                        q_base = q_base.order_by(FileIndex.extension.asc(), FileIndex.id)
-                    else:
-                        q_base = q_base.order_by(FileIndex.extension.desc(), FileIndex.id)
+                        q_base = q_base.filter(FileIndex.category == category)
 
-            q_clean = query.strip()
+                if category != "duplicates":
+                    if sort_by == "date":
+                        order_expr = "coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))"
+                        if sort_order == "asc":
+                            q_base = q_base.order_by(text(f"{order_expr} ASC"), FileIndex.id)
+                        else:
+                            q_base = q_base.order_by(text(f"{order_expr} DESC"), FileIndex.id)
+                    elif sort_by == "size":
+                        if sort_order == "asc":
+                            q_base = q_base.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id)
+                        else:
+                            q_base = q_base.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id)
+                    elif sort_by == "filename":
+                        if sort_order == "asc":
+                            q_base = q_base.order_by(FileIndex.filename.asc(), FileIndex.id)
+                        else:
+                            q_base = q_base.order_by(FileIndex.filename.desc(), FileIndex.id)
+                    elif sort_by == "extension":
+                        if sort_order == "asc":
+                            q_base = q_base.order_by(FileIndex.extension.asc(), FileIndex.id)
+                        else:
+                            q_base = q_base.order_by(FileIndex.extension.desc(), FileIndex.id)
 
-            def yield_folders():
-                matching_folders = s.query(VirtualFolder).filter(
-                    VirtualFolder.id.in_(descendant_ids),
-                    VirtualFolder.name.like(f"%{q_clean}%")
-                ).all()
-                yield "["
-                first = True
-                for f in matching_folders[offset : offset + limit]:
-                    if not first: yield ","
-                    first = False
-                    combined_ids = get_virtual_folder_file_ids_recursive(s, f.id)
-                    file_count = len(combined_ids)
-                    color = '#3b82f6'
-                    if f.metadata_json:
+                q_clean = query.strip()
+
+                def yield_folders():
+                    matching_folders = s.query(VirtualFolder).filter(
+                        VirtualFolder.id.in_(descendant_ids),
+                        VirtualFolder.name.like(f"%{q_clean}%")
+                    ).all()
+                    yield "["
+                    first = True
+                    for f in matching_folders[offset : offset + limit]:
+                        if not first: yield ","
+                        first = False
+                        combined_ids = get_virtual_folder_file_ids_recursive(s, f.id)
+                        file_count = len(combined_ids)
+                        color = '#3b82f6'
+                        if f.metadata_json:
+                            try:
+                                meta = json.loads(f.metadata_json)
+                                if meta.get("color"):
+                                    color = meta["color"]
+                                elif meta.get("color_hsl"):
+                                    color = meta["color_hsl"]
+                            except Exception:
+                                pass
+                        folder_item = {
+                            "id": f.id,
+                            "name": f.name,
+                            "parent_id": f.parent_id,
+                            "filename": f.name,
+                            "path": "",
+                            "category": "virtual_folder",
+                            "size": 0,
+                            "modified": f.created_at or "",
+                            "extension": "folder",
+                            "tags": "",
+                            "metadata": _parse_json(f.metadata_json),
+                            "is_folder": True,
+                            "color": color,
+                            "file_count": file_count
+                        }
+                        yield json.dumps(folder_item)
+                    yield "]"
+
+                if not q_clean:
+                    file_list = q_base.offset(offset).limit(limit).all()
+                    if not file_list:
+                        for chunk in yield_folders():
+                            yield chunk
+                        return
+
+                    yield "["
+                    first = True
+                    for r in file_list:
+                        if not first: yield ","
+                        first = False
+                        yield json.dumps(_build_item(r, cache_flag))
+                    yield "]"
+                    return
+
+                file_results = []
+                regex = _parse_regex_pattern(q_clean)
+                if regex:
+                    for r in q_base.yield_per(1000):
+                        haystack = f"{r.filename or ''} {r.path or ''} {r.tags or ''} {r.metadata_json or ''}"
+                        if regex.search(haystack):
+                            file_results.append(r)
+                elif any(prefix in q_clean.lower() for prefix in SEARCH_PREFIXES) or "*" in q_clean or q_clean.startswith("-") or " -" in q_clean or q_clean.startswith("+") or " +" in q_clean:
+                    q = _build_search_query(q_clean, s, q_base)
+                    file_results = q.all()
+                else:
+                    safe_query = q_clean.replace('"', '""').replace("'", "''")
+                    fts_terms = [f'"{word}" *' for word in safe_query.split() if word]
+                    if fts_terms:
+                        fts_query = " AND ".join(fts_terms)
                         try:
-                            meta = json.loads(f.metadata_json)
-                            if meta.get("color"):
-                                color = meta["color"]
-                            elif meta.get("color_hsl"):
-                                color = meta["color_hsl"]
+                            matching_ids = s.execute(
+                                text("""
+                                SELECT rowid FROM files_fts WHERE files_fts MATCH :q
+                                UNION
+                                SELECT file_id FROM file_text_fts WHERE file_text_fts MATCH :q
+                                LIMIT 1000
+                                """),
+                                {"q": fts_query}
+                            ).scalars().all()
+                            if matching_ids:
+                                rows = []
+                                for chunk_start in range(0, len(matching_ids), 900):
+                                    chunk_ids = matching_ids[chunk_start:chunk_start+900]
+                                    rows.extend(q_base.filter(FileIndex.id.in_(chunk_ids)).all())
+                                id_to_row = {r.id: r for r in rows}
+                                file_results = [id_to_row[i] for i in matching_ids if i in id_to_row]
                         except Exception:
-                            pass
-                    folder_item = {
-                        "id": f.id,
-                        "name": f.name,
-                        "parent_id": f.parent_id,
-                        "filename": f.name,
-                        "path": "",
-                        "category": "virtual_folder",
-                        "size": 0,
-                        "modified": f.created_at or "",
-                        "extension": "folder",
-                        "tags": "",
-                        "metadata": _parse_json(f.metadata_json),
-                        "is_folder": True,
-                        "color": color,
-                        "file_count": file_count
-                    }
-                    yield json.dumps(folder_item)
-                yield "]"
+                            file_results = []
 
-            if not q_clean:
-                file_list = q_base.offset(offset).limit(limit).all()
-                if not file_list:
+                if not file_results:
                     for chunk in yield_folders():
                         yield chunk
                     return
 
                 yield "["
                 first = True
-                for r in file_list:
+                for r in file_results[offset : offset + limit]:
                     if not first: yield ","
                     first = False
                     yield json.dumps(_build_item(r, cache_flag))
                 yield "]"
-                return
-
-            file_results = []
-            regex = _parse_regex_pattern(q_clean)
-            if regex:
-                for r in q_base.yield_per(1000):
-                    haystack = f"{r.filename or ''} {r.path or ''} {r.tags or ''} {r.metadata_json or ''}"
-                    if regex.search(haystack):
-                        file_results.append(r)
-            elif any(prefix in q_clean.lower() for prefix in SEARCH_PREFIXES) or "*" in q_clean or q_clean.startswith("-") or " -" in q_clean or q_clean.startswith("+") or " +" in q_clean:
-                q = _build_search_query(q_clean, s, q_base)
-                file_results = q.all()
-            else:
-                safe_query = q_clean.replace('"', '""').replace("'", "''")
-                fts_terms = [f'"{word}" *' for word in safe_query.split() if word]
-                if fts_terms:
-                    fts_query = " AND ".join(fts_terms)
-                    try:
-                        matching_ids = s.execute(
-                            text("""
-                            SELECT rowid FROM files_fts WHERE files_fts MATCH :q
-                            UNION
-                            SELECT file_id FROM file_text_fts WHERE file_text_fts MATCH :q
-                            LIMIT 1000
-                            """),
-                            {"q": fts_query}
-                        ).scalars().all()
-                        if matching_ids:
-                            rows = q_base.filter(FileIndex.id.in_(matching_ids)).all()
-                            id_to_row = {r.id: r for r in rows}
-                            file_results = [id_to_row[i] for i in matching_ids if i in id_to_row]
-                    except Exception:
-                        file_results = []
-
-            if not file_results:
-                for chunk in yield_folders():
-                    yield chunk
-                return
-
-            yield "["
-            first = True
-            for r in file_results[offset : offset + limit]:
-                if not first: yield ","
-                first = False
-                yield json.dumps(_build_item(r, cache_flag))
-            yield "]"
+            finally:
+                try:
+                    s.execute(text("DROP TABLE IF EXISTS temp_search_ids"))
+                    s.commit()
+                except Exception:
+                    pass
 
     return StreamingResponse(generate(), media_type="application/json")
 

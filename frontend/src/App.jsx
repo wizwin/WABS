@@ -28,7 +28,7 @@ const [page,setPage]=useState('dashboard')
 const [query,setQuery]=useState('')
 const [settings,setSettings]=useState({})
 const [stats,setStats]=useState({total:0,photos:0,videos:0,audio:0,documents:0,ebooks:0,code:0,fonts:0,databases:0,compressed:0,installers:0,binaries:0,others:0,duplicates:0,searchable_documents:0,tagged_objects:0,untagged_media:0})
-const [indexer,setIndexer]=useState({running:false,paused:false,stopped:false,current:0,total:0,current_file:'',status:'Idle',indexed:0,face_scanner_running:false,object_scanner_running:false,document_scanner_running:false,hasher_running:false,hasher_current:0,hasher_total:0,face_scanner_current:0,face_scanner_total:0,object_scanner_current:0,object_scanner_total:0,document_scanner_current:0,document_scanner_total:0})
+const [indexer,setIndexer]=useState({running:false,paused:false,stopped:false,current:0,total:0,current_file:'',status:'Idle',indexed:0,face_scanner_running:false,object_scanner_running:false,document_scanner_running:false,hasher_running:false,hasher_current:0,hasher_total:0,face_scanner_current:0,face_scanner_total:0,object_scanner_current:0,object_scanner_total:0,document_scanner_current:0,document_scanner_total:0,export_running:false,export_folder_id:null,export_total:0,export_current:0,export_current_file:'',export_error:''})
 const [showSidebar, setShowSidebar] = useState(true)
 const [showTimeline, setShowTimeline] = useState(true)
 const [showTreeView, setShowTreeView] = useState(true)
@@ -47,6 +47,7 @@ const [toastAction, setToastAction] = useState(null);
 const [toastType, setToastType] = useState('success');
 const toastTimeoutRef = useRef(null);
 const wasRunningRef = useRef(false);
+const wasExportingRef = useRef(false);
 const [suggestionsData, setSuggestionsData] = useState({ type: 'none', suggestions: [], lastWord: '' });
 const suggestionTimeout = useRef(null);
 const searchContainerRef = useRef(null);
@@ -691,7 +692,7 @@ useEffect(() => {
     if (isMounted) timeoutId = setTimeout(poll, delay);
   };
 
-  if ((indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.combined_scanner_running || indexer.data_operation_running) && !indexer.paused) {
+  if ((indexer.running || indexer.hasher_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.combined_scanner_running || indexer.data_operation_running || indexer.export_running) && !indexer.paused) {
     wasRunningRef.current = true;
     timeoutId = setTimeout(poll, 1000);
   } else {
@@ -705,7 +706,20 @@ useEffect(() => {
     }
   }
   return () => { isMounted = false; clearTimeout(timeoutId); };
-}, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, indexer.document_scanner_running, indexer.combined_scanner_running, indexer.data_operation_running, indexer.paused, page]);
+}, [indexer.running, indexer.hasher_running, indexer.face_scanner_running, indexer.object_scanner_running, indexer.document_scanner_running, indexer.combined_scanner_running, indexer.data_operation_running, indexer.export_running, indexer.paused, page]);
+
+useEffect(() => {
+  if (indexer.export_running) {
+    wasExportingRef.current = true;
+  } else if (wasExportingRef.current) {
+    wasExportingRef.current = false;
+    if (indexer.export_error) {
+      showToastMessage(`Export failed: ${indexer.export_error}`, null, 'error');
+    } else {
+      showToastMessage('Export completed successfully!');
+    }
+  }
+}, [indexer.export_running, indexer.export_error]);
 
 function getOfflinePlaceholder(text, bgColor, textColor) {
   const key = `${text}-${bgColor}-${textColor}`;

@@ -40,7 +40,8 @@ STATE = {
     "export_folder_id": None,
     "export_total": 0,
     "export_current": 0,
-    "export_current_file": ""
+    "export_current_file": "",
+    "export_error": ""
 }
 
 scanner_lock = threading.Lock()

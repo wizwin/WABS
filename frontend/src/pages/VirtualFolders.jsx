@@ -98,7 +98,9 @@ export default function VirtualFolders(props) {
     sortOrder,
     indexer,
     virtualFolderCounts,
-    fetchFolderCount
+    fetchFolderCount,
+    loadAllFolderCounts,
+    loadingAllCounts
   } = props;
 
   const { animationsEnabled } = useContext(SettingsContext);
@@ -245,12 +247,53 @@ export default function VirtualFolders(props) {
               )}
 
               {indexer && indexer.export_running && indexer.export_folder_id === folder.id && (
-                <div style={{ marginBottom: '12px', padding: '8px 12px', background: '#1e293b', borderRadius: '8px', border: '1px solid #334155' }} onClick={(e) => e.stopPropagation()}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#f8fafc', fontWeight: 'bold', marginBottom: '4px' }}>
-                    <span>Exporting Folder...</span>
-                    <span style={{ color: '#94a3b8' }}>{indexer.export_current_file || ''}</span>
+                <div style={{ 
+                  marginBottom: '14px', 
+                  padding: '12px', 
+                  background: 'rgba(30, 41, 59, 0.8)', 
+                  borderRadius: '10px', 
+                  border: '1px solid #334155' 
+                }} onClick={(e) => e.stopPropagation()}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '12px', color: '#f8fafc', fontWeight: '600' }}>Exporting...</span>
+                    <button 
+                      style={{ 
+                        background: 'rgba(239, 68, 68, 0.1)', 
+                        color: '#ef4444', 
+                        border: '1px solid rgba(239, 68, 68, 0.2)', 
+                        borderRadius: '4px', 
+                        padding: '2px 8px', 
+                        fontSize: '10px', 
+                        cursor: 'pointer',
+                        fontWeight: '600'
+                      }}
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (confirm("Are you sure you want to cancel the export?")) {
+                          try {
+                            await axios.post(`${API}/system/cancel-data-operation`);
+                          } catch(err) {
+                            console.error(err);
+                          }
+                        }
+                      }}
+                    >
+                      Cancel
+                    </button>
                   </div>
                   <ProgressBar current={indexer.export_current} total={indexer.export_total} color="#10b981" />
+                  {indexer.export_current_file && (
+                    <div style={{ 
+                      marginTop: '6px', 
+                      fontSize: '10px', 
+                      color: '#94a3b8', 
+                      overflow: 'hidden', 
+                      textOverflow: 'ellipsis', 
+                      whiteSpace: 'nowrap' 
+                    }}>
+                      {indexer.export_current_file}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -409,27 +452,56 @@ export default function VirtualFolders(props) {
           </p>
         </div>
 
-        <button 
-          onClick={handleCreateRoot}
-          disabled={indexer && indexer.export_running}
-          style={{
-            background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
-            border: 'none',
-            color: 'white',
-            borderRadius: '10px',
-            padding: '10px 20px',
-            cursor: indexer && indexer.export_running ? 'not-allowed' : 'pointer',
-            fontSize: '15px',
-            fontWeight: 'bold',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            boxShadow: '0 4px 14px 0 rgba(139, 92, 246, 0.4)',
-            opacity: indexer && indexer.export_running ? 0.5 : 1
-          }}
-        >
-          <AddIcon style={{ fontSize: '20px' }} /> New Folder
-        </button>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <button 
+            onClick={loadAllFolderCounts}
+            disabled={(indexer && indexer.export_running) || loadingAllCounts}
+            style={{
+              background: '#1e293b',
+              border: '1px solid #334155',
+              color: '#38bdf8',
+              borderRadius: '10px',
+              padding: '10px 16px',
+              cursor: ((indexer && indexer.export_running) || loadingAllCounts) ? 'not-allowed' : 'pointer',
+              fontSize: '14px',
+              fontWeight: 'bold',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              opacity: ((indexer && indexer.export_running) || loadingAllCounts) ? 0.5 : 1
+            }}
+          >
+            <RefreshIcon 
+              style={{ 
+                fontSize: '18px', 
+                animation: loadingAllCounts ? 'spin 1s linear infinite' : 'none' 
+              }} 
+            /> 
+            {loadingAllCounts ? 'Loading Counts...' : 'Load All Counts'}
+          </button>
+
+          <button 
+            onClick={handleCreateRoot}
+            disabled={indexer && indexer.export_running}
+            style={{
+              background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
+              border: 'none',
+              color: 'white',
+              borderRadius: '10px',
+              padding: '10px 20px',
+              cursor: indexer && indexer.export_running ? 'not-allowed' : 'pointer',
+              fontSize: '15px',
+              fontWeight: 'bold',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              boxShadow: '0 4px 14px 0 rgba(139, 92, 246, 0.4)',
+              opacity: indexer && indexer.export_running ? 0.5 : 1
+            }}
+          >
+            <AddIcon style={{ fontSize: '20px' }} /> New Folder
+          </button>
+        </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>

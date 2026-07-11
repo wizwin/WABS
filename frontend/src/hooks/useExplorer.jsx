@@ -138,12 +138,14 @@ export function useExplorer({
   const [virtualFolderViewType, setVirtualFolderViewType] = useState('tree');
   // Lazy file counts: keyed by folder id. Populated on-demand via fetchFolderCount.
   const [virtualFolderCounts, setVirtualFolderCounts] = useState({});
+  const [loadingAllCounts, setLoadingAllCounts] = useState(false);
 
   const fetchFolderCount = (id) => {
     setVirtualFolderCounts(prev => ({ ...prev, [id]: 'loading' }));
-    axios.get(`${API}/virtual-folders/${id}/count`)
+    return axios.get(`${API}/virtual-folders/${id}/count`)
       .then(r => {
         setVirtualFolderCounts(prev => ({ ...prev, [id]: r.data.file_count }));
+        return r.data.file_count;
       })
       .catch(() => {
         setVirtualFolderCounts(prev => {
@@ -151,7 +153,29 @@ export function useExplorer({
           delete next[id];
           return next;
         });
+        return null;
       });
+  };
+
+  const refreshFolderAndAncestorsCount = (folderId) => {
+    if (!folderId) return;
+    fetchFolderCount(folderId);
+    const folder = (virtualFolders || []).find(f => f.id === folderId);
+    if (folder && folder.parent_id) {
+      refreshFolderAndAncestorsCount(folder.parent_id);
+    }
+  };
+
+  const loadAllFolderCounts = async () => {
+    if (!virtualFolders || virtualFolders.length === 0) return;
+    setLoadingAllCounts(true);
+    try {
+      for (const folder of virtualFolders) {
+        await fetchFolderCount(folder.id);
+      }
+    } finally {
+      setLoadingAllCounts(false);
+    }
   };
 
   const handleOpenFolder = (folder) => {
@@ -266,6 +290,12 @@ export function useExplorer({
         metadata_json: metadataJson
       });
       await loadVirtualFolders();
+      if (r.data?.id) {
+        fetchFolderCount(r.data.id);
+      }
+      if (parentId) {
+        refreshFolderAndAncestorsCount(parentId);
+      }
       return r.data;
     } catch (err) {
       alert('Failed to create virtual folder: ' + (err.response?.data?.detail || err.message));
@@ -275,9 +305,17 @@ export function useExplorer({
   async function deleteVirtualFolder(folderId) {
     try {
       const folderToDelete = (virtualFolders || []).find(f => f.id === folderId);
+      const parentId = folderToDelete?.parent_id;
       await axios.delete(`${API}/virtual-folders/${folderId}`);
+      setVirtualFolderCounts(prev => {
+        const next = { ...prev };
+        delete next[folderId];
+        return next;
+      });
+      if (parentId) {
+        refreshFolderAndAncestorsCount(parentId);
+      }
       if (virtualFolderId === folderId) {
-        const parentId = folderToDelete?.parent_id;
         const parent = parentId ? (virtualFolders || []).find(f => f.id === parentId) : null;
         if (parent) {
           setVirtualFolderId(parent.id);
@@ -319,6 +357,7 @@ export function useExplorer({
         setCurrentVirtualFolder(r.data);
       }
       await loadVirtualFolders();
+      refreshFolderAndAncestorsCount(folderId);
     } catch (err) {
       alert('Failed to update folder query: ' + (err.response?.data?.detail || err.message));
     }
@@ -329,6 +368,7 @@ export function useExplorer({
       const r = await axios.post(`${API}/virtual-folders/${folderId}/files`, { file_ids: fileIds, paths: paths });
       showToastMessage(`Successfully added ${r.data.added} file(s) to virtual folder.`);
       await loadVirtualFolders();
+      refreshFolderAndAncestorsCount(folderId);
       if (virtualFolderId === folderId) {
         setCheckedFiles(new Set());
         await loadFiles(0, false, filterCategory, sortBy, sortOrder);
@@ -344,6 +384,7 @@ export function useExplorer({
       await axios.delete(`${API}/virtual-folders/${folderId}/files`, { data: { file_ids: fileIds, paths: paths } });
       showToastMessage(`Removed file(s) from virtual folder.`);
       await loadVirtualFolders();
+      refreshFolderAndAncestorsCount(folderId);
       setCheckedFiles(new Set());
       await loadFiles(0, false, filterCategory, sortBy, sortOrder);
     } catch (err) {
@@ -1657,6 +1698,7 @@ export function useExplorer({
     virtualFolderCounts, fetchFolderCount,
     virtualFolderViewType, setVirtualFolderViewType,
     folderTreeScrollTopRef, timelineScrollTopRef,
+    loadAllFolderCounts, loadingAllCounts,
     
     // Data Management
     exportVirtualFolders, importVirtualFolders, exportAllWabs, importAllWabs
