@@ -1254,6 +1254,9 @@ export default function Explorer(props) {
                         showToastMessage("Exporting folder...");
                         const r = await axios.post(`${API}/virtual-folders/${currentVirtualFolder.id}/export`, { target_path: targetPath.trim() });
                         showToastMessage(r.data.message || "Folder exported successfully!");
+                        if (props.loadDashboard) {
+                          await props.loadDashboard();
+                        }
                       } catch (err) {
                         alert("Export failed: " + (err.response?.data?.detail || err.message));
                         showToastMessage("Export failed.", null, 'error');
