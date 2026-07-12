@@ -418,7 +418,7 @@ export default function VirtualFolders(props) {
                     disabled={indexer && indexer.export_running}
                     onClick={() => handleDelete(folder)}
                     style={{ padding: '6px', minWidth: 0, borderRadius: '8px', color: '#f87171', borderColor: '#ef44443a' }}
-                    title="Delete"
+                    title="Delete Folder"
                   >
                     <DeleteIcon style={{ fontSize: '16px' }} />
                   </ActionButton>

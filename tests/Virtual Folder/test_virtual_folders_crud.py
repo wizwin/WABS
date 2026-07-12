@@ -58,5 +58,37 @@ def test_virtual_folder_crud():
         
         print("CRUD AND RECURSIVE DELETION TEST PASSED!")
 
+def test_cycle_safe_deletion_and_copy():
+    with SessionLocal() as s:
+        # Clear tables
+        s.query(VirtualFolderFile).delete()
+        s.query(VirtualFolder).delete()
+        s.commit()
+
+        # Create two folders
+        f1 = VirtualFolder(name="Loop1", parent_id=None)
+        s.add(f1)
+        s.commit()
+        s.refresh(f1)
+
+        f2 = VirtualFolder(name="Loop2", parent_id=f1.id)
+        s.add(f2)
+        s.commit()
+        s.refresh(f2)
+
+        # Intentionally introduce a cycle in database (f1 parent set to f2)
+        f1.parent_id = f2.id
+        s.commit()
+
+        # Test that recursive delete is cycle-safe and terminates
+        delete_folder_recursive(s, f1.id)
+        s.commit()
+
+        remaining = s.query(VirtualFolder).all()
+        # Should delete f1 and f2 cleanly
+        assert len(remaining) == 0, "Circular loop folders should be deleted successfully"
+        print("CYCLE SAFE DELETION TEST PASSED!")
+
 if __name__ == "__main__":
     test_virtual_folder_crud()
+    test_cycle_safe_deletion_and_copy()

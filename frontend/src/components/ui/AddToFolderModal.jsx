@@ -7,10 +7,12 @@ import { getFolderStyleAndIcon, ICON_MAP } from '../../pages/VirtualFolders';
 
 import { ActionButton } from './ActionButton';
 
-function FolderTreeNode({ folder, allFolders, onSelect, expandedFolders, toggleExpand }) {
+function FolderTreeNode({ folder, allFolders, onSelect, onCreateSubfolder, expandedFolders, toggleExpand }) {
   const children = allFolders.filter(f => f.parent_id === folder.id);
   const isExpanded = !!expandedFolders[folder.id];
   const hasChildren = children.length > 0;
+  const [isCreatingSubfolder, setIsCreatingSubfolder] = useState(false);
+  const [subfolderInput, setSubfolderInput] = useState('');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', marginLeft: folder.parent_id ? '16px' : '0' }}>
@@ -70,27 +72,147 @@ function FolderTreeNode({ folder, allFolders, onSelect, expandedFolders, toggleE
           </span>
         </div>
 
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onSelect(folder);
-          }}
-          style={{
-            background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
-            border: 'none',
-            color: 'white',
-            borderRadius: '4px',
-            padding: '3px 8px',
-            cursor: 'pointer',
-            fontSize: '11px',
-            fontWeight: 'bold',
-            marginLeft: '8px',
-            flexShrink: 0
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsCreatingSubfolder(true);
+              setSubfolderInput('');
+            }}
+            title="Create Subfolder & Add Files"
+            style={{
+              background: 'rgba(59, 130, 246, 0.15)',
+              border: '1px solid rgba(59, 130, 246, 0.3)',
+              color: '#38bdf8',
+              borderRadius: '4px',
+              padding: '3px 6px',
+              cursor: 'pointer',
+              fontSize: '11px',
+              fontWeight: 'bold',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+          >
+            + Subfolder
+          </button>
+          
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect(folder);
+            }}
+            style={{
+              background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
+              border: 'none',
+              color: 'white',
+              borderRadius: '4px',
+              padding: '3px 8px',
+              cursor: 'pointer',
+              fontSize: '11px',
+              fontWeight: 'bold'
+            }}
+          >
+            Select
+          </button>
+        </div>
+      </div>
+
+      {isCreatingSubfolder && (
+        <div 
+          onClick={(e) => e.stopPropagation()}
+          style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '6px', 
+            padding: '4px 8px 4px 24px', 
+            background: '#1e293b', 
+            borderRadius: '6px', 
+            marginTop: '2px', 
+            marginBottom: '4px' 
           }}
         >
-          Select
-        </button>
-      </div>
+          <input
+            type="text"
+            placeholder="Subfolder name..."
+            value={subfolderInput}
+            onChange={(e) => setSubfolderInput(e.target.value)}
+            autoFocus
+            onKeyDown={async (e) => {
+              if (e.key === 'Enter') {
+                e.stopPropagation();
+                if (subfolderInput.trim()) {
+                  await onCreateSubfolder(subfolderInput.trim(), folder.id);
+                  setIsCreatingSubfolder(false);
+                  setSubfolderInput('');
+                }
+              } else if (e.key === 'Escape') {
+                e.stopPropagation();
+                setIsCreatingSubfolder(false);
+                setSubfolderInput('');
+              }
+            }}
+            onBlur={() => {
+              // Wait slightly in case user clicked "Create" button or cancel
+              setTimeout(() => {
+                setIsCreatingSubfolder(false);
+                setSubfolderInput('');
+              }, 200);
+            }}
+            style={{
+              flex: 1,
+              padding: '4px 8px',
+              borderRadius: '4px',
+              border: '1px solid #3b82f6',
+              background: '#0f172a',
+              color: '#f8fafc',
+              fontSize: '12px',
+              outline: 'none'
+            }}
+          />
+          <button
+            onMouseDown={async (e) => {
+              e.preventDefault();
+              if (subfolderInput.trim()) {
+                await onCreateSubfolder(subfolderInput.trim(), folder.id);
+                setIsCreatingSubfolder(false);
+                setSubfolderInput('');
+              }
+            }}
+            style={{
+              background: '#10b981',
+              border: 'none',
+              color: 'white',
+              borderRadius: '4px',
+              padding: '3px 8px',
+              cursor: 'pointer',
+              fontSize: '11px',
+              fontWeight: 'bold'
+            }}
+          >
+            Create
+          </button>
+          <button
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setIsCreatingSubfolder(false);
+              setSubfolderInput('');
+            }}
+            style={{
+              background: 'transparent',
+              border: '1px solid #475569',
+              color: '#94a3b8',
+              borderRadius: '4px',
+              padding: '2px 8px',
+              cursor: 'pointer',
+              fontSize: '11px',
+              fontWeight: 'bold'
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
 
       {hasChildren && isExpanded && (
         <div style={{ display: 'flex', flexDirection: 'column', borderLeft: '1px dashed #334155', marginLeft: '8px', paddingLeft: '4px' }}>
@@ -100,6 +222,7 @@ function FolderTreeNode({ folder, allFolders, onSelect, expandedFolders, toggleE
               folder={child}
               allFolders={allFolders}
               onSelect={onSelect}
+              onCreateSubfolder={onCreateSubfolder}
               expandedFolders={expandedFolders}
               toggleExpand={toggleExpand}
             />
@@ -125,6 +248,20 @@ export default function AddToFolderModal({
   const [newFolderName, setNewFolderName] = useState('');
   const [error, setError] = useState('');
   const [expandedFolders, setExpandedFolders] = useState({});
+  const [creatingSubfolderForId, setCreatingSubfolderForId] = useState(null);
+  const [subfolderInputVal, setSubfolderInputVal] = useState('');
+
+  React.useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onClose]);
 
   const toggleExpand = (folderId) => {
     setExpandedFolders(prev => ({
@@ -171,6 +308,24 @@ export default function AddToFolderModal({
       await addFilesToVirtualFolder(folder.id, fileIds, selectedFiles);
       setNewFolderName('');
       onClose();
+    }
+  };
+
+  const handleCreateSubfolderAndAdd = async (subfolderName, parentFolderId) => {
+    const fileIds = selectedFiles.map(path => globalFileCache.current?.get(path)?.id).filter(id => id);
+    if (fileIds.length === 0 && selectedFiles.length === 0) {
+      setError("No valid selection found.");
+      return;
+    }
+
+    try {
+      const folder = await createVirtualFolder(subfolderName, parentFolderId, false, null);
+      if (folder && folder.id) {
+        await addFilesToVirtualFolder(folder.id, fileIds, selectedFiles);
+        onClose();
+      }
+    } catch (err) {
+      setError('Failed to create subfolder: ' + (err.response?.data?.detail || err.message));
     }
   };
 
@@ -321,35 +476,177 @@ export default function AddToFolderModal({
             {search.trim() ? (
               filteredFolders.length > 0 ? (
                 filteredFolders.map(folder => (
-                  <button
+                  <div
                     key={folder.id}
-                    onClick={() => handleSelectFolder(folder)}
                     style={{
                       display: 'flex',
-                      alignItems: 'center',
-                      gap: '10px',
+                      flexDirection: 'column',
                       width: '100%',
-                      padding: '8px 12px',
                       background: 'transparent',
-                      border: 'none',
                       borderRadius: '6px',
-                      color: '#cbd5e1',
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      fontSize: '14px',
-                      transition: 'all 0.2s ease',
-                      marginBottom: 0
+                      marginBottom: '4px'
                     }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = '#1e293b'; e.currentTarget.style.color = '#38bdf8'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#cbd5e1'; }}
                   >
-                    {(() => {
-                      const { color, iconKey } = getFolderStyleAndIcon(folder);
-                      const FolderIconComponent = ICON_MAP[iconKey] || FolderIcon;
-                      return <FolderIconComponent style={{ fontSize: '18px', color: color }} />;
-                    })()}
-                    {folder.name}
-                  </button>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        width: '100%',
+                        padding: '6px 10px',
+                        borderRadius: '6px',
+                        color: '#cbd5e1',
+                        fontSize: '14px',
+                        transition: 'all 0.2s ease'
+                      }}
+                      className="folder-node-hover"
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: 1 }}>
+                        {(() => {
+                          const { color, iconKey } = getFolderStyleAndIcon(folder);
+                          const FolderIconComponent = ICON_MAP[iconKey] || FolderIcon;
+                          return <FolderIconComponent style={{ fontSize: '18px', color: color, flexShrink: 0 }} />;
+                        })()}
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={folder.name}>
+                          {folder.name}
+                        </span>
+                      </div>
+                      
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCreatingSubfolderForId(folder.id);
+                            setSubfolderInputVal('');
+                          }}
+                          title="Create Subfolder & Add Files"
+                          style={{
+                            background: 'rgba(59, 130, 246, 0.15)',
+                            border: '1px solid rgba(59, 130, 246, 0.3)',
+                            color: '#38bdf8',
+                            borderRadius: '4px',
+                            padding: '3px 6px',
+                            cursor: 'pointer',
+                            fontSize: '11px',
+                            fontWeight: 'bold'
+                          }}
+                        >
+                          + Subfolder
+                        </button>
+                        
+                        <button
+                          onClick={() => handleSelectFolder(folder)}
+                          style={{
+                            background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
+                            border: 'none',
+                            color: 'white',
+                            borderRadius: '4px',
+                            padding: '3px 8px',
+                            cursor: 'pointer',
+                            fontSize: '11px',
+                            fontWeight: 'bold'
+                          }}
+                        >
+                          Select
+                        </button>
+                      </div>
+                    </div>
+
+                    {creatingSubfolderForId === folder.id && (
+                      <div 
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          gap: '6px', 
+                          padding: '4px 8px 4px 24px', 
+                          background: '#1e293b', 
+                          borderRadius: '6px', 
+                          marginTop: '2px', 
+                          marginBottom: '4px' 
+                        }}
+                      >
+                        <input
+                          type="text"
+                          placeholder="Subfolder name..."
+                          value={subfolderInputVal}
+                          onChange={(e) => setSubfolderInputVal(e.target.value)}
+                          autoFocus
+                          onKeyDown={async (e) => {
+                            if (e.key === 'Enter') {
+                              e.stopPropagation();
+                              if (subfolderInputVal.trim()) {
+                                await handleCreateSubfolderAndAdd(subfolderInputVal.trim(), folder.id);
+                                setCreatingSubfolderForId(null);
+                                setSubfolderInputVal('');
+                              }
+                            } else if (e.key === 'Escape') {
+                              e.stopPropagation();
+                              setCreatingSubfolderForId(null);
+                              setSubfolderInputVal('');
+                            }
+                          }}
+                          onBlur={() => {
+                            setTimeout(() => {
+                              setCreatingSubfolderForId(null);
+                              setSubfolderInputVal('');
+                            }, 200);
+                          }}
+                          style={{
+                            flex: 1,
+                            padding: '4px 8px',
+                            borderRadius: '4px',
+                            border: '1px solid #3b82f6',
+                            background: '#0f172a',
+                            color: '#f8fafc',
+                            fontSize: '12px',
+                            outline: 'none'
+                          }}
+                        />
+                        <button
+                          onMouseDown={async (e) => {
+                            e.preventDefault();
+                            if (subfolderInputVal.trim()) {
+                              await handleCreateSubfolderAndAdd(subfolderInputVal.trim(), folder.id);
+                              setCreatingSubfolderForId(null);
+                              setSubfolderInputVal('');
+                            }
+                          }}
+                          style={{
+                            background: '#10b981',
+                            border: 'none',
+                            color: 'white',
+                            borderRadius: '4px',
+                            padding: '3px 8px',
+                            cursor: 'pointer',
+                            fontSize: '11px',
+                            fontWeight: 'bold'
+                          }}
+                        >
+                          Create
+                        </button>
+                        <button
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setCreatingSubfolderForId(null);
+                            setSubfolderInputVal('');
+                          }}
+                          style={{
+                            background: 'transparent',
+                            border: '1px solid #475569',
+                            color: '#94a3b8',
+                            borderRadius: '4px',
+                            padding: '2px 8px',
+                            cursor: 'pointer',
+                            fontSize: '11px',
+                            fontWeight: 'bold'
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 ))
               ) : (
                 <div style={{ padding: '16px', textAlign: 'center', color: '#475569', fontSize: '13px' }}>
@@ -364,6 +661,7 @@ export default function AddToFolderModal({
                     folder={rootFolder}
                     allFolders={staticFolders}
                     onSelect={handleSelectFolder}
+                    onCreateSubfolder={handleCreateSubfolderAndAdd}
                     expandedFolders={expandedFolders}
                     toggleExpand={toggleExpand}
                   />

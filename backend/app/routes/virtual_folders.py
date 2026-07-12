@@ -19,6 +19,21 @@ from backend.app.constants import (
     SEARCHABLE_DOCUMENT_CATEGORIES
 )
 
+import re
+
+INVALID_CHARS_REGEX = re.compile(r'[<>:"/\\|?*]')
+RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"}
+
+def validate_folder_name(name: str):
+    name_clean = name.strip()
+    if not name_clean:
+        raise HTTPException(status_code=400, detail="Folder name cannot be empty")
+    if INVALID_CHARS_REGEX.search(name_clean):
+        raise HTTPException(status_code=400, detail="Folder name contains invalid characters: < > : \" / \\ | ? *")
+    if name_clean.upper() in RESERVED_NAMES:
+        raise HTTPException(status_code=400, detail=f"Folder name '{name_clean}' is a reserved system name")
+    return name_clean
+
 router = APIRouter()
 
 # Helper models for Pydantic
@@ -68,7 +83,13 @@ def get_relative_segments(path_str: str) -> list[str]:
         
     return [s for s in rel.split('/') if s]
 
-def copy_virtual_folder_hierarchy(s, src_folder_id: int, dest_parent_id: int):
+def copy_virtual_folder_hierarchy(s, src_folder_id: int, dest_parent_id: int, visited=None):
+    if visited is None:
+        visited = set()
+    if src_folder_id in visited:
+        return
+    visited.add(src_folder_id)
+
     src_folder = s.get(VirtualFolder, src_folder_id)
     if not src_folder:
         return
@@ -100,7 +121,7 @@ def copy_virtual_folder_hierarchy(s, src_folder_id: int, dest_parent_id: int):
             
     children = s.query(VirtualFolder).filter(VirtualFolder.parent_id == src_folder_id).all()
     for child in children:
-        copy_virtual_folder_hierarchy(s, child.id, vf.id)
+        copy_virtual_folder_hierarchy(s, child.id, vf.id, visited)
 
 def _parse_json(value):
     if not value:
@@ -142,26 +163,31 @@ def cleanup_orphans(s):
         print(f"Error cleaning up orphans: {e}")
 
 def delete_folder_recursive(s, folder_id: int):
-    # Find child folders
-    children = s.query(VirtualFolder).filter(VirtualFolder.parent_id == folder_id).all()
-    for child in children:
-        delete_folder_recursive(s, child.id)
-    # Remove files in this folder
-    s.query(VirtualFolderFile).filter(VirtualFolderFile.virtual_folder_id == folder_id).delete()
-    # Delete folder
-    s.query(VirtualFolder).filter(VirtualFolder.id == folder_id).delete()
+    # Fetch all descendants iteratively
+    folder_ids = get_folder_and_descendants_ids(s, folder_id)
+    if not folder_ids:
+        return
+        
+    # Bulk delete files in these folders
+    s.query(VirtualFolderFile).filter(VirtualFolderFile.virtual_folder_id.in_(folder_ids)).delete(synchronize_session=False)
+    
+    # Bulk delete folders
+    s.query(VirtualFolder).filter(VirtualFolder.id.in_(folder_ids)).delete(synchronize_session=False)
 
 def get_folder_files_recursive(s, folder_id: int) -> set:
+    folder_ids = get_folder_and_descendants_ids(s, folder_id)
     file_ids = set()
     
-    # 1. Get manual linked file IDs for this folder
-    manual_rows = s.query(VirtualFolderFile.file_id).filter(VirtualFolderFile.virtual_folder_id == folder_id).all()
+    # 1. Bulk query manual file IDs for all these folders
+    manual_rows = s.query(VirtualFolderFile.file_id).filter(
+        VirtualFolderFile.virtual_folder_id.in_(folder_ids)
+    ).all()
     for r in manual_rows:
         file_ids.add(r[0])
         
-    # 2. Get dynamic matching file IDs for this folder
-    folder = s.get(VirtualFolder, folder_id)
-    if folder:
+    # 2. Get dynamic matching file IDs for each folder
+    folders = s.query(VirtualFolder).filter(VirtualFolder.id.in_(folder_ids)).all()
+    for folder in folders:
         q_clean = (folder.query or "").strip()
         if q_clean:
             matching_ids = []
@@ -195,11 +221,7 @@ def get_folder_files_recursive(s, folder_id: int) -> set:
             for f_id in matching_ids:
                 file_ids.add(f_id)
                 
-    # 3. Recursively add files from child subfolders
-    children = s.query(VirtualFolder.id).filter(VirtualFolder.parent_id == folder_id).all()
-    for child_row in children:
-        child_files = get_folder_files_recursive(s, child_row[0])
-        file_ids.update(child_files)
+    return file_ids
         
     return file_ids
 
@@ -258,10 +280,11 @@ def get_virtual_folder_count(folder_id: int):
 
 @router.post("/virtual-folders")
 def create_virtual_folder(folder: VirtualFolderCreate):
+    name_clean = validate_folder_name(folder.name)
     with SessionLocal() as s:
         cleanup_orphans(s)
         new_folder = VirtualFolder(
-            name=folder.name,
+            name=name_clean,
             parent_id=folder.parent_id,
             is_dynamic=1 if folder.is_dynamic else 0,
             query=folder.query,
@@ -290,7 +313,8 @@ def update_virtual_folder(folder_id: int, req: VirtualFolderUpdate):
         
         update_data = req.dict(exclude_unset=True)
         if "name" in update_data:
-            folder.name = req.name
+            name_clean = validate_folder_name(req.name)
+            folder.name = name_clean
         if "parent_id" in update_data:
             if req.parent_id is not None:
                 if req.parent_id == folder_id:
@@ -359,8 +383,11 @@ def add_files_to_virtual_folder(folder_id: int, req: FileAssociationRequest):
                     
                 # A. Virtual Folder Path (e.g. virtual_folder:ID)
                 if path_str.startswith("virtual_folder:"):
+                    src_vf_id = int(path_str.split(":")[1])
+                    descendants = get_folder_and_descendants_ids(s, src_vf_id)
+                    if folder_id in descendants:
+                        raise HTTPException(status_code=400, detail="Cannot copy a virtual folder into itself or its descendants")
                     try:
-                        src_vf_id = int(path_str.split(":")[1])
                         copy_virtual_folder_hierarchy(s, src_vf_id, folder_id)
                     except Exception as e:
                         print(f"Error copying virtual folder hierarchy: {e}")
@@ -1061,29 +1088,31 @@ def get_file_virtual_folders(file_id: int):
         folders = s.query(VirtualFolder).all()
         matched = []
         for f in folders:
-            is_manual = s.query(VirtualFolderFile).filter(
-                VirtualFolderFile.virtual_folder_id == f.id,
-                VirtualFolderFile.file_id == file_id
-            ).first() is not None
-            
-            if is_manual:
+            folder_file_ids = get_folder_files_recursive(s, f.id)
+            if file_id in folder_file_ids:
+                # Calculate depth and build lineage path
+                depth = 0
+                path_parts = []
+                curr = f
+                while curr:
+                    path_parts.insert(0, curr.name)
+                    if curr.parent_id:
+                        depth += 1
+                        curr = next((x for x in folders if x.id == curr.parent_id), None)
+                    else:
+                        curr = None
+                
                 matched.append({
                     "id": f.id,
                     "name": f.name,
                     "parent_id": f.parent_id,
                     "is_dynamic": f.is_dynamic,
-                    "query": f.query
+                    "query": f.query,
+                    "depth": depth,
+                    "path": " / ".join(path_parts)
                 })
-                continue
-            
-            if f.is_dynamic and f.query:
-                file_ids = get_virtual_folder_file_ids(s, f.id)
-                if file_id in file_ids:
-                    matched.append({
-                        "id": f.id,
-                        "name": f.name,
-                        "parent_id": f.parent_id,
-                        "is_dynamic": f.is_dynamic,
-                        "query": f.query
-                    })
+        # Sort by depth descending so deepest child folder is matched first
+        matched.sort(key=lambda x: x["depth"], reverse=True)
+        for m in matched:
+            del m["depth"]
         return matched
