@@ -670,9 +670,12 @@ def directories():
             last_slash = normalized.rfind('/')
             if last_slash != -1:
                 parent = normalized[:last_slash]
-                dirs.add(parent)
+                if parent:
+                    dirs.add(parent)
                 # Also add every ancestor directory so the tree can render the full hierarchy
                 parts = parent.split('/')
                 for i in range(1, len(parts)):
-                    dirs.add('/'.join(parts[:i]))
+                    ancestor = '/'.join(parts[:i])
+                    if ancestor:
+                        dirs.add(ancestor)
         return sorted(list(dirs))

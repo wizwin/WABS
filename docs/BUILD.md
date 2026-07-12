@@ -101,6 +101,62 @@ The final bundled executable will be generated inside the `dist/` folder.
 
 ---
 
+## Verifying the Build (Running Tests)
+
+Before publishing a release, verify the integrity of WABS by running the automated test runner in the `tests/` directory.
+
+### Test Data
+
+1. Add jpg and png files with text for test_ocr_detection
+
+### Running All Tests
+
+Activate your virtual environment and run the single master test runner script:
+
+```bash
+python tests/run_all_tests.py
+```
+
+This script automatically executes all individual test suites in sequence:
+1. **Shutdown & Cleanup Test** (`tests/test_shutdown.py`)
+2. **Release Diagnostic Validation** (`tests/release_diagnostic.py`)
+3. **Virtual Folder CRUD Operations** (`tests/Virtual Folder/test_virtual_folders_crud.py`)
+4. **Virtual Folder Hybrid Curation** (`tests/Virtual Folder/test_subfolder_hybrid.py`)
+5. **Asynchronous Folder Export** (`tests/Virtual Folder/test_asynchronous_export.py`)
+6. **File Chronological Offsets** (`tests/test_offset.py`)
+7. **OCR & MobileNetV2 Scan** (`tests/OCR/test_ocr_detection.py`)
+8. **Face Exemplar Curation** (`tests/test_face_exemplar.py`)
+9. **Face Data Serialization** (`tests/test_people_import_export.py`)
+10. **Cover Suggestions Rotation** (`tests/test_people_cover_suggestions.py`)
+
+### Expected Results
+
+A successful test execution report looks like this:
+
+```text
+==================================================
+Test Suite Summary:
+==================================================
+Passed: 10
+  [PASS] test_shutdown.py
+  [PASS] release_diagnostic.py
+  [PASS] test_virtual_folders_crud.py
+  [PASS] test_subfolder_hybrid.py
+  [PASS] test_asynchronous_export.py
+  [PASS] test_offset.py
+  [PASS] test_ocr_detection.py
+  [PASS] test_face_exemplar.py
+  [PASS] test_people_import_export.py
+  [PASS] test_people_cover_suggestions.py
+Failed: 0
+==================================================
+SUCCESS: All tests passed!
+```
+
+If any test fails, the runner exits with code `1` and outputs the name of the failing suite.
+
+---
+
 ## Publishing & Releasing to GitHub
 
 ### Publishing to a Repository

@@ -132,7 +132,6 @@ export default function VirtualFolders(props) {
   };
 
   const handleOpenFolder = (folder) => {
-    if (indexer && indexer.export_running) return;
     setVirtualFolderId(folder.id);
     setCurrentVirtualFolder(folder);
     setPage('virtual_folder');
@@ -453,34 +452,34 @@ export default function VirtualFolders(props) {
         </div>
 
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-          <button 
-            onClick={loadAllFolderCounts}
-            disabled={(indexer && indexer.export_running) || loadingAllCounts}
-            style={{
-              background: '#1e293b',
-              border: '1px solid #334155',
-              color: '#38bdf8',
-              borderRadius: '10px',
-              padding: '10px 16px',
-              cursor: ((indexer && indexer.export_running) || loadingAllCounts) ? 'not-allowed' : 'pointer',
-              fontSize: '14px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              opacity: ((indexer && indexer.export_running) || loadingAllCounts) ? 0.5 : 1
-            }}
-          >
-            <RefreshIcon 
-              style={{ 
-                fontSize: '18px', 
-                animation: loadingAllCounts ? 'spin 1s linear infinite' : 'none' 
-              }} 
-            /> 
-            {loadingAllCounts ? 'Loading Counts...' : 'Load All Counts'}
-          </button>
+          {virtualFolders && virtualFolders.length > 0 && (
+            <ActionButton 
+              onClick={loadAllFolderCounts}
+              disabled={(indexer && indexer.export_running) || loadingAllCounts}
+              title={loadingAllCounts ? 'Loading Counts...' : 'Load All Counts'}
+              style={{
+                background: '#1e293b',
+                border: '1px solid #334155',
+                color: '#38bdf8',
+                borderRadius: '10px',
+                padding: '10px',
+                cursor: ((indexer && indexer.export_running) || loadingAllCounts) ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: ((indexer && indexer.export_running) || loadingAllCounts) ? 0.5 : 1
+              }}
+            >
+              <RefreshIcon 
+                style={{ 
+                  fontSize: '20px', 
+                  animation: loadingAllCounts ? 'spin 1s linear infinite' : 'none' 
+                }} 
+              /> 
+            </ActionButton>
+          )}
 
-          <button 
+          <ActionButton 
             onClick={handleCreateRoot}
             disabled={indexer && indexer.export_running}
             style={{
@@ -500,7 +499,7 @@ export default function VirtualFolders(props) {
             }}
           >
             <AddIcon style={{ fontSize: '20px' }} /> New Folder
-          </button>
+          </ActionButton>
         </div>
       </div>
 

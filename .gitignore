@@ -31,5 +31,5 @@ config.yaml
 wabs.log
 *.db-shm
 *.db-wal
-/test
-/tests
+tests/OCR/*.jpg
+tests/OCR/*.png

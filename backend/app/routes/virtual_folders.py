@@ -292,8 +292,12 @@ def update_virtual_folder(folder_id: int, req: VirtualFolderUpdate):
         if "name" in update_data:
             folder.name = req.name
         if "parent_id" in update_data:
-            if req.parent_id is not None and req.parent_id == folder_id:
-                raise HTTPException(status_code=400, detail="Folder cannot be its own parent")
+            if req.parent_id is not None:
+                if req.parent_id == folder_id:
+                    raise HTTPException(status_code=400, detail="Folder cannot be its own parent")
+                descendants = get_folder_and_descendants_ids(s, folder_id)
+                if req.parent_id in descendants:
+                    raise HTTPException(status_code=400, detail="Folder cannot have its own descendant as a parent")
             folder.parent_id = req.parent_id
         if "is_dynamic" in update_data:
             folder.is_dynamic = 1 if req.is_dynamic else 0
