@@ -441,7 +441,6 @@ export function useExplorer({
   useEffect(() => {
     if (page === 'explorer') {
       if (suppressNextAutoLoad.current) {
-        suppressNextAutoLoad.current = false;
         return;
       }
       loadFiles(0, false, filterCategory, sortBy, sortOrder, page, virtualFolderId, viewType, activeFolderPath);
@@ -457,7 +456,6 @@ export function useExplorer({
     if (oldPage === newPage && oldView === newView) return;
 
     if (suppressNextAutoLoad.current) {
-      suppressNextAutoLoad.current = false;
       prevPage.current = newPage;
       prevViewType.current = newView;
       return;
@@ -1425,7 +1423,46 @@ export function useExplorer({
     const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
 
     if (type === 'tree') {
-      setPendingLocatePath(file.path);
+      let offsetVal = 0;
+      try {
+        const folderParam = parentFolder ? encodeURIComponent(parentFolder) : 'root';
+        const offsetRes = await axios.get(`${API}/files/${file.id}/offset?category=all&sort_by=${sortBy}&sort_order=${sortOrder}&folder=${folderParam}`);
+        offsetVal = offsetRes.data.offset || 0;
+      } catch (err) {
+        console.warn("Failed to fetch file offset in folder", err);
+      }
+      const targetStartOffset = Math.max(0, Math.floor(offsetVal / limit) * limit);
+
+      try {
+        const folderParam = parentFolder ? encodeURIComponent(parentFolder) : 'root';
+        const url = `${API}/files?category=all&offset=${targetStartOffset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}&folder=${folderParam}`;
+        const r = await axios.get(url);
+        viewContexts.current.explorer_tree = {
+          files: r.data,
+          startOffset: targetStartOffset,
+          offset: targetStartOffset + r.data.length,
+          hasMore: r.data.length === limit,
+          scrollTop: 0,
+          filterCategory: 'all',
+          sortBy: sortBy,
+          sortOrder: sortOrder,
+          activeFolderPath: parentFolder,
+          virtualFolderId: null
+        };
+
+        setPendingLocatePath(file.path);
+        setFiles(r.data);
+        setOffset(targetStartOffset + r.data.length);
+        setStartOffset(targetStartOffset);
+        setHasMore(r.data.length === limit);
+        suppressNextAutoLoad.current = true;
+        setTimeout(() => {
+          suppressNextAutoLoad.current = false;
+        }, 100);
+      } catch (err) {
+        console.warn("Failed to pre-load tree files", err);
+      }
+
       setPage('explorer');
       setViewType('tree');
       navigateToPhys(parentFolder);
@@ -1461,6 +1498,9 @@ export function useExplorer({
         setStartOffset(targetStartOffset);
         setHasMore(r.data.length === limit);
         suppressNextAutoLoad.current = true;
+        setTimeout(() => {
+          suppressNextAutoLoad.current = false;
+        }, 100);
       } catch (err) {
         console.warn("Failed to pre-load flat files", err);
       }
@@ -1526,6 +1566,9 @@ export function useExplorer({
       setStartOffset(targetStartOffset);
       setHasMore(r.data.length === limit);
       suppressNextAutoLoad.current = true;
+      setTimeout(() => {
+        suppressNextAutoLoad.current = false;
+      }, 100);
     } catch (err) {
       console.warn("Failed to pre-load virtual folder files", err);
     }
