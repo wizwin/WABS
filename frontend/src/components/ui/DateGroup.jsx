@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, Fragment } from 'react';
 import { FileCard } from './FileCard';
 
-export function DateGroup({ dateKey, filesGroup, viewMode, checkedFiles, toggleCheck, handleItemClick, openContainingFolder, setSelected, openFile, renderThumb, filterCategory, indexer, checkFileReadOnly, getImplicitSelection }) {
+export function DateGroup({ dateKey, filesGroup, viewMode, checkedFiles, toggleCheck, handleItemClick, openContainingFolder, setSelected, openFile, renderThumb, filterCategory, indexer, checkFileReadOnly, getImplicitSelection, pendingLocatePath }) {
   const [isVisible, setIsVisible] = useState(false);
   const [minHeight, setMinHeight] = useState('100px');
   const groupRef = useRef(null);
@@ -25,10 +25,15 @@ export function DateGroup({ dateKey, filesGroup, viewMode, checkedFiles, toggleC
     return () => observer.disconnect();
   }, []);
 
+  const hasPendingFile = pendingLocatePath && filesGroup.some(item => {
+    return item.path.replace(/\\/g, '/').toLowerCase() === pendingLocatePath.replace(/\\/g, '/').toLowerCase();
+  });
+  const isActuallyVisible = isVisible || hasPendingFile || !!pendingLocatePath;
+
   return (
     <div id={`date-group-${dateKey}`} ref={groupRef} style={{ minHeight }}>
       <h2 className="date-header" data-date={dateKey}>{dateKey}</h2>
-      {isVisible && (
+      {isActuallyVisible && (
         <div className={viewMode === 'grid' ? 'grid' : 'list'}>
           {(() => {
             let isAlternateGroup = false;

@@ -1,6 +1,7 @@
 import multiprocessing
 import os
 import sys
+import glob
 # Restore original library paths to prevent PyInstaller conflicts with system GUI libraries
 if sys.platform != "win32" and getattr(sys, 'frozen', False) and not os.environ.get("WABS_REEXECUTED"):
     env = os.environ.copy()

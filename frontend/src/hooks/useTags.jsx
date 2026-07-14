@@ -5,7 +5,8 @@ import { API } from '../States';
 export function useTags({
   indexer, setIndexer, checkedFiles, setCheckedFiles, globalFileCache, page, filterCategory,
   loadFiles, goToSearch, selected, setSelected, loadDashboard,
-  showToastMessage, setActionInProgress, setDataOpProgress, actionInProgress, dataOpProgress
+  showToastMessage, setActionInProgress, setDataOpProgress, actionInProgress, dataOpProgress,
+  invalidateViewCache, loadVirtualFolders
 }) {
   const [objectTags, setObjectTags] = useState([]);
   const [isTaggingObject, setIsTaggingObject] = useState(false);
@@ -49,6 +50,8 @@ export function useTags({
           try {
             await axios.post(`${API}/tags/remove`, { file_ids: fileIds, tags });
             showToastMessage('Tagging undone.');
+            if (invalidateViewCache) invalidateViewCache();
+            if (loadVirtualFolders) await loadVirtualFolders();
             if (page === 'explorer' || page === 'virtual_folder') {
               await loadFiles(0, false, filterCategory);
             } else if (page === 'search') {
@@ -68,6 +71,8 @@ export function useTags({
         }
       };
   
+      if (invalidateViewCache) invalidateViewCache();
+      if (loadVirtualFolders) await loadVirtualFolders();
       showToastMessage(`Added tags to ${fileIds.length} files.`, undoAction);
       setIsTaggingObject(false);
       setTagInput('');
@@ -114,6 +119,8 @@ export function useTags({
           try {
             await axios.post(`${API}/tags/add`, { file_ids: fileIds, tags });
             showToastMessage('Tag removal undone.');
+            if (invalidateViewCache) invalidateViewCache();
+            if (loadVirtualFolders) await loadVirtualFolders();
             if (page === 'explorer' || page === 'virtual_folder') {
               await loadFiles(0, false, filterCategory);
             } else if (page === 'search') {
@@ -133,6 +140,8 @@ export function useTags({
         }
       };
   
+      if (invalidateViewCache) invalidateViewCache();
+      if (loadVirtualFolders) await loadVirtualFolders();
       showToastMessage(`Removed tags from ${fileIds.length} files.`, undoAction);
       setIsTaggingObject(false);
       setTagInput('');
@@ -173,6 +182,8 @@ export function useTags({
     try {
       await axios.delete(`${API}/tags/objects/${encodeURIComponent(tag)}`);
       showToastMessage(`Tag "${tagName}" removed from all files.`);
+      if (invalidateViewCache) invalidateViewCache();
+      if (loadVirtualFolders) await loadVirtualFolders();
       loadDashboard();
       loadTags();
     } catch(err) {
@@ -200,6 +211,8 @@ export function useTags({
       await axios.delete(`${API}/tags/objects/all`);
       await axios.post(`${API}/reset-object-scanner-progress`);
       showToastMessage(`All object tags have been cleared.`);
+      if (invalidateViewCache) invalidateViewCache();
+      if (loadVirtualFolders) await loadVirtualFolders();
       loadDashboard();
       loadTags();
     } catch(err) {

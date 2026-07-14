@@ -540,6 +540,12 @@ def auto_suggest_thumbnail(person_id: int):
         for f in db_files:
             file_items.append((f.id, _resolve_path(Path(f.path))))
                 
+    if not file_items:
+        raise HTTPException(status_code=404, detail="No valid files found for this person.")
+        
+    if not any(fp.exists() for fid, fp in file_items):
+        raise HTTPException(status_code=400, detail="Cannot suggest cover photo: all files for this person are currently offline or unavailable.")
+                 
     file_scores = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(_evaluate_image_faces, fp, yunet_path): fid for fid, fp in file_items if fp.exists()}
@@ -623,8 +629,16 @@ def remove_person_photo(person_id: int, payload: dict = Body(...)):
         
         cursor.execute("SELECT thumbnail_file_id FROM people WHERE id = ?", (person_id,))
         thumb_row = cursor.fetchone()
-        if thumb_row and thumb_row[0] == file_id:
-            cursor.execute("UPDATE people SET thumbnail_file_id = NULL WHERE id = ?", (person_id,))
+        
+        clear_cache = False
+        if thumb_row:
+            if thumb_row[0] == file_id:
+                cursor.execute("UPDATE people SET thumbnail_file_id = NULL WHERE id = ?", (person_id,))
+                clear_cache = True
+            elif thumb_row[0] is None:
+                clear_cache = True
+        else:
+            clear_cache = True
             
         conn.commit()
         
@@ -640,6 +654,7 @@ def remove_person_photo(person_id: int, payload: dict = Body(...)):
                     f.tags = ",".join(sorted(current_tags))
                     s.commit()
 
+    if clear_cache:
         thumb_dir = get_thumbnail_dir("faces")
         cached_face = thumb_dir / f"person_{person_id}.jpg"
         if cached_face.exists():

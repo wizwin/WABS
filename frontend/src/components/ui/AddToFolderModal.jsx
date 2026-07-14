@@ -6,6 +6,7 @@ import SearchIcon from '@mui/icons-material/Search';
 import { getFolderStyleAndIcon, ICON_MAP } from '../../pages/VirtualFolders';
 
 import { ActionButton } from './ActionButton';
+import { validateFolderName } from '../../States';
 
 function FolderTreeNode({ folder, allFolders, onSelect, onCreateSubfolder, expandedFolders, toggleExpand }) {
   const children = allFolders.filter(f => f.parent_id === folder.id);
@@ -240,7 +241,11 @@ export default function AddToFolderModal({
   virtualFolders,
   createVirtualFolder,
   addFilesToVirtualFolder,
-  globalFileCache
+  globalFileCache,
+  isMoveMode = false,
+  sourceVirtualFolder = null,
+  removeFilesFromVirtualFolder = null,
+  loadVirtualFolders = null
 }) {
   if (!isOpen) return null;
 
@@ -278,7 +283,74 @@ export default function AddToFolderModal({
     f.name.toLowerCase().includes(search.toLowerCase())
   );
 
+  const executeFolderMove = async (targetFolder) => {
+    try {
+      const fileIds = selectedFiles.map(path => globalFileCache.current?.get(path)?.id).filter(id => id);
+      const subfolderPaths = selectedFiles.filter(path => path.startsWith('virtual_folder:'));
+      const subfolderIds = subfolderPaths.map(path => parseInt(path.split(':')[1], 10));
+
+      // --- VALIDATE FIRST ---
+      if (subfolderIds.length > 0) {
+        for (const subId of subfolderIds) {
+          if (subId === targetFolder.id) {
+            setError("Cannot move a folder into itself.");
+            return;
+          }
+          // Check descendants to prevent cycles
+          const isDescendant = (parentId, childId) => {
+            let current = staticFolders.find(f => f.id === childId);
+            while (current && current.parent_id) {
+              if (current.parent_id === parentId) return true;
+              current = staticFolders.find(f => f.id === current.parent_id);
+            }
+            return false;
+          };
+          if (isDescendant(subId, targetFolder.id)) {
+            setError("Cannot move a folder into one of its subfolders.");
+            return;
+          }
+        }
+      }
+
+      let movedSomething = false;
+
+      // 1. Move files
+      if (fileIds.length > 0) {
+        const filePaths = selectedFiles.filter(path => !path.startsWith('virtual_folder:'));
+        // Add to target folder
+        await addFilesToVirtualFolder(targetFolder.id, fileIds, filePaths);
+        // Remove from source folder non-recursively to preserve new subfolder location
+        if (sourceVirtualFolder && removeFilesFromVirtualFolder) {
+          await removeFilesFromVirtualFolder(sourceVirtualFolder.id, fileIds, filePaths, false);
+        }
+        movedSomething = true;
+      }
+
+      // 2. Move subfolders
+      if (subfolderIds.length > 0) {
+        for (const subId of subfolderIds) {
+          await axios.put(`${API}/virtual-folders/${subId}`, { parent_id: targetFolder.id });
+        }
+        movedSomething = true;
+      }
+
+      if (movedSomething) {
+        if (loadVirtualFolders) {
+          await loadVirtualFolders();
+        }
+      }
+      onClose();
+    } catch (err) {
+      setError('Failed to move items: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
   const handleSelectFolder = async (folder) => {
+    if (isMoveMode) {
+      await executeFolderMove(folder);
+      return;
+    }
+
     // Translate file paths to database IDs
     const fileIds = selectedFiles.map(path => globalFileCache.current?.get(path)?.id).filter(id => id);
     if (fileIds.length === 0 && selectedFiles.length === 0) {
@@ -291,8 +363,9 @@ export default function AddToFolderModal({
   };
 
   const handleCreateAndAdd = async () => {
-    if (!newFolderName.trim()) {
-      setError("Folder name cannot be empty.");
+    const validationError = validateFolderName(newFolderName);
+    if (validationError) {
+      setError(validationError);
       return;
     }
     
@@ -305,13 +378,23 @@ export default function AddToFolderModal({
     // Create a static virtual folder
     const folder = await createVirtualFolder(newFolderName.trim(), null, false, null);
     if (folder && folder.id) {
-      await addFilesToVirtualFolder(folder.id, fileIds, selectedFiles);
-      setNewFolderName('');
-      onClose();
+      if (isMoveMode) {
+        await executeFolderMove(folder);
+      } else {
+        await addFilesToVirtualFolder(folder.id, fileIds, selectedFiles);
+        setNewFolderName('');
+        onClose();
+      }
     }
   };
 
   const handleCreateSubfolderAndAdd = async (subfolderName, parentFolderId) => {
+    const validationError = validateFolderName(subfolderName);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
     const fileIds = selectedFiles.map(path => globalFileCache.current?.get(path)?.id).filter(id => id);
     if (fileIds.length === 0 && selectedFiles.length === 0) {
       setError("No valid selection found.");
@@ -321,8 +404,12 @@ export default function AddToFolderModal({
     try {
       const folder = await createVirtualFolder(subfolderName, parentFolderId, false, null);
       if (folder && folder.id) {
-        await addFilesToVirtualFolder(folder.id, fileIds, selectedFiles);
-        onClose();
+        if (isMoveMode) {
+          await executeFolderMove(folder);
+        } else {
+          await addFilesToVirtualFolder(folder.id, fileIds, selectedFiles);
+          onClose();
+        }
       }
     } catch (err) {
       setError('Failed to create subfolder: ' + (err.response?.data?.detail || err.message));
@@ -365,7 +452,7 @@ export default function AddToFolderModal({
           borderBottom: '1px solid #1f2937'
         }}>
           <h3 style={{ margin: 0, fontSize: '18px', color: '#f8fafc', fontWeight: '600' }}>
-            Add to Virtual Folder
+            {isMoveMode ? 'Move to Virtual Folder' : 'Add to Virtual Folder'}
           </h3>
           <ActionButton onClick={onClose} style={{ background: 'transparent', border: 'none', color: '#94a3b8', padding: '4px' }}>
             <CloseIcon fontSize="small" />
@@ -375,7 +462,7 @@ export default function AddToFolderModal({
         {/* Content */}
         <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px', overflowY: 'auto', flex: 1 }}>
           <div style={{ fontSize: '14px', color: '#94a3b8' }}>
-            Adding <b>{selectedFiles.length}</b> file(s) to a folder.
+            {isMoveMode ? 'Moving' : 'Adding'} <b>{selectedFiles.length}</b> item(s) to a folder.
           </div>
 
           {error && (
@@ -386,7 +473,7 @@ export default function AddToFolderModal({
 
           {/* Quick Create Input */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#64748b', textTransform: 'uppercase' }}>Create & Add to New Folder</label>
+            <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#64748b', textTransform: 'uppercase' }}>Create & {isMoveMode ? 'Move' : 'Add'} to New Folder</label>
             <div style={{ display: 'flex', gap: '8px' }}>
               <input
                 type="text"

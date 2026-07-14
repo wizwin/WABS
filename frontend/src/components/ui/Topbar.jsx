@@ -110,29 +110,32 @@ export function Topbar({
         )}
       </div>
 
-      {(page === 'explorer' || page === 'search' || page === 'person_files' || page === 'virtual_folder') && (
-        <div style={{ display: 'flex', gap: '8px' }}>
-          {viewType === 'tree' ? (
-            <ActionButton
-              className=""
-              onClick={toggleTreeView}
-              style={{ padding: '8px', background: '#172033', border: 'none', borderRadius: '8px', color: showTreeView ? '#3b82f6' : '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-              title="Toggle Tree View"
-            >
-              <AccountTreeIcon />
-            </ActionButton>
-          ) : (
-            <ActionButton
-              className=""
-              onClick={toggleTimeline}
-              style={{ padding: '8px', background: '#172033', border: 'none', borderRadius: '8px', color: showTimeline ? '#3b82f6' : '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-              title="Toggle Timeline"
-            >
-              <ViewTimelineIcon />
-            </ActionButton>
-          )}
-        </div>
-      )}
+      {(page === 'explorer' || page === 'search' || page === 'person_files' || page === 'virtual_folder') && (() => {
+        const activeViewType = page === 'virtual_folder' ? (explorer?.virtualFolderViewType) : viewType;
+        return (
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {activeViewType === 'tree' ? (
+              <ActionButton
+                className=""
+                onClick={toggleTreeView}
+                style={{ padding: '8px', background: '#172033', border: 'none', borderRadius: '8px', color: showTreeView ? '#3b82f6' : '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                title="Toggle Tree View"
+              >
+                <AccountTreeIcon />
+              </ActionButton>
+            ) : (
+              <ActionButton
+                className=""
+                onClick={toggleTimeline}
+                style={{ padding: '8px', background: '#172033', border: 'none', borderRadius: '8px', color: showTimeline ? '#3b82f6' : '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                title="Toggle Timeline"
+              >
+                <ViewTimelineIcon />
+              </ActionButton>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

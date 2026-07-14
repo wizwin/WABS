@@ -75,3 +75,19 @@ export function parseFileDate(file) {
   fileDateCache.set(file, res);
   return res;
 }
+
+export function validateFolderName(name) {
+  if (!name || !name.trim()) {
+    return 'Folder name cannot be empty.';
+  }
+  const trimmed = name.trim();
+  const invalidChars = /[<>:"\/\\|?*]/;
+  if (invalidChars.test(trimmed)) {
+    return 'Folder name cannot contain any of the following characters: < > : " / \\ | ? *';
+  }
+  const reservedNames = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
+  if (reservedNames.test(trimmed)) {
+    return `"${trimmed}" is a reserved system name and cannot be used.`;
+  }
+  return null;
+}

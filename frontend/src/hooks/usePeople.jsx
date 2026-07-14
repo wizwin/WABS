@@ -6,7 +6,8 @@ export function usePeople({
   indexer, setIndexer, settings, page, setPage, selected, setSelected,
   checkedFiles, setCheckedFiles, globalFileCache, filterCategory,
   loadFiles, goToSearch, loadDashboard, showToastMessage,
-  setActionInProgress, setDataOpProgress, setOffset, setStartOffset, setHasMore, actionInProgress, dataOpProgress
+  setActionInProgress, setDataOpProgress, setOffset, setStartOffset, setHasMore, actionInProgress, dataOpProgress,
+  invalidateViewCache, loadVirtualFolders
 }) {
   const [people, setPeople] = useState([]);
   const [currentPerson, setCurrentPerson] = useState(null);
@@ -641,6 +642,8 @@ export function usePeople({
               await axios.post(`${API}/people/${personId}/add-photo`, { file_id: id });
             }
             showToastMessage('Removal undone successfully.');
+            if (invalidateViewCache) invalidateViewCache();
+            if (loadVirtualFolders) await loadVirtualFolders();
             loadPeople();
             openPersonPhotos(currentPerson);
           } catch (e) {
@@ -651,6 +654,8 @@ export function usePeople({
         }
       };
       
+      if (invalidateViewCache) invalidateViewCache();
+      if (loadVirtualFolders) await loadVirtualFolders();
       showToastMessage(`Removed ${fileIds.length} photo(s).`, undoAction);
       setPersonFiles(prev => prev.filter(f => !fileIds.includes(f.id)));
       setCheckedFiles(new Set());
@@ -684,6 +689,8 @@ export function usePeople({
               await axios.post(`${API}/people/${personId}/remove-photo`, { file_id: id });
             }
             showToastMessage('Tagging undone successfully.');
+            if (invalidateViewCache) invalidateViewCache();
+            if (loadVirtualFolders) await loadVirtualFolders();
             loadPeople();
             if (page === 'explorer' || page === 'virtual_folder') {
               await loadFiles(0, false, filterCategory);
@@ -702,6 +709,8 @@ export function usePeople({
         }
       };
       
+      if (invalidateViewCache) invalidateViewCache();
+      if (loadVirtualFolders) await loadVirtualFolders();
       showToastMessage(`Successfully tagged ${fileIds.length} photo(s).`, undoAction);
       setIsTaggingPerson(false);
       setCheckedFiles(new Set());
@@ -748,6 +757,8 @@ export function usePeople({
               await axios.post(`${API}/people/${targetPersonId}/remove-photo`, { file_id: id });
             }
             showToastMessage('Move undone successfully.');
+            if (invalidateViewCache) invalidateViewCache();
+            if (loadVirtualFolders) await loadVirtualFolders();
             loadPeople();
             if (currentPerson && currentPerson.id === sourcePersonId) {
                openPersonPhotos(currentPerson);
@@ -760,6 +771,8 @@ export function usePeople({
         }
       };
       
+      if (invalidateViewCache) invalidateViewCache();
+      if (loadVirtualFolders) await loadVirtualFolders();
       showToastMessage(`Successfully moved ${fileIds.length} photo(s).`, undoAction);
       setIsTaggingPerson(false);
       setCheckedFiles(new Set());

@@ -54,6 +54,7 @@ class VirtualFolderUpdate(BaseModel):
 class FileAssociationRequest(BaseModel):
     file_ids: List[int]
     paths: Optional[List[str]] = None
+    recursive: Optional[bool] = True
 
 def get_relative_segments(path_str: str) -> list[str]:
     cfg = load_config()
@@ -464,6 +465,7 @@ def add_files_to_virtual_folder(folder_id: int, req: FileAssociationRequest):
         s.commit()
         return {"status": "success", "added": added_count}
 
+@router.post("/virtual-folders/{folder_id}/files/delete")
 @router.delete("/virtual-folders/{folder_id}/files")
 def remove_files_from_virtual_folder(folder_id: int, req: FileAssociationRequest):
     with SessionLocal() as s:
@@ -490,8 +492,36 @@ def remove_files_from_virtual_folder(folder_id: int, req: FileAssociationRequest
         if not resolved_ids:
             return {"status": "success", "removed": 0}
 
+        if req.recursive:
+            descendant_ids = get_folder_and_descendants_ids(s, folder_id)
+        else:
+            descendant_ids = [folder_id]
+        
+        # If any of the descendant folders containing the removed files are dynamic (rule-based),
+        # convert them to manual folders so the user's manual removal/change is preserved.
+        converted_any = False
+        for fid in descendant_ids:
+            fol = s.get(VirtualFolder, fid)
+            if fol and fol.query and fol.query.strip():
+                all_member_ids = get_virtual_folder_file_ids(s, fid)
+                overlap = set(all_member_ids).intersection(resolved_ids)
+                if overlap:
+                    # Convert to manual: insert all current members as manual rows
+                    for mid in all_member_ids:
+                        exists = s.query(VirtualFolderFile).filter(
+                            VirtualFolderFile.virtual_folder_id == fid,
+                            VirtualFolderFile.file_id == mid
+                        ).first()
+                        if not exists:
+                            s.add(VirtualFolderFile(virtual_folder_id=fid, file_id=mid))
+                    fol.query = None
+                    converted_any = True
+        
+        if converted_any:
+            s.flush() # Write new manual rows so they can be deleted if they match resolved_ids
+
         deleted = s.query(VirtualFolderFile).filter(
-            VirtualFolderFile.virtual_folder_id == folder_id,
+            VirtualFolderFile.virtual_folder_id.in_(descendant_ids),
             VirtualFolderFile.file_id.in_(resolved_ids)
         ).delete(synchronize_session=False)
         

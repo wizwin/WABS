@@ -16,7 +16,8 @@ export function FolderTree({
   activeFolderPath,
   setActiveFolderPath,
   query,
-  settings
+  settings,
+  setPendingLocatePath
 }) {
   const isPhys = page !== 'virtual_folder';
   const isSearchActive = page === 'search' || !!query;
@@ -304,6 +305,41 @@ export function FolderTree({
               handleOpenFolder(node.virtualFolder);
             } else if (isPhys) {
               setActiveFolderPath(node.path === 'root' ? null : node.path);
+              
+              if (page === 'search' && setPendingLocatePath && sortedFiles && sortedFiles.length > 0) {
+                const normalizePath = (p) => {
+                  if (!p) return '';
+                  let norm = p.replace(/\\/g, '/').toLowerCase();
+                  if (norm.endsWith('/') && norm.length > 3) {
+                    norm = norm.slice(0, -1);
+                  }
+                  return norm;
+                };
+
+                const folderNorm = normalizePath(node.path);
+                
+                // Find first direct child file
+                let targetFile = sortedFiles.find(file => {
+                  if (!file || !file.path) return false;
+                  const fileNorm = normalizePath(file.path);
+                  const lastSlashIdx = fileNorm.lastIndexOf('/');
+                  const fileDir = lastSlashIdx === -1 ? '' : fileNorm.substring(0, lastSlashIdx);
+                  return fileDir === folderNorm;
+                });
+
+                // If not found, find first descendant file
+                if (!targetFile) {
+                  targetFile = sortedFiles.find(file => {
+                    if (!file || !file.path) return false;
+                    const fileNorm = normalizePath(file.path);
+                    return fileNorm.startsWith(folderNorm + '/');
+                  });
+                }
+
+                if (targetFile) {
+                  setPendingLocatePath(targetFile.path);
+                }
+              }
             }
           }}
         >
@@ -343,6 +379,40 @@ export function FolderTree({
     }
   }, [isPhys, physicalFolderTree, virtualFolderTree]);
 
+  const getAllNodeIds = (nodes) => {
+    const ids = [];
+    const traverse = (node) => {
+      const nodeId = node.path || node.id;
+      if (nodeId) {
+        ids.push(nodeId);
+      }
+      let childrenList = [];
+      if (node.children) {
+        if (Array.isArray(node.children)) {
+          childrenList = node.children;
+        } else {
+          childrenList = Object.values(node.children);
+        }
+      }
+      childrenList.forEach(traverse);
+    };
+    nodes.forEach(traverse);
+    return ids;
+  };
+
+  const expandAll = () => {
+    const ids = getAllNodeIds(topLevelNodes);
+    const newExpanded = {};
+    ids.forEach(id => {
+      newExpanded[id] = true;
+    });
+    setExpanded(newExpanded);
+  };
+
+  const collapseAll = () => {
+    setExpanded({});
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <style>
@@ -350,10 +420,57 @@ export function FolderTree({
           .folder-tree-row-hover:hover {
             background-color: rgba(255, 255, 255, 0.05) !important;
           }
+          .folder-tree-header-btn {
+            background: none;
+            border: none;
+            color: #64748b;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 0 4px;
+            display: flex;
+            align-items: center;
+            transition: color 0.15s, transform 0.1s;
+            user-select: none;
+          }
+          .folder-tree-header-btn:hover {
+            color: #38bdf8;
+          }
+          .folder-tree-header-btn:active {
+            transform: scale(0.9);
+          }
         `}
       </style>
-      <div style={{ padding: '8px 12px', borderBottom: '1px solid #1f2937', fontSize: '12px', color: '#94a3b8', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-        Folders Tree
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '8px 12px',
+        borderBottom: '1px solid #1f2937',
+        fontSize: '12px',
+        color: '#94a3b8',
+        fontWeight: 'bold',
+        textTransform: 'uppercase',
+        letterSpacing: '0.5px'
+      }}>
+        <span>Folders Tree</span>
+        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+          <button 
+            onClick={expandAll} 
+            className="folder-tree-header-btn" 
+            title="Expand All"
+          >
+            [+]
+          </button>
+          <button 
+            onClick={collapseAll} 
+            className="folder-tree-header-btn" 
+            title="Collapse All"
+          >
+            [-]
+          </button>
+        </div>
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 6px' }}>
         {topLevelNodes.map(node => renderFolderNode(node, 0))}

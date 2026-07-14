@@ -511,6 +511,7 @@ def copy_files(paths: list[str] = Body(...), destination: str = Body(...)):
         raise HTTPException(status_code=400, detail="Invalid destination directory")
     
     copied_count = 0
+    failed_count = 0
     for path_str in paths:
         if shared_state.APP_SHUTTING_DOWN or STATE.get("cancel_data_operation"):
             raise HTTPException(status_code=400, detail="Operation cancelled")
@@ -527,8 +528,11 @@ def copy_files(paths: list[str] = Body(...), destination: str = Body(...)):
                         if src.exists() and src.is_file():
                             shutil.copy2(src, dest_path / src.name)
                             copied_count += 1
+                        else:
+                            failed_count += 1
             except Exception as e:
                 print(f"Error copying virtual folder files: {e}")
+                failed_count += 1
         else:
             src = _resolve_path(Path(path_str))
             if src.exists():
@@ -540,14 +544,17 @@ def copy_files(paths: list[str] = Body(...), destination: str = Body(...)):
                         shutil.copytree(src, dest_path / src.name)
                         copied_count += 1
                 except Exception as e:
+                    failed_count += 1
                     if load_config().get("enable_logging"):
                         import logging
                         logging.error(f"Critical error: Failed to copy {path_str}: {e}", exc_info=True)
                     print(f"Failed to copy {path_str}: {e}")
+            else:
+                failed_count += 1
     if load_config().get("enable_logging"):
         import logging
-        logging.info(f"Successfully copied {copied_count} files to destination.")
-    return {"copied": copied_count}
+        logging.info(f"Successfully copied {copied_count} files to destination (failed: {failed_count}).")
+    return {"copied": copied_count, "failed": failed_count}
 
 @router.post("/move-files", dependencies=[Depends(lock_data_operation)])
 def move_files(paths: list[str] = Body(...), destination: str = Body(...)):
@@ -582,6 +589,7 @@ def move_files(paths: list[str] = Body(...), destination: str = Body(...)):
         raise HTTPException(status_code=400, detail="Invalid destination directory")
     
     moved_count = 0
+    failed_count = 0
     updates = {}
     with SessionLocal() as session:
         for path_str in paths:
@@ -602,8 +610,11 @@ def move_files(paths: list[str] = Body(...), destination: str = Body(...)):
                             updates[f.path] = str(new_target)
                             f.path = str(new_target)
                             moved_count += 1
+                        else:
+                            failed_count += 1
                 except Exception as e:
                     print(f"Error moving virtual folder files: {e}")
+                    failed_count += 1
             else:
                 src = _resolve_path(Path(path_str))
                 if src.exists():
@@ -644,15 +655,18 @@ def move_files(paths: list[str] = Body(...), destination: str = Body(...)):
                                 updates[path_str] = str(new_target)
                             moved_count += 1
                     except Exception as e:
+                        failed_count += 1
                         if cfg.get("enable_logging"):
                             import logging
                             logging.error(f"Critical error: Failed to move {path_str}: {e}", exc_info=True)
                         print(f"Failed to move {path_str}: {e}")
+                else:
+                    failed_count += 1
         session.commit()
     if cfg.get("enable_logging"):
         import logging
-        logging.info(f"Successfully moved {moved_count} files to destination.")
-    return {"moved": moved_count, "updates": updates}
+        logging.info(f"Successfully moved {moved_count} files to destination (failed: {failed_count}).")
+    return {"moved": moved_count, "failed": failed_count, "updates": updates}
 
 @router.get("/directories")
 def directories():

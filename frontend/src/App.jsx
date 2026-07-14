@@ -113,11 +113,13 @@ const explorer = useExplorer({
 
 const tagsState = useTags({
   indexer, setIndexer, checkedFiles: explorer.checkedFiles, setCheckedFiles: explorer.setCheckedFiles, globalFileCache: explorer.globalFileCache, page, filterCategory: explorer.filterCategory,
-  loadFiles: explorer.loadFiles, goToSearch: explorer.goToSearch, selected: explorer.selected, setSelected: explorer.setSelected, loadDashboard, showToastMessage, setActionInProgress, setDataOpProgress, actionInProgress, dataOpProgress
+  loadFiles: explorer.loadFiles, goToSearch: explorer.goToSearch, selected: explorer.selected, setSelected: explorer.setSelected, loadDashboard, showToastMessage, setActionInProgress, setDataOpProgress, actionInProgress, dataOpProgress,
+  invalidateViewCache: explorer.invalidateViewCache, loadVirtualFolders: explorer.loadVirtualFolders
 });
 
 const peopleState = usePeople({
-  indexer, setIndexer, settings, page, setPage, selected: explorer.selected, setSelected: explorer.setSelected, checkedFiles: explorer.checkedFiles, setCheckedFiles: explorer.setCheckedFiles, globalFileCache: explorer.globalFileCache, filterCategory: explorer.filterCategory, loadFiles: explorer.loadFiles, goToSearch: explorer.goToSearch, loadDashboard, showToastMessage, setActionInProgress, setDataOpProgress, setOffset: explorer.setOffset, setStartOffset: explorer.setStartOffset, setHasMore: explorer.setHasMore, actionInProgress, dataOpProgress
+  indexer, setIndexer, settings, page, setPage, selected: explorer.selected, setSelected: explorer.setSelected, checkedFiles: explorer.checkedFiles, setCheckedFiles: explorer.setCheckedFiles, globalFileCache: explorer.globalFileCache, filterCategory: explorer.filterCategory, loadFiles: explorer.loadFiles, goToSearch: explorer.goToSearch, loadDashboard, showToastMessage, setActionInProgress, setDataOpProgress, setOffset: explorer.setOffset, setStartOffset: explorer.setStartOffset, setHasMore: explorer.setHasMore, actionInProgress, dataOpProgress,
+  invalidateViewCache: explorer.invalidateViewCache, loadVirtualFolders: explorer.loadVirtualFolders
 });
 
 sharedState.current.people = peopleState;

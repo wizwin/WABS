@@ -41,6 +41,98 @@ Once the terminal window opens and the backend starts, open your web browser and
 2. **Index Files:** Go to the **Dashboard** and click **Start** under Indexer Controls.
 3. **Explore:** Use the **Explorer** and **Search** tabs to navigate and manage your data.
 
+### Settings Reference
+
+The Settings page is divided into six tabs to let you customize WABS's database path, backups, UI preferences, AI parameters, Smart Searches, and clean up or backup your data:
+
+#### 1. General (System Settings)
+* **System Paths**:
+  * **Database Path**: The folder where the SQLite databases (`archive.db` and `ai_metadata.db`) are saved.
+  * **Thumbnail Path**: The folder where generated preview thumbnails and cropped face images are cached.
+  * **Global Excluded Folders**: A comma-separated list of folder names that WABS will skip in all directories (e.g. `node_modules, .git, venv, bin`).
+* **Data Safety**:
+  * **Enable Global Read-Only Mode**: Disables all physical move, delete, and rename actions in the UI, overriding individual backup settings to protect your data.
+  * **Allow deleting unverified duplicates (Dangerous)**: Toggles whether you can delete duplicate files before they have been verified with a full SHA-256 hash match.
+* **Startup**:
+  * **Start WABS automatically on user login**: Configures WABS to run in the background automatically upon logging into your computer.
+* **Memory Management**:
+  * **Automatically release memory when idle**: Unloads heavy Python libraries and ONNX AI models when WABS is inactive for a chosen duration (reclaiming ~500MB+ RAM). The idle timeout can be configured from 5 minutes to 2 hours.
+* **Diagnostics**:
+  * **Enable Background Logging**: Writes execution logs to `wabs.log` to help debug issues.
+
+#### 2. Backups (Storage & Backup Locations)
+Configure the physical drives, discs, or folder trees that you want to index.
+* **Add / Remove Location**: Manage multiple storage roots.
+* **Backup Path (Indexed Location)**: The source folder tree to index.
+* **Enable path remapping**: If you move your archive or run it on a new computer where the drive letter/mount point changes, enable this and select the **Mapped Backup Path (New Location)**. WABS will automatically map your indexed records without needing a full re-scan.
+* **Read-Only Mode**: Restrict files in this specific location from being moved or deleted.
+* **Excluded Folders**: Specify folder names to exclude *only* for this specific backup location.
+
+#### 3. UI Preferences
+* **Theme**: Choose between **Dark Mode** and **Light Mode**.
+* **View Preferences**:
+  * Toggle the visibility of the **Sidebar**, **Timeline**, and **Details Panel**.
+  * **Show Full Archive Timeline**: Toggles showing the calendar timeline of all indexed media.
+  * **Enable UI Animations**: Turns interface animations on or off for smoother UI transitions.
+  * **Enable Photo Thumbnail Caching**: Re-compresses and caches previews of large photos (above a configurable file size threshold, e.g. 5MB) to speed up loading grids.
+  * **Load all files at once (High memory usage)**: Disables lazy loading, fetching the entire list of files immediately.
+  * **Files to load per scroll**: Configures the pagination chunk size (default: 50) for lazy-rendered lists.
+
+#### 4. AI & Vision
+Configure AI models, scanner sensitivities, and offline OCR engines:
+* **AI / LLM**:
+  * **Enable AI Classification**: Enables natural language features. Set a custom **AI Provider Base URL** (e.g. `http://127.0.0.1:11434/v1` for Ollama or `http://127.0.0.1:1234/v1` for LM Studio) and **AI Model** name. You can enter an OpenAI key (encrypted securely) or leave it blank to run fully local.
+  * **Test AI Connection**: Performs a test query to verify your LLM provider configuration.
+* **Detection Sensitivity**:
+  * **Face Detection**: Adjust face-finding sensitivity:
+    * `High`: Detects small, blurry, or distant background faces. This is slower and can occasionally lead to false-positive detections.
+    * `Medium`: Balanced detection threshold (Recommended for standard family photos).
+    * `Low`: Only detects clear, high-precision foreground faces. This runs faster and avoids false detections.
+  * **Face Clustering Strictness**: Controls how strictly faces are grouped into profiles:
+    * `Strict`: Requires high similarity confidence to group faces. This avoids mixing different people but may create multiple separate profiles for the same person under different lighting or angles.
+    * `Medium`: Standard balanced grouping (Recommended).
+    * `Loose`: Groups profiles aggressively even with lower similarity confidence. This keeps profiles consolidated but might occasionally mix two lookalike people together.
+  * **Minimum Photos for Unknown Persons**: Hides unknown face clusters that contain fewer than the specified number of photos. Set to `3` or higher to filter out random background strangers and blurry false detections.
+  * **Object & Scene Detection**: Controls the confidence threshold for tagging objects:
+    * `High`: Tags a large variety of objects per photo, including low-probability matches. Good for comprehensive cataloging, but can introduce incorrect tags.
+    * `Medium`: Standard balanced classification (Recommended).
+    * `Low`: Only tags objects detected with high confidence, ensuring tags are highly accurate.
+  * **Document Text Extraction Word Limit**: Limits the number of extracted words per file to keep the search index lightweight (max 10,000 words).
+  * **Document Scanning Depth**: Set scanning depth:
+    * `Low`: Fast and lightweight; WABS scans only for core structural files, skipping heavy parsing (Recommended).
+    * `Medium`: Balanced scan depth.
+    * `High`: Thorough recursive scanning of embedded contents; will scan deeper but takes longer.
+* **OCR (Optical Character Recognition)**:
+  * **Enable OCR**: Extract printed English text from images and PDF pages.
+  * **Only run OCR on photos without faces/objects**: Skip scenic or portrait photos to focus text extraction strictly on receipts, screenshots, and documents.
+  * **OCR Maximum Pages per Document**: Limits the number of pages processed per PDF to speed up background runs.
+* **Advanced Performance Tuning**:
+  * **AI & Media CPU Threads**: Restrict the number of CPU cores used by face/object scanners (default: 4).
+  * **OCR CPU Threads**: Restrict the number of CPU cores used by text extraction (default: 4).
+  * **OCR Image Scan Limit**: Resizes large images during the text detection phase to speed up processing (default: 736px).
+  * **OCR Downscaling Mode**: Choose how WABS resizes documents before detecting text:
+    * `Minimum Side` (default): Prioritizes high resolution. This is extremely accurate for small text, receipts, or spreadsheets, but requires more CPU power.
+    * `Maximum Side`: Downscales images aggressively. This runs significantly faster and saves system memory, but might miss very small or fine text details.
+* **Hidden People**:
+  * Displays named or unknown profiles you chose to hide. You can unhide them with one click.
+
+#### 5. Smart Searches
+Manage and build saved searches:
+* **Add Smart Search**: Create new saved shortcuts.
+* **AI Search Assistant**: Use natural language prompts to generate search queries (requires LLM setup in AI tab).
+* **Remove / Edit Query**: Update saved shortcuts and their underlying search operators.
+
+#### 6. Data Management
+* **Database Cleanup & Optimization**: Removes missing file indices from the database, deletes orphaned face crops/records and tag associations, purges empty person profiles, and runs SQLite `VACUUM` to reclaim disk space.
+* **Full Database Backup**: Creates a backup zip archive containing `archive.db`, `ai_metadata.db`, and `config.yaml`.
+* **Data Portability (Import/Export JSON)**:
+  * Export/import named people (faces), custom tags, or virtual folders as portable, platform-independent JSON files.
+  * **Combined WABS Backup**: Backup or restore all custom tags, face profiles, and virtual folders together in a single JSON file.
+  * *Note: Imports utilize path remapping, meaning your data restores perfectly even if files have moved drives.*
+* **Clear Thumbnail Cache**: Deletes all cached preview images to reclaim disk space (regenerates on demand).
+
+---
+
 ### Managing Face Scanning & AI People Profiles
 
 Once the Face Scanner identifies faces, it groups them under automatic profiles in the **People** tab. You can manage these profiles using several built-in AI tools:
@@ -104,6 +196,11 @@ Each Virtual Folder can have **dynamic query rules** that automatically pull in 
 
 Dynamic members are combined with manually linked files at query time — no duplicate storage is needed.
 
+> [!TIP]
+> **Virtual Folder Customization & Defaults**
+> * **Default Styles:** By default, **Blue Folders** represent manual folders and **Purple Folders** represent smart folders with dynamic rules.
+> * **Custom Styling:** You can fully customize any virtual folder by selecting from **10 modern colors** and **11 descriptive icons** (such as Photos, Music, Videos, Starred, Heart, Work, Home, etc.) in the Create/Edit dialog.
+
 #### Subfolders & Nesting
 Virtual Folders can be nested inside other Virtual Folders, creating a hierarchy. Opening a parent folder shows both its own files and any Virtual Folder subfolders it contains. You can navigate the tree just like a physical directory.
 
@@ -115,8 +212,42 @@ The selection system treats Virtual Folders consistently with physical folders:
 * Selection state is used by batch operations (export, tagging, deletion) — exactly the same as with physical folders.
 
 #### Exporting Virtual Folder Contents
-When you trigger an export with a Virtual Folder selected, WABS resolves all member file IDs (manual links ∪ dynamic query matches) and applies the export operation to the full resolved set.
+* **Data Portability (Metadata Export):** You can export virtual folder structures, configurations, colors, and rules as a portable JSON file from the Data Management section in Settings.
+* **Direct Disk Export:** You can recursively copy all actual files within a virtual folder (and its nested subfolders) to a physical directory on another drive. Triggering this option opens a native OS-level folder selector to pick the destination path.
 
+---
+
+### Visual Indicators & Notations
+
+To help you manage your archive at a glance, WABS uses specific icons, badges, and colors on file cards and lists:
+
+#### 1. File Status Badges
+* ⏳ **Processing (Hourglass Icon, Light Blue)**: The file is currently being analyzed by background scanners (extracting text, detecting faces, or identifying objects). The card will show a glowing blue border and blue background.
+* ✅ **Verified Duplicate (Checkmark Icon, Green)**: Indicates a duplicate file where the SHA-256 hash has been calculated and verified to be a 100% match with another file in your database.
+* ⏳ **Unverified Duplicate (Hourglass Icon, Orange/Amber)**: Indicates a potential duplicate file (matches in filename and file size), but the SHA-256 hash comparison is still pending.
+* **RO / Read-Only Badge (Dark Gray)**: Displayed on files located within a read-only backup directory to indicate that they cannot be modified, moved, or deleted.
+
+#### 2. Selection Indicators
+* **Standard Checkbox (Blue/Default)**: Appears on hover or when a file is manually selected using the checkbox on its card.
+* **Implicit Selection (Teal Highlight & Checkbox)**: When you select a parent folder (physical directory or virtual folder), all files inside it are automatically selected *implicitly*. These files are highlighted with a teal border and a teal checkbox. Hovering over the checkbox shows "Selected via parent folder". Clicking it allows you to manually override the selection.
+
+#### 3. Media & Placeholder Styles
+* 🎬 **Video Play Overlay**: Video files display a play button overlay on their thumbnails.
+* 🎵 **Audio Album Art**: WABS automatically extracts and caches album/cover art from audio files (MP3, MP4/M4A, FLAC, OGG, and WMA) to display them as thumbnails.
+* 🎵 **Indigo Audio Fallbacks**: Audio files without embedded album art show a custom indigo-themed placeholder (light indigo `#f5f3ff` in light theme, dark indigo `#1e1b4b` in dark theme) rather than a generic fallback.
+
+---
+
+### Smart Searches & AI Search Assistant
+
+#### Smart Searches
+You can save any complex search query (e.g., `type:video length:>1h size:>2GB`) as a **Smart Search** shortcut. Once saved, these shortcuts appear in the search panel so you can rerun them with a single click.
+
+#### AI Search Assistant (Natural Language Search)
+If you aren't sure how to write a search query using search operators, WABS can translate natural language requests (e.g., *"photos of dogs taken on a Nikon camera in 2023"*) into valid search syntax:
+1. Ensure your local or cloud LLM provider (Ollama, LM Studio, or OpenAI) is configured in **Settings**.
+2. Go to the **Search** page, find the **AI Search Assistant** section, and enter your request in plain English.
+3. Click **Generate** — WABS will call your AI model to translate the request and automatically save it as a new **Smart Search** shortcut (e.g., `object:dog camera:nikon date:2023`).
 ---
 
 ### Advanced Search Operators

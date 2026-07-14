@@ -58,6 +58,14 @@ export function useExplorer({
       scrollTop: 0
     }
   });
+  const invalidateViewCache = () => {
+    viewContexts.current = {
+      explorer_flat: null,
+      explorer_tree: null,
+      virtual_folder_flat: null,
+      virtual_folder_tree: null
+    };
+  };
   const prevViewType = useRef(viewType);
   const prevPage = useRef(page);
   const folderTreeScrollTopRef = useRef(0);
@@ -266,6 +274,12 @@ export function useExplorer({
     try {
       const r = await axios.get(`${API}/virtual-folders`);
       setVirtualFolders(r.data);
+      if (currentVirtualFolder) {
+        const fresh = r.data.find(f => f.id === currentVirtualFolder.id);
+        if (fresh) {
+          setCurrentVirtualFolder(fresh);
+        }
+      }
     } catch (err) {
       console.warn('Failed to load virtual folders', err);
     }
@@ -392,6 +406,7 @@ export function useExplorer({
       } else {
         showToastMessage(`Selected file(s) are already in this virtual folder.`, null, 'warning');
       }
+      invalidateViewCache();
       await loadVirtualFolders();
       refreshFolderAndAncestorsCount(folderId);
       if (virtualFolderId === folderId) {
@@ -404,10 +419,11 @@ export function useExplorer({
     }
   }
 
-  async function removeFilesFromVirtualFolder(folderId, fileIds, paths = []) {
+  async function removeFilesFromVirtualFolder(folderId, fileIds, paths = [], recursive = true) {
     try {
-      await axios.delete(`${API}/virtual-folders/${folderId}/files`, { data: { file_ids: fileIds, paths: paths } });
+      await axios.post(`${API}/virtual-folders/${folderId}/files/delete`, { file_ids: fileIds, paths: paths, recursive: recursive });
       showToastMessage(`Removed file(s) from virtual folder.`);
+      invalidateViewCache();
       await loadVirtualFolders();
       refreshFolderAndAncestorsCount(folderId);
       setCheckedFiles(new Set());
@@ -515,7 +531,7 @@ export function useExplorer({
   // Fires when files/directories update and render in the DOM to ensure stable height.
   useEffect(() => {
     const container = document.querySelector('.content');
-    if (container && !pendingLocatePathRef.current) {
+    if (container && !pendingLocatePath) {
       const activeView = page === 'virtual_folder' ? virtualFolderViewType : viewType;
       const cacheKey = `${page}_${activeView}`;
       const ctx = viewContexts.current[cacheKey];
@@ -552,7 +568,7 @@ export function useExplorer({
     };
   }, [virtualFolderId]);
 
-  const pendingLocatePathRef = useRef(null);
+  const [pendingLocatePath, setPendingLocatePath] = useState(null);
   const [locateFolderOptions, setLocateFolderOptions] = useState(null);
   const [fileToLocate, setFileToLocate] = useState(null);
   const searchTimeout = useRef(null);
@@ -563,24 +579,56 @@ export function useExplorer({
   useEffect(() => {
     if (Array.isArray(files)) files.forEach(f => globalFileCache.current.set(f.path, f));
 
-    if (pendingLocatePathRef.current && files.length > 0) {
-      const targetPath = pendingLocatePathRef.current;
-      setTimeout(() => {
-        const escapedPath = targetPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        const el = document.querySelector(`[data-path="${escapedPath}"]`);
+    if (pendingLocatePath && files.length > 0) {
+      const targetPath = pendingLocatePath;
+      const startTime = Date.now();
+      
+      const tryScroll = () => {
+        const normalizedTarget = targetPath.replace(/\\/g, '/').toLowerCase();
+        const cards = document.querySelectorAll('[data-path]');
+        let el = null;
+        for (let i = 0; i < cards.length; i++) {
+          const cardPath = cards[i].getAttribute('data-path') || '';
+          if (cardPath.replace(/\\/g, '/').toLowerCase() === normalizedTarget) {
+            el = cards[i];
+            break;
+          }
+        }
+        
         if (el) {
-          el.scrollIntoView({ behavior: 'auto', block: 'center' });
+          const container = document.querySelector('.content');
+          if (container) {
+            const containerRect = container.getBoundingClientRect();
+            const elRect = el.getBoundingClientRect();
+            const absoluteTop = elRect.top - containerRect.top + container.scrollTop;
+            container.scrollTop = absoluteTop - (container.clientHeight / 2) + (elRect.height / 2);
+            
+            const activeView = page === 'virtual_folder' ? virtualFolderViewType : viewType;
+            const cacheKey = `${page}_${activeView}`;
+            if (viewContexts.current[cacheKey]) {
+              viewContexts.current[cacheKey].scrollTop = container.scrollTop;
+            }
+          }
+          
           el.style.outline = '2px solid #3b82f6';
           el.style.outlineOffset = '2px';
-          pendingLocatePathRef.current = null;
+
+          setTimeout(() => {
+            setPendingLocatePath(null);
+          }, 2000);
+          
           setTimeout(() => {
             el.style.outline = '';
             el.style.outlineOffset = '';
           }, 2000);
+        } else if (Date.now() - startTime < 1500) {
+          requestAnimationFrame(tryScroll);
         }
-      }, 250);
+      };
+      
+      requestAnimationFrame(tryScroll);
     }
-  }, [files]);
+  }, [files, pendingLocatePath]);
 
   useEffect(() => {
     if (Array.isArray(searchCache)) searchCache.forEach(f => globalFileCache.current.set(f.path, f));
@@ -984,7 +1032,12 @@ export function useExplorer({
       setCheckedFiles(next);
       lastCheckedPath.current = item.path;
     } else {
-      if (checkedFiles.size > 0) setCheckedFiles(new Set([item.path]));
+      if (checkedFiles.size > 0) {
+        const next = new Set(checkedFiles);
+        if (next.has(item.path)) next.delete(item.path);
+        else next.add(item.path);
+        setCheckedFiles(next);
+      }
       lastCheckedPath.current = item.path;
     }
   };
@@ -1239,6 +1292,7 @@ export function useExplorer({
     try {
       const checkedPaths = Array.from(checkedFiles);
       await axios.post(`${API}/delete-files`, { paths: checkedPaths });
+      invalidateViewCache();
       setFiles(prev => prev.filter(f => {
         if (checkedFiles.has(f.path)) return false;
         const isDescendant = checkedPaths.some(p => {
@@ -1288,7 +1342,18 @@ export function useExplorer({
       }
       setActionInProgress(true);
       const res = await axios.post(`${API}/copy-files`, { paths: Array.from(checkedFiles), destination: dest.data.path });
-      alert(`Successfully copied ${res.data.copied} files.`);
+      invalidateViewCache();
+      
+      const copied = res.data.copied || 0;
+      const failed = res.data.failed || 0;
+      if (copied > 0 && failed > 0) {
+        alert(`Successfully copied ${copied} file(s). ${failed} file(s) failed to copy (external drive disconnected or file not found).`);
+      } else if (copied === 0 && failed > 0) {
+        alert(`Failed to copy: none of the selected files could be found. Please check if your external drive is connected.`);
+      } else {
+        alert(`Successfully copied ${copied} files.`);
+      }
+      
       setCheckedFiles(new Set());
     } catch(err) {
       alert('Error copying files: ' + (err?.response?.data?.detail || err.message));
@@ -1315,10 +1380,21 @@ export function useExplorer({
       }
       setActionInProgress(true);
       const res = await axios.post(`${API}/move-files`, { paths: Array.from(checkedFiles), destination: dest.data.path });
+      invalidateViewCache();
       const updates = res.data.updates || {};
       setFiles(prev => prev.map(f => updates[f.path] ? { ...f, path: updates[f.path] } : f));
       setSearchCache(prev => prev.map(f => updates[f.path] ? { ...f, path: updates[f.path] } : f));
-      alert(`Successfully moved ${res.data.moved} files.`);
+      
+      const moved = res.data.moved || 0;
+      const failed = res.data.failed || 0;
+      if (moved > 0 && failed > 0) {
+        alert(`Successfully moved ${moved} file(s). ${failed} file(s) failed to move (external drive disconnected or file not found).`);
+      } else if (moved === 0 && failed > 0) {
+        alert(`Failed to move: none of the selected files could be found. Please check if your external drive is connected.`);
+      } else {
+        alert(`Successfully moved ${moved} files.`);
+      }
+      
       setCheckedFiles(new Set());
     } catch(err) {
       alert('Error moving files: ' + (err?.response?.data?.detail || err.message));
@@ -1349,6 +1425,7 @@ export function useExplorer({
     const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
 
     if (type === 'tree') {
+      setPendingLocatePath(file.path);
       setPage('explorer');
       setViewType('tree');
       navigateToPhys(parentFolder);
@@ -1378,6 +1455,7 @@ export function useExplorer({
           virtualFolderId: null
         };
         
+        setPendingLocatePath(file.path);
         setFiles(r.data);
         setOffset(targetStartOffset + r.data.length);
         setStartOffset(targetStartOffset);
@@ -1456,7 +1534,7 @@ export function useExplorer({
     setVirtualFolderId(targetFolder.id);
     setCurrentVirtualFolder(targetFolder);
     showToastMessage(`Located in virtual folder: ${targetFolder.name}`);
-    pendingLocatePathRef.current = activeFile.path;
+    setPendingLocatePath(activeFile.path);
     setLocateFolderOptions(null);
     setFileToLocate(null);
   }
@@ -1742,7 +1820,7 @@ export function useExplorer({
     startOffset, setStartOffset, hasMore, setHasMore, loadingMore, setLoadingMore,
     loadingPrevious, setLoadingPrevious, sortBy, setSortBy, sortOrder, setSortOrder,
     filterCategory, setFilterCategory, viewMode, setViewMode, checkedFiles, setCheckedFiles,
-    globalFileCache, showSelectedOnly, setShowSelectedOnly, activeDate, setActiveDate,
+    globalFileCache, pendingLocatePath, setPendingLocatePath, showSelectedOnly, setShowSelectedOnly, activeDate, setActiveDate,
     checkFileReadOnly, isSelectionReadOnly, loadFiles, doSearch, goToSearch, loadMore,
     loadPrevious, syncActiveDate, handleScroll, openFile, openContainingFolder, handleItemClick,
     toggleCheck, selectAll, selectVerifiedDuplicates, deleteSelected, openSelected,
@@ -1761,7 +1839,7 @@ export function useExplorer({
     addFilesToVirtualFolder, removeFilesFromVirtualFolder, handleOpenFolder,
     virtualFolderCounts, fetchFolderCount,
     virtualFolderViewType, setVirtualFolderViewType,
-    folderTreeScrollTopRef, timelineScrollTopRef,
+    folderTreeScrollTopRef, timelineScrollTopRef, invalidateViewCache,
     loadAllFolderCounts, loadingAllCounts,
     locateFolderOptions, setLocateFolderOptions,
     fileToLocate, setFileToLocate,

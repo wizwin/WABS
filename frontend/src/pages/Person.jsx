@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import axios from 'axios';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
@@ -12,6 +12,8 @@ import { ActionButton } from '../components/ui/ActionButton';
 import { TimelineItem } from '../components/ui/TimelineItem';
 import { DateGroup } from '../components/ui/DateGroup';
 import { PersonThumb } from '../components/ui/PersonThumb';
+import { SelectionBar } from '../components/ui/SelectionBar';
+import AddToFolderModal from '../components/ui/AddToFolderModal';
 import { API, formatSize } from '../States';
 
 export default function Person(props) {
@@ -33,6 +35,12 @@ export default function Person(props) {
     renderMetadata, handleScroll, dataOpProgress
   } = props;
 
+  const [isAddToFolderOpen, setIsAddToFolderOpen] = useState(false);
+  const [isAddToFolderMoveMode, setIsAddToFolderMoveMode] = useState(false);
+  const openAddToFolder = (isMove = false) => {
+    setIsAddToFolderMoveMode(isMove);
+    setIsAddToFolderOpen(true);
+  };
   const isTaskActive = indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || indexer.data_operation_running || actionInProgress || !!dataOpProgress;
 
   return (
@@ -281,40 +289,11 @@ export default function Person(props) {
         </div>
         )}
 
-        {checkedFiles.size > 0 && (
-        <div style={{ padding: '10px 18px', background: '#1e293b', borderBottom: '1px solid #1f2937', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ fontWeight: 'bold', color: '#3b82f6', marginRight: 'auto', whiteSpace: 'nowrap' }}>{checkedFiles.size} photo(s) selected</span>
-            {checkedFiles.size === 1 && (
-            <ActionButton disabled={isTaskActive} className="btn btn-secondary" style={{ padding: '6px 12px', whiteSpace: 'nowrap' }} onClick={() => {
-                const fileId = globalFileCache.current.get(Array.from(checkedFiles)[0])?.id;
-                if (fileId) setPersonThumbnail(currentPerson.id, fileId);
-            }}>Set as Cover Photo</ActionButton>
-            )}
-            {checkedFiles.size === 1 && (
-                <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', whiteSpace: 'nowrap' }} onClick={locateSelectedFileInExplorer}>
-                    <PlaceIcon fontSize="small" /> Locate in Explorer
-                </ActionButton>
-            )}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px', borderRadius: '8px', border: '1px solid #334155' }}>
-            <ActionButton disabled={isTaskActive} className="btn btn-secondary" style={{ padding: '6px 12px', background: isTaggingPerson ? '#334155' : undefined, whiteSpace: 'nowrap' }} onClick={() => { setIsTaggingPerson(!isTaggingPerson); loadPeople(); }}>Move to Person</ActionButton>
-            {isTaggingPerson && Array.isArray(people) && (
-                <select 
-                onChange={(e) => movePhotosToPerson(e.target.value, Array.from(checkedFiles))} 
-                style={{ padding: '6px 12px', background: '#1e293b', color: '#f8fafc', border: '1px solid #475569', borderRadius: '6px', outline: 'none' }}
-                value=""
-                >
-                <option value="" disabled>Select person...</option>
-                {sortedNamedPeopleDropdown.filter(p => p.id !== currentPerson?.id).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-            )}
-            </div>
-            <ActionButton disabled={isTaskActive} className="btn btn-secondary" style={{ padding: '6px 12px', background: '#ef4444', borderColor: '#b91c1c', color: 'white', whiteSpace: 'nowrap' }} onClick={() => {
-                const fileIds = Array.from(checkedFiles).map(path => globalFileCache.current.get(path)?.id).filter(id => id);
-                removePersonPhotosBulk(currentPerson.id, fileIds);
-            }}>Remove from Person</ActionButton>
-            <ActionButton className="btn btn-secondary" style={{ padding: '6px 12px', whiteSpace: 'nowrap' }} onClick={() => setCheckedFiles(new Set())}>Clear Selection</ActionButton>
-        </div>
-        )}
+        <SelectionBar
+          props={props}
+          context="person_files"
+          openAddToFolder={openAddToFolder}
+        />
 
         <div className="content" onScroll={handleScroll} style={{paddingTop: '18px', paddingLeft: '18px', paddingRight: '18px', overflowY: 'auto'}}>
 
@@ -487,6 +466,19 @@ export default function Person(props) {
 
         </div>
         }
+        <AddToFolderModal
+          isOpen={isAddToFolderOpen}
+          onClose={() => setIsAddToFolderOpen(false)}
+          selectedFiles={Array.from(checkedFiles)}
+          virtualFolders={props.virtualFolders}
+          createVirtualFolder={props.createVirtualFolder}
+          addFilesToVirtualFolder={props.addFilesToVirtualFolder}
+          globalFileCache={globalFileCache}
+          isMoveMode={isAddToFolderMoveMode}
+          sourceVirtualFolder={null}
+          removeFilesFromVirtualFolder={null}
+          loadVirtualFolders={props.loadVirtualFolders}
+        />
     </>
   );
 }

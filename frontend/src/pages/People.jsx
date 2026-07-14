@@ -165,7 +165,16 @@ export default function People(props) {
                 
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
                 {sortedNamedPeopleForUI.slice((namedPeoplePage - 1) * 50, namedPeoplePage * 50).map(p => (
-                <div key={p.id} id={`person-card-${p.id}`} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
+                <div key={p.id} id={`person-card-${p.id}`} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => {
+                  if (checkedPeople.size > 0) {
+                    const next = new Set(checkedPeople);
+                    if (next.has(p.id)) next.delete(p.id);
+                    else next.add(p.id);
+                    setCheckedPeople(next);
+                  } else {
+                    openPersonPhotos(p);
+                  }
+                }}>
                     <input 
                     type="checkbox" 
                     checked={checkedPeople.has(p.id)}
@@ -357,7 +366,16 @@ export default function People(props) {
 
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
                 {sortedUnknownPeopleForUI.slice((unknownPeoplePage - 1) * 50, unknownPeoplePage * 50).map(p => (
-                <div key={p.id} id={`person-card-${p.id}`} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
+                <div key={p.id} id={`person-card-${p.id}`} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => {
+                  if (checkedPeople.size > 0) {
+                    const next = new Set(checkedPeople);
+                    if (next.has(p.id)) next.delete(p.id);
+                    else next.add(p.id);
+                    setCheckedPeople(next);
+                  } else {
+                    openPersonPhotos(p);
+                  }
+                }}>
                     <input 
                     type="checkbox" 
                     checked={checkedPeople.has(p.id)}
