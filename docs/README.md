@@ -322,7 +322,7 @@ OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 ./WABS-Linux
 ---
 
 ## Screenshot
-<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/fd5629fb-dbc3-40d1-b24a-8d7c6c66a336" />
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/416e5b66-0821-4099-bb76-df43259fb07c" />
 
 
 ## Advanced Users & Developers
