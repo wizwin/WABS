@@ -261,7 +261,11 @@ async def track_activity_and_cache(request: Request, call_next):
     response = await call_next(request)
     if request.method == "GET" and response.status_code == 200:
         if path.endswith("/thumbnail") or "/preview/" in path:
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            content_type = response.headers.get("content-type", "")
+            if "svg" in content_type:
+                response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            else:
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
 
 app.add_middleware(

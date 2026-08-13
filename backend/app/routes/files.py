@@ -344,7 +344,7 @@ def preview(item_id:int, theme: str = "dark"):
   <text x='50%' y='60%' fill='{text_fill_2}' font-family='Segoe UI,Arial' font-size='16' text-anchor='middle'>{file_category.upper()}</text>
 </svg>
 """.strip()
-    return Response(content=placeholder, media_type='image/svg+xml')
+    return Response(content=placeholder, media_type='image/svg+xml', headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
 @router.post("/open/{item_id}")
 def open_file(item_id:int):

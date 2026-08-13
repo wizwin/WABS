@@ -46,11 +46,11 @@ export function FolderTree({
     // Create a tree node for each backup configuration
     const backupsList = backups.map(b => {
       let pathKey = String(b.backup_path || '').replace(/\\/g, '/').toLowerCase();
-      if (pathKey.endsWith('/') && pathKey.length > 3) {
+      if (pathKey.endsWith('/') && pathKey.length > 1) {
         pathKey = pathKey.slice(0, -1);
       }
       let displayPath = b.backup_path ? String(b.backup_path).replace(/\\/g, '/') : 'root';
-      if (displayPath.endsWith('/') && displayPath.length > 3) {
+      if (displayPath.endsWith('/') && displayPath.length > 1) {
         displayPath = displayPath.slice(0, -1);
       }
       return {
@@ -66,7 +66,7 @@ export function FolderTree({
     (directories || []).forEach(dirPath => {
       if (!dirPath) return;
       let normalized = dirPath.replace(/\\/g, '/');
-      if (normalized.endsWith('/') && normalized.length > 3) {
+      if (normalized.endsWith('/') && normalized.length > 1) {
         normalized = normalized.slice(0, -1);
       }
       const normalizedLower = normalized.toLowerCase();
@@ -310,7 +310,7 @@ export function FolderTree({
                 const normalizePath = (p) => {
                   if (!p) return '';
                   let norm = p.replace(/\\/g, '/').toLowerCase();
-                  if (norm.endsWith('/') && norm.length > 3) {
+                  if (norm.endsWith('/') && norm.length > 1) {
                     norm = norm.slice(0, -1);
                   }
                   return norm;

@@ -29,7 +29,8 @@ def generate_photo_thumbnail(file_path: Path, cached_thumb: Path) -> bool:
     if cv2 is not None:
         try:
             import numpy as np
-            img_array = np.fromfile(str(file_path), np.uint8)
+            with open(file_path, 'rb') as f:
+                img_array = np.frombuffer(f.read(), np.uint8)
             img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             if img is not None:
                 height, width = img.shape[:2]
@@ -92,6 +93,20 @@ def generate_video_thumbnail(file_path: Path, cached_thumb: Path) -> bool:
             if not success:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 success, frame = cap.read()
+
+            # Software fallback: if hardware acceleration opened the video but failed to read frames
+            if not success and hw_params:
+                cap.release()
+                cap = cv2.VideoCapture(str(file_path)) # Open with CAP_ANY without hardware acceleration
+                if cap.isOpened():
+                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    if frame_count > 0:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_count * 0.1))
+                    success, frame = cap.read()
+                    if not success:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        success, frame = cap.read()
+
             if success:
                 height, width = frame.shape[:2]
                 scaling_factor = min(400 / width, 300 / height)
@@ -133,7 +148,7 @@ def generate_document_thumbnail(file_path: Path, cached_thumb: Path, theme: str)
   <text x='50%' y='60%' fill='{text_fill_2}' font-family='Segoe UI,Arial' font-size='16' text-anchor='middle'>ENCRYPTED PDF</text>
 </svg>
 """.strip()
-                    return Response(content=placeholder, media_type='image/svg+xml')
+                    return Response(content=placeholder, media_type='image/svg+xml', headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
                 page = doc.load_page(0)
                 pix = page.get_pixmap(matrix=fitz.Matrix(0.5, 0.5))
@@ -228,7 +243,8 @@ def _evaluate_image_faces(file_path, yunet_path: str):
         if width > 0 and height > 0 and (width < 100 or height < 100):
             return []
 
-        img_array = np.fromfile(str(file_path), np.uint8)
+        with open(file_path, 'rb') as f:
+            img_array = np.frombuffer(f.read(), np.uint8)
         img = None
         
         # If JPEG and very large, use scale-on-decode flags

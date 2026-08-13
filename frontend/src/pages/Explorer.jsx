@@ -128,7 +128,7 @@ export default function Explorer(props) {
       backups.forEach(b => {
         if (b.backup_path) {
           let pathKey = String(b.backup_path).replace(/\\/g, '/');
-          if (pathKey.endsWith('/') && pathKey.length > 3) {
+          if (pathKey.endsWith('/') && pathKey.length > 1) {
             pathKey = pathKey.slice(0, -1);
           }
           const pathKeyLower = pathKey.toLowerCase();
@@ -146,7 +146,7 @@ export default function Explorer(props) {
       (directories || []).forEach(dirPath => {
         if (!dirPath) return;
         let normalized = dirPath.replace(/\\/g, '/');
-        if (normalized.endsWith('/') && normalized.length > 3) {
+        if (normalized.endsWith('/') && normalized.length > 1) {
           normalized = normalized.slice(0, -1);
         }
         const normalizedLower = normalized.toLowerCase();
@@ -154,7 +154,7 @@ export default function Explorer(props) {
         let hasMatch = false;
         backups.forEach(b => {
           let pathKey = String(b.backup_path || '').replace(/\\/g, '/').toLowerCase();
-          if (pathKey.endsWith('/') && pathKey.length > 3) {
+          if (pathKey.endsWith('/') && pathKey.length > 1) {
             pathKey = pathKey.slice(0, -1);
           }
           if (pathKey && (normalizedLower.startsWith(pathKey + '/') || normalizedLower === pathKey)) {
@@ -231,7 +231,7 @@ export default function Explorer(props) {
 
     backups.forEach(b => {
       let pathKey = String(b.backup_path || '').replace(/\\/g, '/').toLowerCase();
-      if (pathKey.endsWith('/') && pathKey.length > 3) {
+      if (pathKey.endsWith('/') && pathKey.length > 1) {
         pathKey = pathKey.slice(0, -1);
       }
       if (pathKey && (cleanActiveLower.startsWith(pathKey + '/') || cleanActiveLower === pathKey)) {

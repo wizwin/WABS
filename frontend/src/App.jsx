@@ -703,6 +703,7 @@ useEffect(() => {
       wasRunningRef.current = false;
       loadDashboard();
       if (page === 'people') peopleState.loadPeople();
+      explorer.loadDirectories();
       tagsState.loadTags();
       setTimelineUpdateTick(prev => prev + 1);
     }

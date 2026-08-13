@@ -1438,7 +1438,8 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
 
                             # If not already loaded (i.e. didn't have transparency), proceed with fast OpenCV decode
                             if img is None:
-                                img_array = np.fromfile(str(file), np.uint8)
+                                with open(file, 'rb') as f:
+                                    img_array = np.frombuffer(f.read(), np.uint8)
                                 ocr_enabled = cfg.get("ocr_enabled", False)
                                 
                                 # If JPEG and very large, use scale-on-decode flags
@@ -2035,6 +2036,45 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
 
                 session.commit()
                 conn.commit()
+
+            # Pre-generate face thumbnails for new/existing people who don't have them yet while the media is still online
+            if run_face and not (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped):
+                try:
+                    from backend.app.config import get_thumbnail_dir
+                    from backend.app.utils.paths import get_ai_db_path
+                    import sqlite3
+                    import os
+                    
+                    # Update status so the user knows exactly what WABS is doing
+                    STATE["status"] = "Caching face thumbnails..."
+                    
+                    thumb_dir = get_thumbnail_dir("faces")
+                    ai_db_path = get_ai_db_path()
+                    
+                    if ai_db_path.exists():
+                        from backend.app.routes.people import get_person_thumbnail
+                        
+                        with sqlite3.connect(str(ai_db_path), timeout=15) as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT id FROM people")
+                            p_ids = [row[0] for row in cursor.fetchall()]
+                            
+                        # Optimization: List directory once to avoid 60K slow exists() disk checks
+                        existing_files = set(os.listdir(str(thumb_dir))) if thumb_dir.exists() else set()
+                            
+                        for p_id in p_ids:
+                            # Graceful stop / shutdown check
+                            if shared_state.APP_SHUTTING_DOWN or STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped:
+                                break
+                                
+                            filename = f"person_{p_id}.jpg"
+                            if filename not in existing_files:
+                                try:
+                                    get_person_thumbnail(p_id)
+                                except Exception as ex:
+                                    print(f"Failed to pre-generate face thumbnail for person {p_id}: {ex}")
+                except Exception as e:
+                    print(f"Error in pre-generating face thumbnails: {e}")
 
             # Prevent frontend UI progress bar from instantly disappearing before registering 100% completion
             if not (STATE.get("stopped") or app_state.combined_scanner_stopped):

@@ -224,6 +224,7 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
         raise HTTPException(status_code=500, detail="OpenCV not installed")
         
     cfg = load_config()
+    enable_logging = cfg.get("enable_logging", False)
     ai_db_path = get_ai_db_path()
     if not ai_db_path.exists():
         raise HTTPException(status_code=404, detail="Database not found")
@@ -293,10 +294,36 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
             if not file_item:
                 raise HTTPException(status_code=404, detail="Image not found")
         file_path = _resolve_path(Path(file_item.path))
+        import logging
+        if enable_logging:
+            logging.debug(f"[DEBUG-THUMB] get_person_thumbnail person_id={person_id} file_id={file_id} path={file_path} exists={file_path.exists()}")
         
         import numpy as np
-        img_array = np.fromfile(str(file_path), np.uint8)
-        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        try:
+            with open(file_path, 'rb') as f:
+                img_array = np.frombuffer(f.read(), np.uint8)
+            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        except Exception as read_err:
+            logging.exception(f"Failed to read image bytes for face thumbnail of person {person_id} (file {file_id})")
+            img = None
+        
+        if img is not None:
+            try:
+                from PIL import Image
+                with Image.open(file_path) as exif_img:
+                    exif = exif_img._getexif()
+                    if exif:
+                        orientation = exif.get(274)
+                        if orientation in (3, 6, 8):
+                            if orientation == 3:
+                                img = cv2.rotate(img, cv2.ROTATE_180)
+                            elif orientation == 6:
+                                img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+                            elif orientation == 8:
+                                img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            except Exception as exif_err:
+                if enable_logging:
+                    logging.info(f"Failed to rotate image based on EXIF in get_person_thumbnail: {exif_err}")
         
         if img is None:
             try:
@@ -307,7 +334,7 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
                         pil_img = pil_img.convert('RGB')
                     img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
             except Exception as e:
-                print(f"Pillow face thumbnail fallback failed for {file_path.name}: {e}")
+                logging.exception(f"Pillow face thumbnail fallback failed for {file_path.name}")
                 
         if img is None:
             return preview(file_id, theme)
@@ -316,7 +343,7 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
         sface_path = get_bundled_model_path("face_recognition_sface_2021dec.onnx")
 
         if not Path(yunet_path).exists() or not Path(sface_path).exists():
-            print("Face recognition models not found. Ensure .onnx files are in the backend folder.")
+            logging.error("Face recognition models not found. Ensure .onnx files are in the backend folder.")
             return preview(file_id, theme)
 
         backend_id, target_id = get_cv2_dnn_backends()
@@ -403,9 +430,12 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
                         f.write(buffer.tobytes())
                 if cached_face.exists():
                     return FileResponse(str(cached_face), media_type="image/jpeg")
+            else:
+                if enable_logging:
+                    logging.debug(f"[DEBUG-THUMB] crop conditions not met for person {person_id}: best_face_align={best_face_align is not None} best_sim={best_sim}")
 
     except Exception as e:
-        print(f"Failed to generate face thumbnail: {e}")
+        logging.exception(f"Failed to generate face thumbnail for person {person_id}")
 
     # Fallback to the full image thumbnail if face crop fails
     return preview(file_id, theme)
