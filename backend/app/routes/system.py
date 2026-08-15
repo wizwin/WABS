@@ -17,7 +17,11 @@ from backend.app.constants import (
     STANDARD_CATEGORIES,
     SEARCHABLE_DOCUMENT_CATEGORIES
 )
-from backend.app.utils.paths import get_ai_db_path
+from backend.app.utils.paths import get_ai_db_path, get_relationships_db_path
+from backend.app.relationships_database import (
+    export_relationships_internal,
+    import_relationships_internal
+)
 from backend.app.utils.cache import EXEMPLAR_CACHE
 from backend.app.utils.utils import _resolve_path, parse_tags, find_file_by_path_smart
 import backend.app.shared_state as shared_state
@@ -219,6 +223,8 @@ def settings():
         "smart_searches": [],
         "auto_run_on_startup": False,
         "view_type": "flat",
+        "me_name": "",
+        "people_category_filter": "all"
     }
 
     def merge_defaults(config, defaults_dict):
@@ -520,6 +526,10 @@ def backup_databases(payload: dict = Body(...)):
         if ai_db_path.exists():
             with sqlite3.connect(ai_db_path) as src, sqlite3.connect(dest_path / ai_db_path.name) as dst:
                 src.backup(dst)
+        rel_db_path = get_relationships_db_path()
+        if rel_db_path.exists():
+            with sqlite3.connect(str(rel_db_path)) as src, sqlite3.connect(dest_path / rel_db_path.name) as dst:
+                src.backup(dst)
         if config_path.exists():
             shutil.copy2(config_path, dest_path / config_path.name)
             
@@ -787,6 +797,30 @@ def system_cleanup(clean_files: bool = True, clean_thumbnails: bool = True, dele
                 if cfg.get("enable_logging"):
                     import logging
                     logging.warning(f"Failed to vacuum AI database: {e}")
+
+        rel_db_path = get_relationships_db_path()
+        if rel_db_path.exists():
+            try:
+                with sqlite3.connect(str(rel_db_path), timeout=15) as rconn:
+                    rconn.execute("PRAGMA journal_mode=WAL;")
+                    # Clean up truly orphaned persons (ai_person_id is NULL and name not in ai_metadata.db)
+                    if ai_db_path.exists():
+                        with sqlite3.connect(str(ai_db_path), timeout=10) as aconn:
+                            ai_names = {r[0].lower() for r in aconn.execute("SELECT name FROM people WHERE name NOT LIKE 'Unknown Person%'").fetchall() if r[0]}
+                            all_unlinked = rconn.execute("SELECT id, name FROM persons WHERE ai_person_id IS NULL AND is_me = 0").fetchall()
+                            orphans = [r[0] for r in all_unlinked if not r[1] or r[1].lower() not in ai_names]
+                            if orphans:
+                                for i in range(0, len(orphans), 900):
+                                    chunk = orphans[i:i+900]
+                                    placeholders = ",".join("?" * len(chunk))
+                                    rconn.execute(f"DELETE FROM person_social WHERE person_id IN ({placeholders})", chunk)
+                                    rconn.execute(f"DELETE FROM persons WHERE id IN ({placeholders})", chunk)
+                                rconn.commit()
+                    rconn.execute("VACUUM")
+            except Exception as e:
+                if cfg.get("enable_logging"):
+                    import logging
+                    logging.warning(f"Failed to cleanup/vacuum relationships database: {e}")
 
     if clean_thumbnails:
         with SessionLocal() as s:
@@ -1180,6 +1214,7 @@ def export_all():
             folders_data = export_folders_internal(s)
             tags_data = export_tags_internal(s)
         config_data = cfg
+        relationships_data = export_relationships_internal()
         if cfg.get("enable_logging"):
             import logging
             logging.info("Combined WABS export completed successfully.")
@@ -1187,7 +1222,8 @@ def export_all():
             "people": people_data,
             "folders": folders_data,
             "tags": tags_data,
-            "config": config_data
+            "config": config_data,
+            "relationships": relationships_data
         }
     except Exception as e:
         if cfg.get("enable_logging"):
@@ -1222,6 +1258,10 @@ def import_all(payload: dict = Body(...)):
             if tags_data:
                 import_tags_internal(s, tags_data)
                 
+        relationships_data = payload.get("relationships")
+        if relationships_data:
+            import_relationships_internal(relationships_data)
+                
         config_data = payload.get("config")
         if config_data:
             current_cfg = load_config()
@@ -1240,15 +1280,17 @@ def import_all(payload: dict = Body(...)):
             
         folders_count = len(folders_data) if folders_data else 0
         tags_count = len(tags_data) if tags_data else 0
+        relationships_count = len(relationships_data.get("person_social", [])) if (relationships_data and isinstance(relationships_data, dict)) else 0
         if cfg.get("enable_logging"):
             import logging
-            logging.info(f"Combined WABS import completed successfully. Imported {imported_people_count} profiles, {imported_faces_count} faces, {folders_count} folders, {tags_count} tags, config_imported={config_imported}.")
+            logging.info(f"Combined WABS import completed successfully. Imported {imported_people_count} profiles, {imported_faces_count} faces, {folders_count} folders, {tags_count} tags, {relationships_count} relationships, config_imported={config_imported}.")
         return {
             "success": True,
             "imported_people": imported_people_count,
             "imported_faces": imported_faces_count,
             "imported_folders": folders_count,
             "imported_tags": tags_count,
+            "imported_relationships": relationships_count,
             "config_imported": config_imported
         }
     except Exception as e:
@@ -1256,3 +1298,25 @@ def import_all(payload: dict = Body(...)):
             import logging
             logging.error(f"Error during combined WABS import: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/system/export-relationships", dependencies=[Depends(lock_data_operation)])
+def export_relationships():
+    """
+    Exports all relationship and person categorization metadata as JSON.
+    """
+    data = export_relationships_internal()
+    print(f"[SYSTEM] Exported relationships metadata: {len(data.get('persons', []))} persons, {len(data.get('person_social', []))} relationships")
+    return data
+
+@router.post("/system/import-relationships", dependencies=[Depends(lock_data_operation)])
+def import_relationships(payload: dict = Body(...)):
+    """
+    Imports relationship and person categorization metadata from JSON.
+    """
+    try:
+        import_relationships_internal(payload)
+        print(f"[SYSTEM] Successfully imported relationships metadata payload")
+        return {"status": "success", "message": "Relationships successfully imported."}
+    except Exception as e:
+        print(f"[SYSTEM] Failed to import relationships: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to import relationships: {e}")

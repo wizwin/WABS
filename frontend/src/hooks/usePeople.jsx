@@ -96,13 +96,18 @@ export function usePeople({
       const r = await axios.get(`${API}/people?min_unknown_photos=${minPhotos}&t=${Date.now()}`);
       if (Array.isArray(r.data)) {
         setPeople(r.data);
+        setCurrentPerson(prev => {
+          if (!prev) return null;
+          const updated = r.data.find(p => p.id === prev.id);
+          return updated ? { ...prev, ...updated } : prev;
+        });
       } else {
         console.warn('API returned non-array:', r.data);
-        setPeople(null);
+        setPeople([]);
       }
     } catch (err) {
       console.warn('Failed to load people', err);
-      setPeople(null);
+      setPeople([]);
     }
   }
   
@@ -919,6 +924,80 @@ export function usePeople({
     input.click();
   }
 
+  async function setMeIdentity(name) {
+    try {
+      await axios.patch(`${API}/people/set-me`, { name: name || '' });
+      showToastMessage(name ? `Identity set to "${name}".` : 'Identity cleared.');
+      loadPeople();
+    } catch (err) {
+      alert('Error setting user identity: ' + (err?.response?.data?.detail || err.message));
+    }
+  }
+
+  async function exportRelationships() {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+      alert("Please stop all background tasks before exporting relationships to ensure data consistency.");
+      return;
+    }
+    window.wabs_action_in_progress = true;
+    setActionInProgress(true);
+    showToastMessage('Exporting relationships...');
+    try {
+      const r = await axios.get(`${API}/system/export-relationships`);
+      const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const dlAnchorElem = document.createElement('a');
+      dlAnchorElem.setAttribute("href", url);
+      dlAnchorElem.setAttribute("download", `wabs_relationships_${new Date().toISOString().split('T')[0]}.json`);
+      document.body.appendChild(dlAnchorElem);
+      dlAnchorElem.click();
+      dlAnchorElem.remove();
+      URL.revokeObjectURL(url);
+      showToastMessage('Relationships exported successfully.');
+    } catch(err) {
+      alert('Error exporting relationships: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      window.wabs_action_in_progress = false;
+      setActionInProgress(false);
+    }
+  }
+
+  function importRelationships() {
+    if (window.wabs_action_in_progress) return;
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+      alert("Please stop all background tasks before importing relationships to prevent database conflicts.");
+      return;
+    }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        if (window.wabs_action_in_progress) return;
+        window.wabs_action_in_progress = true;
+        setActionInProgress(true);
+        showToastMessage('Importing relationships...');
+        try {
+          const payload = JSON.parse(event.target.result);
+          const r = await axios.post(`${API}/system/import-relationships`, payload);
+          showToastMessage(`Imported ${r.data.imported_persons || 0} person profiles and ${r.data.imported_social || 0} relationship records.`);
+          loadPeople();
+        } catch (err) {
+          alert('Error importing relationships: ' + (err?.response?.data?.detail || err.message));
+        } finally {
+          window.wabs_action_in_progress = false;
+          setActionInProgress(false);
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  }
+
   const getPersonThumbUrl = (p) => {
     if (!p.thumbnail) return '';
     let url = p.thumbnail.startsWith('http') ? p.thumbnail : `${API}${p.thumbnail}`;
@@ -994,17 +1073,259 @@ export function usePeople({
     return sortedSimilarUnknowns.filter(p => !hidden.has(p.id) && !(p.name && hidden.has(p.name)));
   }, [sortedSimilarUnknowns, settings.hidden_people]);
 
+  const [showRelationshipTree, setShowRelationshipTree] = useState(false);
+
+  const activeCategoryFilter = settings?.people_category_filter || 'all';
+
   const namedPeopleBase = useMemo(() => {
     if (!Array.isArray(people)) return [];
     const hidden = new Set(settings.hidden_people || []);
     return people.filter(p => !(p.name || '').startsWith('Unknown Person') && !hidden.has(p.id) && !(p.name && hidden.has(p.name)));
   }, [people, settings.hidden_people]);
 
+  const mePerson = useMemo(() => {
+    if (!Array.isArray(people)) return null;
+    const meName = (settings?.me_name || '').trim().toLowerCase();
+    if (!meName) return people.find(p => p.is_me) || null;
+    return people.find(p => (p.name || '').toLowerCase() === meName) || people.find(p => p.is_me) || null;
+  }, [people, settings?.me_name]);
+
+  const categoryCounts = useMemo(() => {
+    const counts = {
+      all: namedPeopleBase.length,
+      Family: 0,
+      Friends: 0,
+      Others: 0,
+      uncategorized: 0
+    };
+    namedPeopleBase.forEach(p => {
+      if (p.category === 'Family') counts.Family++;
+      else if (p.category === 'Friends') counts.Friends++;
+      else if (p.category === 'Others') counts.Others++;
+      else counts.uncategorized++;
+    });
+    return counts;
+  }, [namedPeopleBase]);
+
+  const categoryFilteredPeople = useMemo(() => {
+    if (activeCategoryFilter === 'all') return namedPeopleBase;
+    if (activeCategoryFilter === 'uncategorized') return namedPeopleBase.filter(p => !p.category);
+    return namedPeopleBase.filter(p => p.category === activeCategoryFilter);
+  }, [namedPeopleBase, activeCategoryFilter]);
+
   const filteredNamedPeople = useMemo(() => {
-    const query = namedPersonSearchQuery.toLowerCase();
-    if (!query) return namedPeopleBase;
-    return namedPeopleBase.filter(p => (p.name || '').toLowerCase().includes(query));
-  }, [namedPeopleBase, namedPersonSearchQuery]);
+    const q = namedPersonSearchQuery.trim().toLowerCase();
+    if (!q) return categoryFilteredPeople;
+    return categoryFilteredPeople.filter(p => 
+      (p.name || '').toLowerCase().includes(q) ||
+      (p.category || '').toLowerCase().includes(q) ||
+      (p.subcategory || '').toLowerCase().includes(q) ||
+      (p.relation_label || '').toLowerCase().includes(q)
+    );
+  }, [categoryFilteredPeople, namedPersonSearchQuery]);
+
+  // Structured Relationship Tree Data
+  const relationshipTreeData = useMemo(() => {
+    const meName = settings?.me_name || mePerson?.name || 'Me';
+    
+    // Group people by category and subcategory
+    const familySubgroups = {
+      spouse: { id: 'sub_spouse', name: 'Spouse / Partner', icon: 'favorite', color: '#ec4899', children: [] },
+      parents: { id: 'sub_parents', name: 'Parents', icon: 'parent', color: '#38bdf8', children: [] },
+      siblings: { id: 'sub_siblings', name: 'Siblings (Brothers & Sisters)', icon: 'sibling', color: '#6366f1', children: [] },
+      kids: { id: 'sub_children', name: 'Children (Sons & Daughters)', icon: 'child', color: '#f59e0b', children: [] },
+      grandparents: { id: 'sub_grandparents', name: 'Grandparents', icon: 'parent', color: '#06b6d4', children: [] },
+      extended: {
+        id: 'sub_extended',
+        name: 'Extended Family & Relatives',
+        icon: 'extended',
+        color: '#8b5cf6',
+        children: []
+      }
+    };
+
+    const extendedSubgroups = {
+      inlaws: { id: 'sub_inlaws', name: 'In-laws', icon: 'extended', color: '#f472b6', children: [] },
+      auntuncle: { id: 'sub_auntuncle', name: 'Aunts & Uncles (Parents\' Siblings)', icon: 'extended', color: '#818cf8', children: [] },
+      greatauntuncle: { id: 'sub_greatauntuncle', name: 'Great-Aunts & Uncles (Grandparents\' Siblings)', icon: 'extended', color: '#a5b4fc', children: [] },
+      cousins1: { id: 'sub_cousins1', name: '1st Cousins (Parents\' Siblings\' Children)', icon: 'extended', color: '#a78bfa', children: [] },
+      cousins1r: { id: 'sub_cousins1r', name: 'Cousins Once Removed (Parents\' / Grandparents\' Cousins)', icon: 'extended', color: '#c4b5fd', children: [] },
+      cousins2: { id: 'sub_cousins2', name: '2nd / Distant Cousins', icon: 'extended', color: '#c084fc', children: [] },
+      niecenephew: { id: 'sub_niecenephew', name: 'Nieces & Nephews (Siblings\' Children)', icon: 'extended', color: '#60a5fa', children: [] },
+      otherfam: { id: 'sub_otherfam', name: 'Other Family & Ancestors', icon: 'home', color: '#94a3b8', children: [] }
+    };
+
+    const friendsSubgroups = {
+      close: { id: 'sub_close', name: 'Close Friends', icon: 'star', color: '#10b981', children: [] },
+      colleagues: { id: 'sub_colleagues', name: 'Colleagues & Work', icon: 'work', color: '#f59e0b', children: [] },
+      classmates: { id: 'sub_classmates', name: 'Classmates / School', icon: 'school', color: '#06b6d4', children: [] },
+      acquaintances: { id: 'sub_acquaintances', name: 'Acquaintances', icon: 'handshake', color: '#64748b', children: [] },
+      otherfriends: { id: 'sub_otherfriends', name: 'Other Friends', icon: 'group', color: '#22c55e', children: [] }
+    };
+
+    const othersSubgroups = {
+      neighbor: { id: 'sub_neighbor', name: 'Neighbors', icon: 'category', color: '#94a3b8', children: [] },
+      service: { id: 'sub_service', name: 'Service & Professional Contacts', icon: 'work', color: '#a855f7', children: [] },
+      other: { id: 'sub_other', name: 'Other Contacts', icon: 'category', color: '#64748b', children: [] }
+    };
+
+    (namedPeopleBase || []).forEach(p => {
+      if (!p) return;
+      const isMeFlag = (p.is_me || (p.name && (settings?.me_name || '').toLowerCase() === p.name.toLowerCase()));
+      if (isMeFlag) return; // Don't place Me inside subbranches
+
+      const node = {
+        ...p,
+        nodeId: `person_${p.id}`,
+        id: p.id,
+        name: p.name || 'Unknown',
+        label: p.relation_label || p.subcategory || '',
+        count: p.face_count || 0,
+        isPerson: true,
+        thumbnail: p.thumbnail,
+        category: p.category,
+        subcategory: p.subcategory
+      };
+
+      const cat = p.category;
+      const sub = (p.subcategory || '').toLowerCase();
+
+      if (cat === 'Family') {
+        if (sub.includes('spouse') || sub.includes('partner') || sub.includes('wife') || sub.includes('husband')) {
+          familySubgroups.spouse.children.push(node);
+        } else if (sub.includes('parent') && !sub.includes('grand')) {
+          familySubgroups.parents.children.push(node);
+        } else if (sub.includes('grandparent') || sub.includes('ancestor')) {
+          familySubgroups.grandparents.children.push(node);
+        } else if (sub.includes('grandchild') || sub.includes('grandson') || sub.includes('granddaughter')) {
+          extendedSubgroups.otherfam.children.push(node);
+        } else if (sub.includes('child') || sub.includes('son') || sub.includes('daughter')) {
+          familySubgroups.kids.children.push(node);
+        } else if (sub.includes('in-law') || sub.includes('in law') || sub.includes('inlaw') || sub.includes("spouse's family")) {
+          extendedSubgroups.inlaws.children.push(node);
+        } else if (sub.includes('great-aunt') || sub.includes('great aunt') || sub.includes('great-uncle') || sub.includes('great uncle')) {
+          extendedSubgroups.greatauntuncle.children.push(node);
+        } else if (sub.includes('aunt') || sub.includes('uncle')) {
+          extendedSubgroups.auntuncle.children.push(node);
+        } else if (sub.includes('once removed') || sub.includes('1c1r')) {
+          extendedSubgroups.cousins1r.children.push(node);
+        } else if (sub.includes('cousin (1st)') || sub.includes('1st')) {
+          extendedSubgroups.cousins1.children.push(node);
+        } else if (sub.includes('cousin (2nd') || sub.includes('2nd') || sub.includes('distant') || sub.includes('3rd')) {
+          extendedSubgroups.cousins2.children.push(node);
+        } else if (sub.includes('niece') || sub.includes('nephew')) {
+          extendedSubgroups.niecenephew.children.push(node);
+        } else {
+          extendedSubgroups.otherfam.children.push(node);
+        }
+      } else if (cat === 'Friends') {
+        if (sub.includes('close')) {
+          friendsSubgroups.close.children.push(node);
+        } else if (sub.includes('colleague') || sub.includes('work') || sub.includes('office')) {
+          friendsSubgroups.colleagues.children.push(node);
+        } else if (sub.includes('classmate') || sub.includes('school') || sub.includes('college')) {
+          friendsSubgroups.classmates.children.push(node);
+        } else if (sub.includes('acquaintance')) {
+          friendsSubgroups.acquaintances.children.push(node);
+        } else {
+          friendsSubgroups.otherfriends.children.push(node);
+        }
+      } else if (cat === 'Others') {
+        if (sub.includes('neighbor')) {
+          othersSubgroups.neighbor.children.push(node);
+        } else if (sub.includes('service') || sub.includes('contact')) {
+          othersSubgroups.service.children.push(node);
+        } else {
+          othersSubgroups.other.children.push(node);
+        }
+      }
+    });
+
+    // Populate Extended Family subgroup
+    Object.values(extendedSubgroups).forEach(subg => {
+      if (subg.children.length > 0) {
+        familySubgroups.extended.children.push(subg);
+      }
+    });
+
+    const activeFamilyChildren = Object.values(familySubgroups).filter(g => g.children.length > 0);
+    const activeFriendsChildren = Object.values(friendsSubgroups).filter(g => g.children.length > 0);
+    const activeOthersChildren = Object.values(othersSubgroups).filter(g => g.children.length > 0);
+
+    const categoriesList = [];
+    if (activeFamilyChildren.length > 0) {
+      categoriesList.push({
+        id: 'cat_family',
+        name: 'Family',
+        icon: 'home',
+        color: '#3b82f6',
+        children: activeFamilyChildren
+      });
+    }
+    if (activeFriendsChildren.length > 0) {
+      categoriesList.push({
+        id: 'cat_friends',
+        name: 'Friends',
+        icon: 'group',
+        color: '#22c55e',
+        children: activeFriendsChildren
+      });
+    }
+    if (activeOthersChildren.length > 0) {
+      categoriesList.push({
+        id: 'cat_others',
+        name: 'Others',
+        icon: 'category',
+        color: '#a78bfa',
+        children: activeOthersChildren
+      });
+    }
+
+    return {
+      id: 'root_me',
+      name: meName,
+      icon: 'me',
+      color: '#3b82f6',
+      isMe: true,
+      children: categoriesList
+    };
+  }, [namedPeopleBase, settings?.me_name, mePerson]);
+
+  const savePersonCategory = async (personId, category, subcategory, relationLabel) => {
+    if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
+      alert("Please stop all background tasks before modifying relationships.");
+      return;
+    }
+    // Update local state immediately for instant UI reactivity
+    setPeople(prev => (prev || []).map(p => p.id === personId ? {
+      ...p,
+      category,
+      subcategory,
+      relation_label: relationLabel
+    } : p));
+    setCurrentPerson(prev => (prev && prev.id === personId ? {
+      ...prev,
+      category,
+      subcategory,
+      relation_label: relationLabel
+    } : prev));
+
+    setActionInProgress(true);
+    try {
+      await axios.patch(`${API}/people/${personId}/category`, {
+        category,
+        subcategory,
+        relation_label: relationLabel
+      });
+      showToastMessage('Relationship updated successfully.');
+      loadPeople();
+    } catch (err) {
+      alert('Error updating category: ' + (err?.response?.data?.detail || err.message));
+      loadPeople();
+    } finally {
+      setActionInProgress(false);
+    }
+  };
 
   const filteredUnknownPeople = useMemo(() => {
     if (!Array.isArray(people)) return [];
@@ -1080,6 +1401,9 @@ export function usePeople({
     sortedSimilarUnknowns, visibleSimilar, namedPeopleBase, filteredNamedPeople, filteredUnknownPeople,
     globalPeopleMap, hasUnknownSelected, sortedNamedPeopleForUI, sortedUnknownPeopleForUI, sortedNamedPeopleDropdown,
     groupedPersonFiles,
+    showRelationshipTree, setShowRelationshipTree,
+    activeCategoryFilter, categoryCounts, relationshipTreeData, savePersonCategory, mePerson,
+    setMeIdentity, exportRelationships, importRelationships,
     abortPeopleDataOpRef: abortDataOpRef,
     aiActionAbortController
   };

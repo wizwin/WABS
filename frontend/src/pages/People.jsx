@@ -6,10 +6,16 @@ import SettingsApplicationsIcon from '@mui/icons-material/SettingsApplications';
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import StarIcon from '@mui/icons-material/Star';
 import StarBorderIcon from '@mui/icons-material/StarBorder';
+import AccountTreeIcon from '@mui/icons-material/AccountTree';
+import ViewModuleIcon from '@mui/icons-material/ViewModule';
+import HomeIcon from '@mui/icons-material/Home';
+import GroupIcon from '@mui/icons-material/Group';
+import CategoryIcon from '@mui/icons-material/Category';
 
 import { ActionButton } from '../components/ui/ActionButton';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { PersonThumb } from '../components/ui/PersonThumb';
+import { RelationshipTree } from '../components/ui/RelationshipTree';
 
 export default function People(props) {
   const { 
@@ -22,7 +28,9 @@ export default function People(props) {
     updateUIPreferences, showToastMessage, togglePinPerson, getPersonThumbUrl, editingNames, setEditingNames,
     savePersonName, updatePersonNameLocal, filteredUnknownPeople, showUnknownsActions, setShowUnknownsActions,
     clusterAllUnknowns, reclassifyAllUnknowns, purgeThreshold, setPurgeThreshold, purgeSmallUnknowns,
-    unknownPeoplePage, sortedUnknownPeopleForUI
+    unknownPeoplePage, sortedUnknownPeopleForUI,
+    showRelationshipTree, setShowRelationshipTree,
+    activeCategoryFilter, categoryCounts, relationshipTreeData, mePerson
   } = props;
 
   const isClusterSelectedActive = dataOpProgress?.id === 'clusterSelected';
@@ -44,7 +52,7 @@ export default function People(props) {
         page==='people' &&
         <div style={{padding:'20px', overflowY:'auto', height:'100%'}}>
         <datalist id="known-people-list">
-        {sortedNamedPeopleDropdown.map(p => (
+        {(sortedNamedPeopleDropdown || []).map(p => (
             <option key={p.id} value={p.name} />
         ))}
         </datalist>
@@ -129,25 +137,143 @@ export default function People(props) {
 
         {Array.isArray(people) && people.length > 0 && (
         <>
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '20px' }}>
-            <label>Sort by:</label>
-            <select value={peopleSortBy} onChange={(e) => { setPeopleSortBy(e.target.value); setUnknownPeoplePage(1); setNamedPeoplePage(1); }}>
-                <option value="name">Name</option>
-                <option value="count">Face Count</option>
-            </select>
+            {/* Top Navigation Tabs */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '20px', borderBottom: '1px solid #1e293b', paddingBottom: '12px', flexWrap: 'wrap', gap: '16px' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button
+                  onClick={() => setShowRelationshipTree(false)}
+                  style={{
+                    padding: '8px 18px',
+                    borderRadius: '8px',
+                    border: '1px solid',
+                    borderColor: !showRelationshipTree ? '#3b82f6' : 'transparent',
+                    background: !showRelationshipTree ? 'rgba(59, 130, 246, 0.15)' : 'transparent',
+                    color: !showRelationshipTree ? '#38bdf8' : '#94a3b8',
+                    cursor: 'pointer',
+                    fontWeight: !showRelationshipTree ? '600' : 'normal',
+                    fontSize: '14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    transition: 'all 0.15s'
+                  }}
+                >
+                  <ViewModuleIcon fontSize="small" /> People ({namedPeopleBase.length})
+                </button>
+
+                {namedPeopleBase.length > 0 && (
+                  <button
+                    onClick={() => setShowRelationshipTree(true)}
+                    style={{
+                      padding: '8px 18px',
+                      borderRadius: '8px',
+                      border: '1px solid',
+                      borderColor: showRelationshipTree ? '#3b82f6' : 'transparent',
+                      background: showRelationshipTree ? 'rgba(59, 130, 246, 0.15)' : 'transparent',
+                      color: showRelationshipTree ? '#38bdf8' : '#94a3b8',
+                      cursor: 'pointer',
+                      fontWeight: showRelationshipTree ? '600' : 'normal',
+                      fontSize: '14px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      transition: 'all 0.15s'
+                    }}
+                  >
+                    <AccountTreeIcon fontSize="small" /> Tree View
+                  </button>
+                )}
+              </div>
+
+              {!showRelationshipTree && (
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                  <label style={{ fontSize: '13px', color: '#94a3b8' }}>Sort by:</label>
+                  <select value={peopleSortBy} onChange={(e) => { setPeopleSortBy(e.target.value); setUnknownPeoplePage(1); setNamedPeoplePage(1); }} style={{ padding: '4px 8px', borderRadius: '6px', background: '#0f172a', color: '#f8fafc', border: '1px solid #334155' }}>
+                      <option value="name">Name</option>
+                      <option value="count">Face Count</option>
+                  </select>
+                </div>
+              )}
             </div>
+
+            {/* TAB 1: TREE VIEW (Only Relationship Hierarchy Tree) */}
+            {showRelationshipTree && namedPeopleBase.length > 0 && (
+              <RelationshipTree
+                treeData={relationshipTreeData}
+                openPersonPhotos={openPersonPhotos}
+                getPersonThumbUrl={getPersonThumbUrl}
+              />
+            )}
+
+            {/* TAB 2: PEOPLE GRID VIEW */}
+            {!showRelationshipTree && (
+            <>
+            {/* Category Filter Pills */}
+            {namedPeopleBase.length > 0 && (
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '16px', alignItems: 'center' }}>
+                {[
+                  { key: 'all', label: 'All', color: '#38bdf8' },
+                  { key: 'Family', label: 'Family', color: '#3b82f6' },
+                  { key: 'Friends', label: 'Friends', color: '#22c55e' },
+                  { key: 'Others', label: 'Others', color: '#a78bfa' },
+                  { key: 'uncategorized', label: 'Uncategorized', color: '#94a3b8' }
+                ].map(({ key, label, color }) => {
+                  const count = categoryCounts ? categoryCounts[key] : 0;
+                  const isActive = (activeCategoryFilter || 'all') === key;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => {
+                        updateUIPreferences({ people_category_filter: key });
+                        setNamedPeoplePage(1);
+                      }}
+                      style={{
+                        padding: '6px 14px',
+                        borderRadius: '20px',
+                        border: `1px solid ${isActive ? color : '#334155'}`,
+                        background: isActive ? `${color}22` : 'transparent',
+                        color: isActive ? color : '#94a3b8',
+                        cursor: 'pointer',
+                        fontSize: '13px',
+                        fontWeight: isActive ? 'bold' : 'normal',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        transition: 'all 0.15s'
+                      }}
+                    >
+                      {label}
+                      <span style={{
+                        background: isActive ? color : '#334155',
+                        color: isActive ? '#0f172a' : '#94a3b8',
+                        borderRadius: '10px',
+                        padding: '1px 7px',
+                        fontSize: '11px',
+                        fontWeight: 'bold'
+                      }}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {namedPeopleBase.length > 0 && (
             <>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '24px', marginBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-                    <h2 style={{ margin: 0, color: '#f8fafc', fontSize: '20px' }}>Named People</h2>
+                    <h2 style={{ margin: 0, color: '#f8fafc', fontSize: '20px' }}>
+                      {activeCategoryFilter === 'all' ? 'Named People' :
+                       activeCategoryFilter === 'uncategorized' ? 'Uncategorized People' :
+                       `${activeCategoryFilter} (${filteredNamedPeople.length})`}
+                    </h2>
                     <input
                     type="text"
-                    placeholder="Search by name..."
+                    placeholder="Search by name, category, relationship..."
                     value={namedPersonSearchQuery}
                     onChange={(e) => { setNamedPersonSearchQuery(e.target.value); setNamedPeoplePage(1); }}
-                    style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #334155', background: '#1e293b', color: '#f8fafc', width: '100%', maxWidth: '250px', outline: 'none' }}
+                    style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #334155', background: '#1e293b', color: '#f8fafc', width: '100%', maxWidth: '300px', outline: 'none' }}
                     />
                 </div>
                 {filteredNamedPeople.length > 50 && (
@@ -164,8 +290,20 @@ export default function People(props) {
                 </div>
                 
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
-                {sortedNamedPeopleForUI.slice((namedPeoplePage - 1) * 50, namedPeoplePage * 50).map(p => (
-                <div key={p.id} id={`person-card-${p.id}`} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => {
+                {sortedNamedPeopleForUI.slice((namedPeoplePage - 1) * 50, namedPeoplePage * 50).map(p => {
+                  const isMePerson = p.is_me || (p.name && (settings?.me_name || '').toLowerCase() === p.name.toLowerCase());
+                  return (
+                <div key={p.id} id={`person-card-${p.id}`} style={{
+                  background:'#111827',
+                  padding:'16px',
+                  borderRadius:'16px',
+                  border: isMePerson ? '1px solid #3b82f6' : '1px solid #24324a',
+                  cursor:'pointer',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '10px',
+                  position: 'relative'
+                }} onClick={() => {
                   if (checkedPeople.size > 0) {
                     const next = new Set(checkedPeople);
                     if (next.has(p.id)) next.delete(p.id);
@@ -187,6 +325,23 @@ export default function People(props) {
                     }}
                     style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, cursor: 'pointer', transform: 'scale(1.2)' }}
                     />
+                    {isMePerson && (
+                      <div style={{
+                        position: 'absolute',
+                        top: '10px',
+                        left: '42px',
+                        background: 'rgba(59, 130, 246, 0.3)',
+                        color: '#93c5fd',
+                        padding: '2px 8px',
+                        borderRadius: '10px',
+                        fontSize: '11px',
+                        fontWeight: 'bold',
+                        border: '1px solid #3b82f6',
+                        zIndex: 10
+                      }}>
+                        Me
+                      </div>
+                    )}
                     <div 
                     onClick={(e) => {
                         e.stopPropagation();
@@ -246,11 +401,38 @@ export default function People(props) {
                             onBlurCapture={e => e.target.style.borderBottom = '1px solid transparent'}
                         />
                     </div>
-                    <div style={{ fontSize: '13px', color: '#94a3b8', marginTop: '-4px' }}>
+
+                    {/* Category & Relation Badge */}
+                    {p.category && (
+                      <div style={{ marginTop: '-4px' }}>
+                        <span style={{
+                          fontSize: '11px',
+                          padding: '2px 8px',
+                          borderRadius: '10px',
+                          background: p.category === 'Family' ? 'rgba(59, 130, 246, 0.2)' :
+                                      p.category === 'Friends' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(167, 139, 250, 0.2)',
+                          color: p.category === 'Family' ? '#93c5fd' :
+                                 p.category === 'Friends' ? '#86efac' : '#c4b5fd',
+                          border: `1px solid ${p.category === 'Family' ? 'rgba(59, 130, 246, 0.4)' : p.category === 'Friends' ? 'rgba(34, 197, 94, 0.4)' : 'rgba(167, 139, 250, 0.4)'}`,
+                          fontWeight: '500',
+                          display: 'inline-block',
+                          maxWidth: '100%',
+                          whiteSpace: 'nowrap',
+                          textOverflow: 'ellipsis',
+                          overflow: 'hidden'
+                        }}>
+                          {p.subcategory || p.category}
+                          {p.relation_label ? ` • ${p.relation_label}` : ''}
+                        </span>
+                      </div>
+                    )}
+
+                    <div style={{ fontSize: '13px', color: '#94a3b8', marginTop: '-2px' }}>
                         {p.face_count} photo{p.face_count !== 1 ? 's' : ''}
                     </div>
                 </div>
-                ))}
+                  );
+                })}
                 </div>
 
                 {filteredNamedPeople.length === 0 && namedPersonSearchQuery && (
@@ -363,19 +545,10 @@ export default function People(props) {
                     </div>
                 </div>
                 )}
-
+                
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'16px'}}>
-                {sortedUnknownPeopleForUI.slice((unknownPeoplePage - 1) * 50, unknownPeoplePage * 50).map(p => (
-                <div key={p.id} id={`person-card-${p.id}`} style={{background:'#111827', padding:'16px', borderRadius:'16px', border:'1px solid #24324a', cursor:'pointer', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative'}} onClick={() => {
-                  if (checkedPeople.size > 0) {
-                    const next = new Set(checkedPeople);
-                    if (next.has(p.id)) next.delete(p.id);
-                    else next.add(p.id);
-                    setCheckedPeople(next);
-                  } else {
-                    openPersonPhotos(p);
-                  }
-                }}>
+                {filteredUnknownPeople.slice((unknownPeoplePage - 1) * 50, unknownPeoplePage * 50).map(p => (
+                <div key={p.id} id={`person-card-${p.id}`} style={{background:'#111827',padding:'16px',borderRadius:'16px',border: checkedPeople.has(p.id) ? '2px solid #3b82f6' : '1px solid #24324a',cursor:'pointer',display:'flex',flexDirection:'column',gap:'10px', position: 'relative'}} onClick={() => openPersonPhotos(p)}>
                     <input 
                     type="checkbox" 
                     checked={checkedPeople.has(p.id)}
@@ -453,6 +626,8 @@ export default function People(props) {
                 </div>
                 )}
                 
+            </>
+            )}
             </>
             )}
         </>

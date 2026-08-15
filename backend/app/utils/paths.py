@@ -20,6 +20,10 @@ def get_ai_db_path() -> Path:
         return p.parent.parent / "ai_metadata.db"
     return p.parent / "ai_metadata.db"
 
+def get_relationships_db_path() -> Path:
+    ai_path = get_ai_db_path()
+    return ai_path.parent / "relationships.db"
+
 def get_bundled_model_path(model_filename: str) -> str:
     if hasattr(sys, '_MEIPASS'):
         # PyInstaller extracts bundled files to a temporary _MEIPASS folder

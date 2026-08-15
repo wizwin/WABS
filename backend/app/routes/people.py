@@ -23,7 +23,13 @@ import backend.app.state as app_state
 from backend.app.state import STATE
 from backend.app.utils.indexer import _process_unified_scanners, get_or_create_exemplars, find_best_face_match
 from backend.app.utils.cache import EXEMPLAR_CACHE
-from backend.app.utils.paths import get_bundled_model_path, get_ai_db_path
+from backend.app.utils.paths import get_bundled_model_path, get_ai_db_path, get_relationships_db_path
+from backend.app.relationships_database import (
+    sync_person_rename,
+    unlink_person,
+    merge_persons_rel,
+    init_relationships_database
+)
 import backend.app.shared_state as shared_state
 from backend.app.utils.validators import check_no_scanners_running, lock_data_operation, wait_for_stopping_scanners
 
@@ -117,9 +123,65 @@ def get_people(min_unknown_photos: int = 1):
                     "id": person_id, 
                     "name": name, 
                     "face_count": count, 
-                    "thumbnail": f"/people/{person_id}/thumbnail?v={v_param}"
+                    "thumbnail": f"/people/{person_id}/thumbnail?v={v_param}",
+                    "category": None,
+                    "subcategory": None,
+                    "relation_label": None,
+                    "rel_person_id": None,
+                    "is_me": False
                 })
-            return results
+
+        # Enrich with social/relationship data from relationships.db
+        rel_db_path = get_relationships_db_path()
+        if rel_db_path.exists() and results:
+            try:
+                with sqlite3.connect(str(rel_db_path), timeout=10) as rconn:
+                    rconn.execute("PRAGMA journal_mode=WAL;")
+                    rcursor = rconn.cursor()
+                    # Query all persons and their social categories
+                    rcursor.execute("""
+                        SELECT p.id, p.name, p.ai_person_id, p.is_me,
+                               s.category, s.subcategory, s.relation_label
+                        FROM persons p
+                        LEFT JOIN person_social s ON p.id = s.person_id
+                    """)
+                    
+                    by_ai_id = {}
+                    by_name = {}
+                    for r in rcursor.fetchall():
+                        r_id, r_name, r_ai_id, r_is_me, cat, subcat, label = r
+                        info = {
+                            "rel_person_id": r_id,
+                            "is_me": bool(r_is_me),
+                            "category": cat,
+                            "subcategory": subcat,
+                            "relation_label": label
+                        }
+                        if r_ai_id:
+                            by_ai_id[r_ai_id] = info
+                        if r_name:
+                            by_name[r_name.lower()] = info
+
+                    me_name_cfg = (cfg.get("me_name") or "").strip().lower()
+
+                    for person in results:
+                        p_id = person["id"]
+                        p_name = (person["name"] or "").strip().lower()
+                        
+                        match = by_ai_id.get(p_id) or by_name.get(p_name)
+                        if match:
+                            person["category"] = match["category"]
+                            person["subcategory"] = match["subcategory"]
+                            person["relation_label"] = match["relation_label"]
+                            person["rel_person_id"] = match["rel_person_id"]
+                            person["is_me"] = match["is_me"]
+                            
+                        if me_name_cfg and p_name == me_name_cfg:
+                            person["is_me"] = True
+            except Exception as e:
+                print(f"Error enriching people with relationships data: {e}")
+
+        return results
     except Exception as e:
         print(f"Error in /people API: {e}")
         return []
@@ -790,6 +852,11 @@ def rename_person(person_id: int, payload: dict = Body(...)):
             
         EXEMPLAR_CACHE.pop(person_id, None)
         conn.commit()
+
+    if existing_person:
+        merge_persons_rel(person_id, target_id)
+    else:
+        sync_person_rename(person_id, new_name)
         
     # Sync preferences (pinned/hidden lists)
     if existing_person:
@@ -905,6 +972,7 @@ def delete_person(person_id: int):
         cursor.execute("DELETE FROM people WHERE id = ?", (person_id,))
         conn.commit()
         
+    unlink_person(person_id)
     _sync_people_preferences([person_id, old_name], action="delete")
         
     # Clean up any tags from the main index
@@ -1011,6 +1079,9 @@ def merge_people(payload: dict = Body(...)):
             
         EXEMPLAR_CACHE.pop(primary_id, None)
         conn.commit()
+        
+    for old_id in ids_to_merge:
+        merge_persons_rel(old_id, primary_id)
         
     # Sync preferences (merge profiles in pinned/hidden lists)
     primary_ident = primary_name if (primary_name and not primary_name.startswith("Unknown Person")) else primary_id
@@ -1542,3 +1613,132 @@ def reset_face_scanner_progress():
         return {"message": "Face scanner progress has been reset."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not reset face scanner progress: {e}")
+
+@router.patch("/people/{person_id}/category")
+def update_person_category(person_id: int, body: dict = Body(...)):
+    """
+    Sets, updates, or clears category, subcategory, and relation_label for a person in relationships.db.
+    """
+    category = body.get("category")
+    subcategory = body.get("subcategory")
+    relation_label = body.get("relation_label")
+    
+    # 1. Look up person name and ensure entry in relationships.db
+    ai_db_path = get_ai_db_path()
+    person_name = None
+    if ai_db_path.exists():
+        with sqlite3.connect(str(ai_db_path), timeout=10) as aconn:
+            row = aconn.execute("SELECT name FROM people WHERE id = ?", (person_id,)).fetchone()
+            if row:
+                person_name = row[0]
+                
+    if not person_name or person_name.startswith("Unknown Person"):
+        raise HTTPException(status_code=400, detail="Cannot assign relationship category to an unknown person profile.")
+
+    rel_db_path = get_relationships_db_path()
+    init_relationships_database(rel_db_path)
+    
+    with sqlite3.connect(str(rel_db_path), timeout=10) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        
+        # Ensure person exists in persons table
+        cursor.execute("SELECT id FROM persons WHERE ai_person_id = ? OR name = ?", (person_id, person_name))
+        p_row = cursor.fetchone()
+        if p_row:
+            rel_id = p_row[0]
+            cursor.execute("UPDATE persons SET ai_person_id = ?, name = ?, linked_at = datetime('now') WHERE id = ?", (person_id, person_name, rel_id))
+        else:
+            cursor.execute("""
+                INSERT INTO persons (name, ai_person_id, is_me, linked_at, created_at)
+                VALUES (?, ?, 0, datetime('now'), datetime('now'))
+            """, (person_name, person_id))
+            rel_id = cursor.lastrowid
+            
+        # Update or clear person_social
+        if not category:
+            cursor.execute("DELETE FROM person_social WHERE person_id = ?", (rel_id,))
+            print(f"[RELATIONSHIPS] Cleared relationship category for person id={rel_id} (ai_id={person_id})")
+        else:
+            cursor.execute("""
+                INSERT INTO person_social (person_id, category, subcategory, relation_label, updated_at)
+                VALUES (?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(person_id) DO UPDATE SET
+                    category = excluded.category,
+                    subcategory = excluded.subcategory,
+                    relation_label = excluded.relation_label,
+                    updated_at = excluded.updated_at
+            """, (rel_id, category, subcategory, relation_label))
+            print(f"[RELATIONSHIPS] Updated relationship category for person id={rel_id} (ai_id={person_id}): category='{category}', type='{subcategory}'")
+            
+        conn.commit()
+        
+    return {
+        "status": "success",
+        "person_id": person_id,
+        "rel_person_id": rel_id,
+        "category": category,
+        "subcategory": subcategory,
+        "relation_label": relation_label
+    }
+
+@router.patch("/people/set-me")
+def set_me_identity(body: dict = Body(...)):
+    """
+    Designates a named person as the WABS owner ("Me").
+    Persists me_name in config.yaml and marks is_me = 1 in relationships.db.
+    """
+    name = (body.get("name") or "").strip()
+    
+    # 1. Update config.yaml
+    cfg = load_config()
+    cfg["me_name"] = name
+    save_config(cfg)
+    
+    # 2. Update relationships.db
+    rel_db_path = get_relationships_db_path()
+    init_relationships_database(rel_db_path)
+    
+    with sqlite3.connect(str(rel_db_path), timeout=10) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        
+        # Clear previous is_me
+        cursor.execute("UPDATE persons SET is_me = 0")
+        
+        if name:
+            cursor.execute("SELECT id FROM persons WHERE name = ?", (name,))
+            row = cursor.fetchone()
+            if row:
+                cursor.execute("UPDATE persons SET is_me = 1 WHERE id = ?", (row[0],))
+                print(f"[RELATIONSHIPS] Updated primary user identity flag (is_me=1, person_id={row[0]})")
+            else:
+                cursor.execute("""
+                    INSERT INTO persons (name, is_me, created_at)
+                    VALUES (?, 1, datetime('now'))
+                """, (name,))
+                print(f"[RELATIONSHIPS] Inserted primary user identity record (is_me=1, person_id={cursor.lastrowid})")
+        else:
+            print("[RELATIONSHIPS] Cleared primary user identity flag (is_me=0)")
+        conn.commit()
+        
+    return {"status": "success", "me_name": name}
+
+@router.get("/people/me")
+def get_me_identity():
+    """
+    Returns the currently configured Me profile.
+    """
+    cfg = load_config()
+    me_name = (cfg.get("me_name") or "").strip()
+    me_person = None
+    
+    if me_name:
+        ai_db_path = get_ai_db_path()
+        if ai_db_path.exists():
+            with sqlite3.connect(str(ai_db_path), timeout=10) as conn:
+                row = conn.execute("SELECT id, name, thumbnail_file_id FROM people WHERE name = ? LIMIT 1", (me_name,)).fetchone()
+                if row:
+                    me_person = {"id": row[0], "name": row[1], "thumbnail": f"/people/{row[0]}/thumbnail"}
+                    
+    return {"me_name": me_name, "me_person": me_person}

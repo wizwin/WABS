@@ -21,6 +21,7 @@ def run_all_tests():
         tests_dir / "test_face_exemplar.py",
         tests_dir / "test_people_import_export.py",
         tests_dir / "test_people_cover_suggestions.py",
+        tests_dir / "test_search_patterns.py",
     ]
     
     passed_tests = []

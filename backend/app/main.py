@@ -51,6 +51,7 @@ try:
     import backend.app.state as app_state
     from backend.app.state import STATE
     from backend.app.ai_database import init_ai_database
+    from backend.app.relationships_database import init_relationships_database
 except ModuleNotFoundError:
     from database import SessionLocal, FileIndex
     from config import load_config, save_config
@@ -304,6 +305,10 @@ def startup_event():
         start_idle_monitor()
     except Exception as e:
         print(f"Failed to start idle memory monitor: {e}")
+    try:
+        init_relationships_database()
+    except Exception as e:
+        print(f"Failed to initialize relationships sidecar database: {e}")
     try:
         with SessionLocal() as s:
             count = s.query(FileIndex).count()

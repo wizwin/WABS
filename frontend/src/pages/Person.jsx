@@ -3,6 +3,7 @@ import axios from 'axios';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import CloseIcon from '@mui/icons-material/Close';
+import CheckIcon from '@mui/icons-material/Check';
 import FaceIcon from '@mui/icons-material/Face';
 import ImageIcon from '@mui/icons-material/Image';
 import PlaceIcon from '@mui/icons-material/Place';
@@ -32,7 +33,7 @@ export default function Person(props) {
     personFiles, viewMode, groupedPersonFiles, toggleCheck, handleItemClick,
     openContainingFolder, openFile, renderThumb, checkFileReadOnly, hasMore,
     loadingMore, showDetails, detailsWidth, selected, personPreviewPhotos,
-    renderMetadata, handleScroll, dataOpProgress
+    renderMetadata, handleScroll, dataOpProgress, savePersonCategory
   } = props;
 
   const [isAddToFolderOpen, setIsAddToFolderOpen] = useState(false);
@@ -42,6 +43,38 @@ export default function Person(props) {
     setIsAddToFolderOpen(true);
   };
   const isTaskActive = indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || indexer.data_operation_running || actionInProgress || !!dataOpProgress;
+
+  const [localCategory, setLocalCategory] = useState(currentPerson?.category || '');
+  const [localSubcategory, setLocalSubcategory] = useState(currentPerson?.subcategory || '');
+  const [localRelationLabel, setLocalRelationLabel] = useState(currentPerson?.relation_label || '');
+
+  React.useEffect(() => {
+    setLocalCategory(currentPerson?.category || '');
+    setLocalSubcategory(currentPerson?.subcategory || '');
+    setLocalRelationLabel(currentPerson?.relation_label || '');
+  }, [currentPerson?.id, currentPerson?.category, currentPerson?.subcategory, currentPerson?.relation_label]);
+
+  const isRelChanged = (
+    (localCategory || '') !== (currentPerson?.category || '') ||
+    (localSubcategory || '') !== (currentPerson?.subcategory || '') ||
+    (localRelationLabel || '') !== (currentPerson?.relation_label || '')
+  );
+
+  const handleSaveRelationship = () => {
+    if (!currentPerson) return;
+    savePersonCategory(
+      currentPerson.id,
+      localCategory || null,
+      localCategory ? (localSubcategory || null) : null,
+      localCategory ? (localRelationLabel || '') : ''
+    );
+  };
+
+  const handleCancelRelationship = () => {
+    setLocalCategory(currentPerson?.category || '');
+    setLocalSubcategory(currentPerson?.subcategory || '');
+    setLocalRelationLabel(currentPerson?.relation_label || '');
+  };
 
   return (
     <>
@@ -181,6 +214,342 @@ export default function Person(props) {
                 )}
             </div>
         </div>
+
+        {/* Inline Relationship Categorization Bar */}
+        {currentPerson && !currentPerson.name?.startsWith('Unknown Person') && (
+          <div style={{ padding: '10px 18px', background: '#0f172a', borderBottom: '1px solid #1e293b', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>Relationship:</span>
+              <select
+                value={localCategory || ''}
+                onChange={(e) => {
+                  const newCat = e.target.value;
+                  setLocalCategory(newCat);
+                  if (newCat === 'Family' && !localSubcategory) setLocalSubcategory('Spouse');
+                  else if (newCat === 'Friends' && !localSubcategory) setLocalSubcategory('Close Friend');
+                  else if (newCat === 'Others' && !localSubcategory) setLocalSubcategory('Neighbor');
+                  else if (!newCat) {
+                    setLocalSubcategory('');
+                    setLocalRelationLabel('');
+                  }
+                }}
+                disabled={isTaskActive}
+                style={{ padding: '4px 8px', borderRadius: '6px', background: '#1e293b', color: '#f8fafc', border: '1px solid #334155', outline: 'none', fontSize: '13px' }}
+              >
+                <option value="">— Uncategorized —</option>
+                <option value="Family">🏠 Family</option>
+                <option value="Friends">👥 Friends</option>
+                <option value="Others">🌐 Others</option>
+              </select>
+            </div>
+
+            {localCategory && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '13px', color: '#94a3b8' }}>Type:</span>
+                <select
+                  value={localSubcategory || ''}
+                  onChange={(e) => setLocalSubcategory(e.target.value)}
+                  disabled={isTaskActive}
+                  style={{ padding: '4px 8px', borderRadius: '6px', background: '#1e293b', color: '#f8fafc', border: '1px solid #334155', outline: 'none', fontSize: '13px' }}
+                >
+                  {localCategory === 'Family' && (
+                    <>
+                      <option value="Spouse">Spouse / Partner</option>
+                      <option value="Parent">Parent (Father / Mother)</option>
+                      <option value="Child">Child (Son / Daughter)</option>
+                      <option value="Sibling">Sibling (Brother / Sister)</option>
+                      <option value="In-law">In-law (Parents / Siblings / Extended In-laws)</option>
+                      <option value="Spouse's Family">Spouse's Extended Family (Aunts / Uncles / Cousins)</option>
+                      <option value="Grandparent">Grandparent (Maternal / Paternal)</option>
+                      <option value="Grandchild">Grandchild (Grandson / Granddaughter)</option>
+                      <option value="Great-Grandparent">Great-Grandparent / Ancestor</option>
+                      <option value="Aunt / Uncle">Aunt / Uncle (Parents' Siblings)</option>
+                      <option value="Great-Aunt / Uncle">Great-Aunt / Great-Uncle (Grandparents' Siblings)</option>
+                      <option value="Cousin (1st)">Cousin (1st - Parents' Siblings' Children)</option>
+                      <option value="Cousin (Once Removed)">Cousin (Once Removed - Parents' / Grandparents' Cousins)</option>
+                      <option value="Cousin (2nd / Distant)">Cousin (2nd / 3rd / Distant)</option>
+                      <option value="Niece / Nephew">Niece / Nephew (Siblings' Children)</option>
+                      <option value="Other Family">Other Family / Relative</option>
+                    </>
+                  )}
+                  {localCategory === 'Friends' && (
+                    <>
+                      <option value="Close Friend">Close Friend</option>
+                      <option value="Colleague">Colleague / Work</option>
+                      <option value="Classmate">Classmate / School</option>
+                      <option value="Acquaintance">Acquaintance</option>
+                      <option value="Other Friend">Other Friend</option>
+                    </>
+                  )}
+                  {localCategory === 'Others' && (
+                    <>
+                      <option value="Neighbor">Neighbor</option>
+                      <option value="Service Contact">Service Contact</option>
+                      <option value="Unknown">Other</option>
+                    </>
+                  )}
+                </select>
+              </div>
+            )}
+
+            {localCategory && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: '180px' }}>
+                <span style={{ fontSize: '13px', color: '#94a3b8' }}>Custom Label:</span>
+                <input
+                  list="relationship-label-suggestions"
+                  type="text"
+                  placeholder='e.g. "Wife&#39;s Brother", "Mother-in-law", "Spouse&#39;s Cousin"'
+                  value={localRelationLabel || ''}
+                  onChange={(e) => setLocalRelationLabel(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveRelationship();
+                    else if (e.key === 'Escape') handleCancelRelationship();
+                  }}
+                  disabled={isTaskActive}
+                  style={{ padding: '4px 10px', borderRadius: '6px', background: '#1e293b', color: '#f8fafc', border: '1px solid #334155', outline: 'none', fontSize: '13px', flex: 1, maxWidth: '260px' }}
+                />
+                <datalist id="relationship-label-suggestions">
+                  {/* Family Suggestions */}
+                  {localSubcategory === 'Spouse' && (
+                    <>
+                      <option value="Wife" />
+                      <option value="Husband" />
+                      <option value="Partner" />
+                      <option value="Fiancée" />
+                      <option value="Fiancé" />
+                    </>
+                  )}
+                  {localSubcategory === 'Parent' && (
+                    <>
+                      <option value="Mother" />
+                      <option value="Father" />
+                      <option value="Mom" />
+                      <option value="Dad" />
+                      <option value="Stepmother" />
+                      <option value="Stepfather" />
+                    </>
+                  )}
+                  {localSubcategory === 'Child' && (
+                    <>
+                      <option value="Son" />
+                      <option value="Daughter" />
+                      <option value="Eldest Son" />
+                      <option value="Youngest Son" />
+                      <option value="Eldest Daughter" />
+                      <option value="Youngest Daughter" />
+                      <option value="Stepson" />
+                      <option value="Stepdaughter" />
+                    </>
+                  )}
+                  {localSubcategory === 'Sibling' && (
+                    <>
+                      <option value="Brother" />
+                      <option value="Sister" />
+                      <option value="Elder Brother" />
+                      <option value="Younger Brother" />
+                      <option value="Elder Sister" />
+                      <option value="Younger Sister" />
+                      <option value="Stepbrother" />
+                      <option value="Stepsister" />
+                    </>
+                  )}
+                  {(localSubcategory === 'In-law' || localSubcategory === "Spouse's Family") && (
+                    <>
+                      <option value="Mother-in-law (Spouse's Mother)" />
+                      <option value="Father-in-law (Spouse's Father)" />
+                      <option value="Brother-in-law (Spouse's Brother / Sister's Husband)" />
+                      <option value="Sister-in-law (Spouse's Sister / Brother's Wife)" />
+                      <option value="Son-in-law (Daughter's Husband)" />
+                      <option value="Daughter-in-law (Son's Wife)" />
+                      <option value="Co-Brother (Spouse's Sister's Husband)" />
+                      <option value="Co-Sister (Spouse's Brother's Wife)" />
+                      <option value="Spouse's Maternal Uncle (Uncle-in-law)" />
+                      <option value="Spouse's Maternal Aunt (Aunt-in-law)" />
+                      <option value="Spouse's Paternal Uncle (Uncle-in-law)" />
+                      <option value="Spouse's Paternal Aunt (Aunt-in-law)" />
+                      <option value="Spouse's 1st Cousin (Cousin-in-law)" />
+                      <option value="Spouse's Grandfather" />
+                      <option value="Spouse's Grandmother" />
+                      <option value="Spouse's Nephew / Niece" />
+                    </>
+                  )}
+                  {localSubcategory === 'Grandparent' && (
+                    <>
+                      <option value="Maternal Grandmother (Mother's Mom)" />
+                      <option value="Maternal Grandfather (Mother's Dad)" />
+                      <option value="Paternal Grandmother (Father's Mom)" />
+                      <option value="Paternal Grandfather (Father's Dad)" />
+                      <option value="Grandmother" />
+                      <option value="Grandfather" />
+                    </>
+                  )}
+                  {localSubcategory === 'Great-Grandparent' && (
+                    <>
+                      <option value="Maternal Great-Grandmother" />
+                      <option value="Maternal Great-Grandfather" />
+                      <option value="Paternal Great-Grandmother" />
+                      <option value="Paternal Great-Grandfather" />
+                    </>
+                  )}
+                  {localSubcategory === 'Grandchild' && (
+                    <>
+                      <option value="Grandson" />
+                      <option value="Granddaughter" />
+                      <option value="Great-Grandson" />
+                      <option value="Great-Granddaughter" />
+                    </>
+                  )}
+                  {localSubcategory === 'Aunt / Uncle' && (
+                    <>
+                      <option value="Maternal Uncle (Mother's Brother)" />
+                      <option value="Maternal Aunt (Mother's Sister)" />
+                      <option value="Paternal Uncle (Father's Brother)" />
+                      <option value="Paternal Aunt (Father's Sister)" />
+                      <option value="Uncle" />
+                      <option value="Aunt" />
+                    </>
+                  )}
+                  {localSubcategory === 'Great-Aunt / Uncle' && (
+                    <>
+                      <option value="Maternal Great-Uncle (Grandfather's / Grandmother's Brother)" />
+                      <option value="Maternal Great-Aunt (Grandfather's / Grandmother's Sister)" />
+                      <option value="Paternal Great-Uncle (Grandfather's / Grandmother's Brother)" />
+                      <option value="Paternal Great-Aunt (Grandfather's / Grandmother's Sister)" />
+                    </>
+                  )}
+                  {localSubcategory === 'Cousin (1st)' && (
+                    <>
+                      <option value="Maternal 1st Cousin (Mother's Sibling's Child)" />
+                      <option value="Paternal 1st Cousin (Father's Sibling's Child)" />
+                      <option value="Cousin Brother" />
+                      <option value="Cousin Sister" />
+                    </>
+                  )}
+                  {localSubcategory === 'Cousin (Once Removed)' && (
+                    <>
+                      <option value="Mother's 1st Cousin (Maternal 1C1R)" />
+                      <option value="Father's 1st Cousin (Paternal 1C1R)" />
+                      <option value="Mother's Cousin's Son" />
+                      <option value="Mother's Cousin's Daughter" />
+                      <option value="Father's Cousin's Son" />
+                      <option value="Father's Cousin's Daughter" />
+                      <option value="1st Cousin's Son (1C1R Downwards)" />
+                      <option value="1st Cousin's Daughter (1C1R Downwards)" />
+                    </>
+                  )}
+                  {localSubcategory?.includes('2nd') && (
+                    <>
+                      <option value="Maternal 2nd Cousin (Mother's 1st Cousin's Child)" />
+                      <option value="Paternal 2nd Cousin (Father's 1st Cousin's Child)" />
+                      <option value="Mother's 1st Cousin's Son" />
+                      <option value="Mother's 1st Cousin's Daughter" />
+                      <option value="Father's 1st Cousin's Son" />
+                      <option value="Father's 1st Cousin's Daughter" />
+                      <option value="3rd Cousin" />
+                    </>
+                  )}
+                  {localSubcategory === 'Niece / Nephew' && (
+                    <>
+                      <option value="Nephew (Brother's / Sister's Son)" />
+                      <option value="Niece (Brother's / Sister's Daughter)" />
+                      <option value="Grandnephew" />
+                      <option value="Grandniece" />
+                    </>
+                  )}
+                  {/* Friends & Colleagues Suggestions */}
+                  {localSubcategory === 'Close Friend' && (
+                    <>
+                      <option value="Best Friend" />
+                      <option value="Childhood Friend" />
+                      <option value="College Friend" />
+                      <option value="School Friend" />
+                    </>
+                  )}
+                  {localSubcategory === 'Colleague' && (
+                    <>
+                      <option value="Manager" />
+                      <option value="Teammate" />
+                      <option value="Co-worker" />
+                      <option value="Mentor" />
+                      <option value="Client" />
+                      <option value="Business Partner" />
+                    </>
+                  )}
+                  {localSubcategory === 'Classmate' && (
+                    <>
+                      <option value="Schoolmate" />
+                      <option value="College Roommate" />
+                      <option value="Batchmate" />
+                      <option value="Alumni" />
+                    </>
+                  )}
+                  {localSubcategory === 'Neighbor' && (
+                    <>
+                      <option value="Next-door Neighbor" />
+                      <option value="Apartment Society" />
+                      <option value="Community Member" />
+                    </>
+                  )}
+                  {localSubcategory === 'Service Contact' && (
+                    <>
+                      <option value="Doctor" />
+                      <option value="Teacher" />
+                      <option value="Lawyer" />
+                      <option value="Driver" />
+                      <option value="Contractor" />
+                    </>
+                  )}
+                </datalist>
+              </div>
+            )}
+
+            {isRelChanged && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '4px' }}>
+                <button
+                  onClick={handleSaveRelationship}
+                  disabled={isTaskActive}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    background: '#10b981',
+                    color: '#ffffff',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontWeight: '600',
+                    fontSize: '12.5px',
+                    transition: 'background 0.2s'
+                  }}
+                  title="Apply and save relationship changes"
+                >
+                  <CheckIcon style={{ fontSize: '15px' }} /> Save
+                </button>
+                <button
+                  onClick={handleCancelRelationship}
+                  disabled={isTaskActive}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    background: '#334155',
+                    color: '#cbd5e1',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: '12.5px',
+                    transition: 'background 0.2s'
+                  }}
+                  title="Discard changes"
+                >
+                  <CloseIcon style={{ fontSize: '15px' }} /> Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {(showSimilarPanel || similarUnknowns) && (
         <div style={{ padding: '18px', borderBottom: '1px solid #1f2937', background: '#0f172a' }}>

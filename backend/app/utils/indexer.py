@@ -2042,8 +2042,6 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                 try:
                     from backend.app.config import get_thumbnail_dir
                     from backend.app.utils.paths import get_ai_db_path
-                    import sqlite3
-                    import os
                     
                     # Update status so the user knows exactly what WABS is doing
                     STATE["status"] = "Caching face thumbnails..."

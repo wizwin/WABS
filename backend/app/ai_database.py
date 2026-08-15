@@ -1,13 +1,17 @@
 import sqlite3
 import os
 
+from pathlib import Path
+
 def init_ai_database(ai_db_path="ai_metadata.db"):
     """
     Initializes the sidecar database for AI metadata (Facial Recognition).
     This keeps the main WABS database completely untouched.
     """
+    p = Path(ai_db_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
     # Connect to the sidecar database (creates it if it doesn't exist)
-    conn = sqlite3.connect(ai_db_path)
+    conn = sqlite3.connect(str(p))
     cursor = conn.cursor()
     
     # ==========================================

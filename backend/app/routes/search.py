@@ -119,50 +119,10 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50, sort_by
                 yield "]"
                 return
 
-            search_prefixes = [
-                "date:", "tag:", "type:", "name:", "size:", "length:", "object:", "person:",
-                "camera:", "resolution:", "fps:", "artist:", "album:", "genre:", "meta:"
-            ]
-            if any(prefix in q_clean.lower() for prefix in search_prefixes) or "*" in q_clean or q_clean.startswith("-") or " -" in q_clean or q_clean.startswith("+") or " +" in q_clean:
-                q = _build_search_query(q_clean, s, q_base)
-                yield "["
-                first = True
-                for r in q.offset(offset).limit(limit).yield_per(1000):
-                    if not first: yield ","
-                    first = False
-                    yield json.dumps(_build_item(r, cache_flag))
-                yield "]"
-                return
-                
-            safe_query = q_clean.replace('"', '""').replace("'", "''")
-            fts_terms = [f'"{word}" *' for word in safe_query.split() if word]
-            if not fts_terms:
-                yield "[]"
-                return
-                
-            fts_query = " AND ".join(fts_terms)
-            
-            matching_ids = s.execute(
-                text("""
-                SELECT rowid FROM files_fts WHERE files_fts MATCH :q
-                UNION
-                SELECT file_id FROM file_text_fts WHERE file_text_fts MATCH :q
-                LIMIT 1000
-                """),
-                {"q": fts_query}
-            ).scalars().all()
-
-            if not matching_ids:
-                yield "[]"
-                return
-                
-            rows = q_base.filter(FileIndex.id.in_(matching_ids)).all()
-            id_to_row = {r.id: r for r in rows}
-            sorted_rows = [id_to_row[i] for i in matching_ids if i in id_to_row]
-            
+            q = _build_search_query(q_clean, s, q_base)
             yield "["
             first = True
-            for r in sorted_rows[offset:offset+limit]:
+            for r in q.offset(offset).limit(limit).yield_per(1000):
                 if not first: yield ","
                 first = False
                 yield json.dumps(_build_item(r, cache_flag))
@@ -173,50 +133,143 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50, sort_by
 @router.get("/search/suggestions")
 def search_suggestions(q: str = "", limit: int = 5):
     from sqlalchemy import text
+    import sqlite3
     import difflib
+    from backend.app.constants import STANDARD_CATEGORIES, CATEGORY_EXTENSIONS
+    from backend.app.utils.paths import get_ai_db_path
     
-    q = q.strip().lower()
+    q = q.strip()
     if not q:
         return {"type": "none", "suggestions": [], "last_word": ""}
         
     words = q.split()
     last_word = words[-1]
     
-    if "*" in last_word or ":" in last_word:
+    # Strip leading search operators (+ or -)
+    prefix = ""
+    clean_word = last_word
+    if clean_word.startswith("+") or clean_word.startswith("-"):
+        prefix = clean_word[0]
+        clean_word = clean_word[1:]
+        
+    if not clean_word:
+        return {"type": "none", "suggestions": [], "last_word": ""}
+        
+    lower_clean = clean_word.lower()
+    
+    # Prefix suggestions for object:, person:, tag:, type:
+    if lower_clean.startswith("object:"):
+        sub_term = lower_clean[len("object:"):]
+        with SessionLocal() as s:
+            rows = s.execute(
+                text("SELECT tags FROM files WHERE tags LIKE :pattern LIMIT 100"),
+                {"pattern": f"%object:{sub_term}%"}
+            ).scalars().all()
+            found_tags = set()
+            for r in rows:
+                if not r: continue
+                for tag in r.split(","):
+                    t_clean = tag.strip()
+                    if t_clean.lower().startswith(f"object:{sub_term}"):
+                        found_tags.add(t_clean)
+            if found_tags:
+                suggs = [f"{prefix}{t}" for t in sorted(found_tags)[:limit]]
+                return {"type": "tag", "suggestions": suggs, "last_word": last_word}
         return {"type": "none", "suggestions": [], "last_word": last_word}
         
-    # Strip leading search operators (+ or -) for spelling check
-    prefix = ""
-    if last_word.startswith("+") or last_word.startswith("-"):
-        prefix = last_word[0]
-        last_word = last_word[1:]
+    if lower_clean.startswith("person:"):
+        sub_term = lower_clean[len("person:"):].strip('"\'')
+        ai_db = get_ai_db_path()
+        person_names = []
+        if ai_db.exists():
+            try:
+                with sqlite3.connect(ai_db, timeout=5) as conn:
+                    c = conn.cursor()
+                    c.execute(
+                        "SELECT name FROM people WHERE name NOT LIKE 'Unknown Person%' AND lower(name) LIKE ? ORDER BY name LIMIT ?",
+                        (f"%{sub_term}%", limit)
+                    )
+                    person_names = [row[0] for row in c.fetchall()]
+            except Exception:
+                pass
+        if not person_names:
+            with SessionLocal() as s:
+                rows = s.execute(
+                    text("SELECT tags FROM files WHERE tags LIKE :pattern LIMIT 100"),
+                    {"pattern": f"%person:{sub_term}%"}
+                ).scalars().all()
+                found = set()
+                for r in rows:
+                    if not r: continue
+                    for tag in r.split(","):
+                        t_clean = tag.strip()
+                        if t_clean.lower().startswith("person:"):
+                            p_name = t_clean[7:]
+                            if sub_term in p_name.lower():
+                                found.add(p_name)
+                person_names = sorted(found)[:limit]
+                
+        if person_names:
+            suggs = [f'{prefix}person:"{name}"' for name in person_names[:limit]]
+            return {"type": "tag", "suggestions": suggs, "last_word": last_word}
+        return {"type": "none", "suggestions": [], "last_word": last_word}
         
-    if not last_word:
-        return {"type": "none", "suggestions": [], "last_word": ""}
+    if lower_clean.startswith("tag:"):
+        sub_term = lower_clean[len("tag:"):]
+        with SessionLocal() as s:
+            rows = s.execute(
+                text("SELECT tags FROM files WHERE tags IS NOT NULL AND tags != '' LIMIT 100")
+            ).scalars().all()
+            found_tags = set()
+            for r in rows:
+                if not r: continue
+                for tag in r.split(","):
+                    t_clean = tag.strip()
+                    t_bare = t_clean.split(":", 1)[-1] if ":" in t_clean else t_clean
+                    if t_bare.lower().startswith(sub_term):
+                        found_tags.add(f"tag:{t_bare}")
+            if found_tags:
+                suggs = [f"{prefix}{t}" for t in sorted(found_tags)[:limit]]
+                return {"type": "tag", "suggestions": suggs, "last_word": last_word}
+        return {"type": "none", "suggestions": [], "last_word": last_word}
+        
+    if lower_clean.startswith("type:"):
+        sub_term = lower_clean[len("type:"):]
+        matching = [c for c in STANDARD_CATEGORIES if c.startswith(sub_term)]
+        if not matching:
+            all_exts = [ext.lstrip(".") for exts in CATEGORY_EXTENSIONS.values() for ext in exts]
+            matching = [e for e in all_exts if e.startswith(sub_term)]
+        if matching:
+            suggs = [f"{prefix}type:{m}" for m in matching[:limit]]
+            return {"type": "tag", "suggestions": suggs, "last_word": last_word}
+        return {"type": "none", "suggestions": [], "last_word": last_word}
+        
+    if "*" in lower_clean or ":" in lower_clean:
+        return {"type": "none", "suggestions": [], "last_word": last_word}
         
     with SessionLocal() as s:
         results = s.execute(
             text("SELECT term FROM files_fts_vocab WHERE term LIKE :prefix ORDER BY doc DESC LIMIT :limit"),
-            {"prefix": f"{last_word}%", "limit": limit}
+            {"prefix": f"{lower_clean}%", "limit": limit}
         ).scalars().all()
         
         if results:
             suggestions = [f"{prefix}{r}" for r in results]
             return {"type": "autocomplete", "suggestions": suggestions, "last_word": last_word}
             
-        if len(last_word) >= 3:
+        if len(lower_clean) >= 3:
             all_terms = s.execute(
                 text("SELECT term FROM files_fts_vocab WHERE length(term) BETWEEN :min_l AND :max_l ORDER BY doc DESC LIMIT 1000"),
-                {"min_l": len(last_word)-2, "max_l": len(last_word)+2}
+                {"min_l": len(lower_clean)-2, "max_l": len(lower_clean)+2}
             ).scalars().all()
             
-            close_matches = difflib.get_close_matches(last_word, all_terms, n=limit, cutoff=0.7)
+            close_matches = difflib.get_close_matches(lower_clean, all_terms, n=limit, cutoff=0.7)
             
             valid_matches = []
             for m in close_matches:
-                if m == last_word:
+                if m == lower_clean:
                     continue
-                if last_word.startswith(m) and len(last_word) - len(m) <= 3:
+                if lower_clean.startswith(m) and len(lower_clean) - len(m) <= 3:
                     continue
                 valid_matches.append(m)
                 

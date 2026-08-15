@@ -738,9 +738,8 @@ export function useExplorer({
       setLoadingMore(true);
       setSelected(null);
       setCheckedFiles(new Set());
-      const safeQuery = value.replace(/,/g, ' ');
       try {
-        let url = `${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
+        let url = `${API}/search?query=${encodeURIComponent(value)}&category=${cat}&offset=0&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
         if (folderIdToUse) {
           url += `&virtual_folder_id=${folderIdToUse}`;
         }
@@ -750,6 +749,7 @@ export function useExplorer({
         setSearchCache(r.data);
         setFiles(r.data);
         setOffset(r.data.length);
+        setStartOffset(0);
         setHasMore(r.data.length === limit);
         setPage('search');
         setLoadingMore(false);
@@ -776,9 +776,8 @@ export function useExplorer({
       searchAbortController.current = new AbortController();
   
       setLoadingMore(true);
-      const safeQuery = query.replace(/,/g, ' ');
       try {
-        let url = `${API}/search?query=${encodeURIComponent(safeQuery)}&category=${cat}&offset=0&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
+        let url = `${API}/search?query=${encodeURIComponent(query)}&category=${cat}&offset=0&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
         if (folderIdToUse) {
           url += `&virtual_folder_id=${folderIdToUse}`;
         }
@@ -823,9 +822,8 @@ export function useExplorer({
       if (searchAbortController.current) searchAbortController.current.abort();
       searchAbortController.current = new AbortController();
   
-      const safeQuery = query.replace(/,/g, ' ');
       try {
-        let url = `${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${offset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+        let url = `${API}/search?query=${encodeURIComponent(query)}&category=${filterCategory}&offset=${offset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
         if (virtualFolderId) {
           url += `&virtual_folder_id=${virtualFolderId}`;
         }
@@ -895,7 +893,7 @@ export function useExplorer({
         }
         r = await axios.get(url);
       } else if(page === 'search'){
-        let url = `${API}/search?query=${encodeURIComponent(safeQuery)}&category=${filterCategory}&offset=${nextStartOffset}&limit=${fetchLimit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+        let url = `${API}/search?query=${encodeURIComponent(query)}&category=${filterCategory}&offset=${nextStartOffset}&limit=${fetchLimit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
         if (virtualFolderId) {
           url += `&virtual_folder_id=${virtualFolderId}`;
         }

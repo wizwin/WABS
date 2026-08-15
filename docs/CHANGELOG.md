@@ -1,5 +1,47 @@
 # WABS Changelog
 
+## v1.2.0
+
+### 🚀 Major New Features & Enhancements
+*   **Sidecar Social Taxonomy & Relationships Database (`relationships.db`):** Implemented a dedicated SQLite sidecar database to isolate user-curated social classifications from core physical file indexing (`archive.db`) and disposable AI face clusters (`ai_metadata.db`).
+*   **Rescan & Wipe Protection (Stable Person Registry):** Engineered a persistent `persons` registry with soft-link references (`ai_person_id`). If the face metadata database (`ai_metadata.db`) is wiped, cleared, or re-evaluated, relationship metadata remains 100% intact and automatically soft-relinks when profiles are re-scanned or renamed.
+*   **"Who Am I?" User Identity:** Added a user identity configuration in Settings (General tab) allowing users to designate their own profile (`me_name`). This anchors relative kinship branches (Spouse, Parents, Children, Siblings, Grandparents, Cousins) in the relationship tree.
+*   **Interactive Multi-Column Relationship Tree View (`RelationshipTree.jsx`):** Developed a responsive, multi-column card hierarchy for social and family structures anchored to your profile ("Me"). Users can browse Family, Friends, and Others side-by-side with avatar thumbnails, live photo counts, branch badge counters, instant tree search filtering, and one-click "Expand All" / "Collapse All" controls.
+*   **Dedicated Tabbed Navigation for People & Tree:** Converted the People view into clean top-level tabs:
+    *   **People Tab (Default):** Complete profile grid with Category Filters (`All`, `Family`, `Friends`, `Others`, `Uncategorized`), "Sort by" controls, Named People search/cards, and Unknown People clustering controls.
+    *   **Tree View Tab:** Dedicated view displaying exclusively the Multi-Column Relationship Hierarchy Tree, keeping the interface uncluttered and context-focused.
+*   **Explicit Relationship Confirmation (✓ Save / ✕ Cancel):** Enhanced relationship editing in the Person detail view (`Person.jsx`) with buffered local state and explicit Checkmark (✓) and Cancel (✕) buttons (with <kbd>Enter</kbd> and <kbd>Escape</kbd> keyboard shortcuts), preventing unintended database mutations during multi-step dropdown selection.
+*   **Extended Kinship Support ("In-laws"):** Added dedicated "In-law" classification (`In-law (Father / Mother / Brother / Sister-in-law)`) under Family and integrated the corresponding branch into the Relationship Hierarchy Tree.
+*   **Self-Healing Configuration Schema:** Upgraded `load_config()` in `config.py` to auto-detect missing configuration keys on startup and non-destructively write default values to `config.yaml`, while `save_config()` safely merges partial frontend updates without dropping untouched fields.
+*   **Inline Relationship Categorization Bar:** Integrated an inline relationship editor directly below the header in the Person detail view (`Person.jsx`), enabling one-click assignment of primary category (`Family`, `Friends`, `Others`), kinship/social subcategory, and custom free-form labels (e.g. `"Wife"`, `"Sister"`, `"College roommate"`).
+*   **People Page Category Filter Bar:** Added dynamic filter pills (`All`, `Family`, `Friends`, `Others`, `Uncategorized`) with real-time profile counters on the People page. Active filter preferences are automatically persisted in `config.yaml`.
+*   **Kinship-Enriched People Search:** Expanded the client-side search matcher on the People page to query name, category, subcategory, and custom relation labels with zero additional server requests.
+*   **Card Badges & Me Highlights:** Enriched person profile cards with dedicated category/relationship badges and highlighted the user's own card with a blue border and "Me" badge.
+*   **Comprehensive Search Engine & Query Builder Overhaul (`search.py`):**
+    * Refactored `_build_search_query` with a tokenization parser supporting all documented search patterns:
+      * **Compound Size & Range Filters:** Supports compound comparisons (`size:>100MB, <5GB`, `size:>100MB <5GB`), ranges (`size:100MB-5GB`), single comparisons (`size:>100MB`, `size:<5GB`, `size:>=10MB`, `size:<=2GB`, `size:=500KB`), and all standard byte units and shorthand units (`B`, `KB`, `MB`, `GB`, `TB`, `PB`, `k`, `m`, `g`, `t`, `p`).
+      * **Duration & Media Length Filters:** Supports compound comparisons (`length:>5m, <1h`), ranges (`length:5m-1h`), timestamps (`length:>01:30`, `length:>01:30:00`), and unit abbreviations (`s`, `sec`, `m`, `min`, `h`, `hr`, `hours`).
+      * **Advanced Date & Year Range Filters:** Supports multi-date expressions (`date:2020-2022, 2023-10-25`), year ranges (`2020-2022`), full/partial date comparisons (`>2020`, `<2024`, `>=2023-01-01`), exact dates (`YYYY-MM-DD`, `MM-DD-YYYY`, `DD-MM-YYYY`), and specific years/months (`2023`, `2023-10`).
+      * **Category & Extension Filters (`type:`):** Full support for standard categories (`type:audio`, `type:video`, `type:photo`, `type:document`, etc.), multi-type lists (`type:audio,video`), and file extensions (`type:mp3`, `type:.mp3`, `type:pdf`).
+      * **Case-Insensitive Tag, Object, and Person Matching:** Normalized tag and person queries with `func.lower`, supporting namespaced (`object:car`, `person:John Doe`), plain (`car`, `John Doe`), quoted (`person:"john doe"`), and partial name searches (`person:john`).
+      * **Wildcard Matching:** Full wildcard support (`*.mp3`, `*vacation*`, `img_*`) mapping `*` to `%` and `?` to `_` in filename and path lookups.
+      * **Boolean Operators & Search Semantics:** Correctly joins space-separated terms with `OR` (Match Any), enforces `+` (Match All / Require) across all prefixes and terms, and supports `-` (Exclude / NOT) across all attributes, sizes, types, and wildcards.
+*   **Dynamic Prefix Suggestions (`/search/suggestions`):** Upgraded search suggestions to provide live autocomplete pills for `object:`, `person:`, `tag:`, and `type:` prefixes directly within the Topbar suggestion drawer, complementing keyword autocompletion and did-you-mean spell checks.
+*   **Instant Search on Enter:** Added instant search execution when pressing `Enter` in the Topbar search input, bypassing the 600ms debounce timer for immediate UI updates.
+*   **Data Management Integration:**
+    * Added standalone **Export / Import JSON** for Relationships & People Categories in Settings ➔ Data Management.
+    * Updated **Combined WABS Backup** to include relationship data.
+    * Updated **Full Database Backup** to archive `relationships.db` alongside `archive.db`, `ai_metadata.db`, and `config.yaml`.
+    * Updated **Database Cleanup & Optimization** to purge dead relationship references and vacuum `relationships.db`.
+
+### 🐞 Bug Fixes & Refinements
+*   **Tree Subgroup Collision Fix:** Resolved a critical UI crash (`TypeError: familySubgroups.children.push is not a function`) when assigning kinship to Children/Sons by renaming the internal subgroup mapping key to `kids` to avoid collision with standard node `.children` arrays.
+*   **Sidecar Database Parent Directory Auto-Creation:** Fixed startup failure (`unable to open database file`) when starting WABS with a clean or custom database directory by ensuring parent directories are automatically created before initializing `relationships.db` and `ai_metadata.db`.
+*   **Python Inner Import Shadowing Fix:** Removed shadowing inner `import sqlite3` inside `_process_unified_scanners` in `indexer.py` that caused `cannot access local variable 'sqlite3'` runtime exceptions.
+*   **Frontend Comma Stripping Fix:** Removed destructive `.replace(/,/g, ' ')` in `useExplorer.jsx` and `App.jsx` that stripped commas from compound search queries (`size:>100MB, <5GB`, `date:2020-2022, 2023-10-25`) and quoted search strings.
+*   **Search Pagination Reference Error Fix:** Fixed an undefined `safeQuery` variable in `loadPrevious` in `useExplorer.jsx`, eliminating crashes and restoring smooth reverse-scrolling on search result views.
+*   **Automated Search Pattern Test Suite:** Added a dedicated 22-test automated test suite (`tests/test_search_patterns.py`) integrated into the master test runner (`run_all_tests.py`) to prevent search pattern regressions.
+
 ## v1.1.0
 
 ### 🚀 Major New Features & Enhancements

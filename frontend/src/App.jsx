@@ -190,8 +190,7 @@ const handleSearchChange = (e) => {
     }
 
     try {
-      const safeQuery = value.replace(/,/g, ' ');
-      const r = await axios.get(`${API}/search/suggestions?q=${encodeURIComponent(safeQuery)}&limit=5`, {
+      const r = await axios.get(`${API}/search/suggestions?q=${encodeURIComponent(value)}&limit=5`, {
         signal: suggestionAbortController.current.signal
       });
       setSuggestionsData(r.data);
@@ -215,6 +214,18 @@ const applySuggestion = (suggestion) => {
 };
 
 const handleKeyDown = (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (suggestionsData.suggestions.length > 0 && focusedSuggestionIndex >= 0) {
+      applySuggestion(suggestionsData.suggestions[focusedSuggestionIndex]);
+    } else {
+      setSuggestionsData({ type: 'none', suggestions: [], lastWord: '' });
+      setFocusedSuggestionIndex(-1);
+      explorer.goToSearch();
+    }
+    return;
+  }
+  
   if (suggestionsData.suggestions.length > 0) {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
@@ -222,9 +233,6 @@ const handleKeyDown = (e) => {
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       setFocusedSuggestionIndex(prev => prev > 0 ? prev - 1 : -1);
-    } else if (e.key === 'Enter' && focusedSuggestionIndex >= 0) {
-      e.preventDefault();
-      applySuggestion(suggestionsData.suggestions[focusedSuggestionIndex]);
     } else if (e.key === 'Escape') {
       setSuggestionsData({ type: 'none', suggestions: [], lastWord: '' });
       setFocusedSuggestionIndex(-1);

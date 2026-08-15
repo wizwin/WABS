@@ -12,6 +12,7 @@ WABS is a modern, 100% offline archival management system designed to help you o
 * **Rich Previews:** Auto-generates thumbnails for photos, videos, PDFs, Word documents, and code.
 * **Smart Categorization:** Automatically groups files into categories like Photos, Videos, Code, etc.
 * **Offline Face Recognition:** Scans photos using local AI to find and group people automatically.
+* **People Categorization & Relationship Tree:** Organize named profiles into Family, Friends, and Other categories with custom relationship labels. View an interactive, collapsible relationship tree anchored to your profile ("Me") to search and browse photos of relatives and friends faster. *(Note: This feature is designed to enrich media search and browsing, not serve as a full genealogy manager).*
 * **Object & Scene Tagging:** Classifies objects and scenes in photos completely offline, allowing you to easily search by content.
 * **Document Text Extraction:** Automatically extracts and intelligently filters text from PDFs, documents, and code files, making their inner contents instantly searchable.
 * **Combined Background Scanning:** Scan for files, faces, objects, and document text simultaneously to massively speed up index generation.
@@ -46,8 +47,9 @@ Once the terminal window opens and the backend starts, open your web browser and
 The Settings page is divided into six tabs to let you customize WABS's database path, backups, UI preferences, AI parameters, Smart Searches, and clean up or backup your data:
 
 #### 1. General (System Settings)
+* **Who Am I? (WABS User Identity)**: Select your own profile from your named people list. WABS uses this identity to anchor your relationship tree ("Me") and establish relationships relative to you.
 * **System Paths**:
-  * **Database Path**: The folder where the SQLite databases (`archive.db` and `ai_metadata.db`) are saved.
+  * **Database Path**: The folder where the SQLite databases (`archive.db`, `ai_metadata.db`, and `relationships.db`) are saved.
   * **Thumbnail Path**: The folder where generated preview thumbnails and cropped face images are cached.
   * **Global Excluded Folders**: A comma-separated list of folder names that WABS will skip in all directories (e.g. `node_modules, .git, venv, bin`).
 * **Data Safety**:
@@ -84,24 +86,12 @@ Configure AI models, scanner sensitivities, and offline OCR engines:
   * **Enable AI Classification**: Enables natural language features. Set a custom **AI Provider Base URL** (e.g. `http://127.0.0.1:11434/v1` for Ollama or `http://127.0.0.1:1234/v1` for LM Studio) and **AI Model** name. You can enter an OpenAI key (encrypted securely) or leave it blank to run fully local.
   * **Test AI Connection**: Performs a test query to verify your LLM provider configuration.
 * **Detection Sensitivity**:
-  * **Face Detection**: Adjust face-finding sensitivity:
-    * `High`: Detects small, blurry, or distant background faces. This is slower and can occasionally lead to false-positive detections.
-    * `Medium`: Balanced detection threshold (Recommended for standard family photos).
-    * `Low`: Only detects clear, high-precision foreground faces. This runs faster and avoids false detections.
-  * **Face Clustering Strictness**: Controls how strictly faces are grouped into profiles:
-    * `Strict`: Requires high similarity confidence to group faces. This avoids mixing different people but may create multiple separate profiles for the same person under different lighting or angles.
-    * `Medium`: Standard balanced grouping (Recommended).
-    * `Loose`: Groups profiles aggressively even with lower similarity confidence. This keeps profiles consolidated but might occasionally mix two lookalike people together.
-  * **Minimum Photos for Unknown Persons**: Hides unknown face clusters that contain fewer than the specified number of photos. Set to `3` or higher to filter out random background strangers and blurry false detections.
-  * **Object & Scene Detection**: Controls the confidence threshold for tagging objects:
-    * `High`: Tags a large variety of objects per photo, including low-probability matches. Good for comprehensive cataloging, but can introduce incorrect tags.
-    * `Medium`: Standard balanced classification (Recommended).
-    * `Low`: Only tags objects detected with high confidence, ensuring tags are highly accurate.
+  * **Face Detection**: Adjust face-finding sensitivity (`High`, `Medium`, `Low`).
+  * **Face Clustering Strictness**: Controls how strictly faces are grouped into profiles (`Strict`, `Medium`, `Loose`).
+  * **Minimum Photos for Unknown Persons**: Hides unknown face clusters that contain fewer than the specified number of photos.
+  * **Object & Scene Detection**: Controls the confidence threshold for tagging objects (`High`, `Medium`, `Low`).
   * **Document Text Extraction Word Limit**: Limits the number of extracted words per file to keep the search index lightweight (max 10,000 words).
-  * **Document Scanning Depth**: Set scanning depth:
-    * `Low`: Fast and lightweight; WABS scans only for core structural files, skipping heavy parsing (Recommended).
-    * `Medium`: Balanced scan depth.
-    * `High`: Thorough recursive scanning of embedded contents; will scan deeper but takes longer.
+  * **Document Scanning Depth**: Set scanning depth (`Low`, `Medium`, `High`).
 * **OCR (Optical Character Recognition)**:
   * **Enable OCR**: Extract printed English text from images and PDF pages.
   * **Only run OCR on photos without faces/objects**: Skip scenic or portrait photos to focus text extraction strictly on receipts, screenshots, and documents.
@@ -110,9 +100,7 @@ Configure AI models, scanner sensitivities, and offline OCR engines:
   * **AI & Media CPU Threads**: Restrict the number of CPU cores used by face/object scanners (default: 4).
   * **OCR CPU Threads**: Restrict the number of CPU cores used by text extraction (default: 4).
   * **OCR Image Scan Limit**: Resizes large images during the text detection phase to speed up processing (default: 736px).
-  * **OCR Downscaling Mode**: Choose how WABS resizes documents before detecting text:
-    * `Minimum Side` (default): Prioritizes high resolution. This is extremely accurate for small text, receipts, or spreadsheets, but requires more CPU power.
-    * `Maximum Side`: Downscales images aggressively. This runs significantly faster and saves system memory, but might miss very small or fine text details.
+  * **OCR Downscaling Mode**: Choose how WABS resizes documents before detecting text (`Minimum Side`, `Maximum Side`).
 * **Hidden People**:
   * Displays named or unknown profiles you chose to hide. You can unhide them with one click.
 
@@ -123,12 +111,12 @@ Manage and build saved searches:
 * **Remove / Edit Query**: Update saved shortcuts and their underlying search operators.
 
 #### 6. Data Management
-* **Database Cleanup & Optimization**: Removes missing file indices from the database, deletes orphaned face crops/records and tag associations, purges empty person profiles, and runs SQLite `VACUUM` to reclaim disk space.
-* **Full Database Backup**: Creates a backup zip archive containing `archive.db`, `ai_metadata.db`, and `config.yaml`.
+* **Database Cleanup & Optimization**: Removes missing file indices from the database, deletes orphaned face crops/records and tag associations, purges empty person profiles and orphaned relationship links, and runs SQLite `VACUUM` across all databases to reclaim disk space.
+* **Full Database Backup**: Creates a backup copy containing `archive.db`, `ai_metadata.db`, `relationships.db`, and `config.yaml`.
 * **Data Portability (Import/Export JSON)**:
-  * Export/import named people (faces), custom tags, or virtual folders as portable, platform-independent JSON files.
-  * **Combined WABS Backup**: Backup or restore all custom tags, face profiles, and virtual folders together in a single JSON file.
-  * *Note: Imports utilize path remapping, meaning your data restores perfectly even if files have moved drives.*
+  * Export/import named people (faces), relationships & categories, custom tags, or virtual folders as portable, platform-independent JSON files.
+  * **Combined WABS Backup**: Backup or restore all custom tags, face profiles, relationships, and virtual folders together in a single JSON file.
+  * *Note: Imports utilize path remapping and soft-link resolution, meaning your relationships and tags restore seamlessly even if files or face clusters are moved or regenerated.*
 * **Clear Thumbnail Cache**: Deletes all cached preview images to reclaim disk space (regenerates on demand).
 
 ---
@@ -154,7 +142,41 @@ Once the Face Scanner identifies faces, it groups them under automatic profiles 
    * If a face scan finishes and you see multiple separate "Unknown Person" profiles that are actually the same person, you can merge them easily:
      * **If they are all unnamed:** Use **Cluster All Unknowns** to compare all unknown profiles against each other in bulk and merge duplicates automatically.
      * **If you have already named one of them (e.g., `John Doe`):** Go to `John Doe`'s profile page and click **Find Similar Unknowns** (or **Find Similar Faces**) in the Details pane. WABS will scan the remaining unknown profiles and let you merge them with one click.
-     * **Adjusting Sensitivity:** If some duplicates still won't merge, expand the **AI Actions** panel on the People page and lower the **Similarity Threshold** slider slightly (e.g., to `50%` or `52%`) to be more lenient with side-profiles, shadows, or hats.
+      * **Adjusting Sensitivity:** If some duplicates still won't merge, expand the **AI Actions** panel on the People page and lower the **Similarity Threshold** slider slightly (e.g., to `50%` or `52%`) to be more lenient with side-profiles, shadows, or hats.
+
+### People Categorization & Relationship Tree
+
+> [!NOTE]
+> **Purpose**: WABS is an archival and media search tool, **not** a full genealogy manager or family tree builder. The relationship categorization system is designed to enrich media search (e.g. searching for "wife", "sister", "colleague") and give you a structured way to browse family and friends.
+
+1. **Configuring "Who Am I?" Identity:**
+   * Go to **Settings** ➔ **General** and choose your own profile from the **Who Am I?** dropdown.
+   * WABS uses this identity to anchor your relationship tree (`"Me"`) and build relative branches for parents, spouse, children, siblings, and extended family.
+
+2. **Categorizing Named People:**
+   * Open any named person's photo collection from the **People** tab.
+   * Use the **Relationship Bar** directly below the header to choose:
+     * **Primary Category:** `Family`, `Friends`, or `Others`.
+     * **Relationship Type / Subcategory:**
+       * *Family:* Spouse / Partner, Parent, Child, Sibling, Grandparent, Grandchild, In-law (Father/Mother/Brother/Sister-in-law), Cousin (1st), Cousin (2nd), Aunt / Uncle, Niece / Nephew, Other Family.
+       * *Friends:* Close Friend, Colleague / Work, Classmate / School, Acquaintance, Other Friend.
+       * *Others:* Neighbor, Service Contact, Other.
+     * **Custom Label:** Add a custom label (e.g. `"Wife"`, `"Sister"`, `"Acme Corp"`, `"College roommate"`).
+   * **Explicit Confirmation:** Changes are staged locally; click the **✓ (Save)** button or press <kbd>Enter</kbd> to apply them, or click **✕ (Cancel)** or press <kbd>Escape</kbd> to discard changes.
+
+3. **Filtering & Searching by Relationships:**
+   * **Category Filter Pills:** Click the `All`, `Family`, `Friends`, `Others`, or `Uncategorized` filter pills on the People page to view matching profiles with live counts. Your active filter preference is saved automatically.
+   * **Unified Search:** Typing kinship terms or custom labels (e.g. `wife`, `colleague`, `cousin`) into the search bar matches people instantly.
+
+4. **Interactive Multi-Column Relationship Tree View:**
+   * Switch to the dedicated **Tree View** tab on the People page to view your structured kinship hierarchy.
+   * **Modular Side-by-Side Cards:** Family, Friends, and Others are organized in responsive side-by-side category cards, minimizing vertical scrolling.
+   * **Search & Controls:** Real-time tree search box, person count badges, and one-click **Expand All** / **Collapse All** controls.
+   * Clicking any person node opens their photo timeline immediately.
+
+5. **Safe Sidecar Storage (`relationships.db`):**
+   * All relationship assignments are saved in a separate sidecar database (`relationships.db`).
+   * If you ever wipe or rescan `ai_metadata.db`, your entire relationship hierarchy is preserved and automatically relinked when faces are renamed.
 
 ### Clearing AI Data & Text Manually
 If you want to completely reset the AI's detected faces, people, and object tags, you can manually clear the AI database (or the text extraction cache):

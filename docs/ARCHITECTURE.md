@@ -211,4 +211,75 @@ When selecting a physical **folder** (subfolder card checkbox), any more-specifi
 **Actions available on selected virtual folders** (via the selection action bar):
 - Add to another Virtual Folder (moves the VF hierarchy by copy)
 - Delete (removes the VF and its subtree; does **not** touch files on disk)
-- Export to disk (copies files replicating the VF tree structure)
+- Export to disk (copies files replicating the VF tree structure)
+
+---
+
+### 11. Social Taxonomy & Relationship Sidecar (`relationships.db`, `relationships_database.py`)
+
+WABS includes a dedicated social categorization layer to enrich photo searches (e.g. finding photos of family members, cousins, spouses, or colleagues) and visualize kinship networks without turning WABS into a complex genealogy management application.
+
+#### 11.1 Sidecar Database Isolation
+
+WABS maintains strict structural isolation across its databases:
+
+1. `archive.db` — Core physical index (`files`, `virtual_folders`). Fast, read-heavy, zero AI overhead.
+2. `ai_metadata.db` — Machine-generated face clusters and high-dimensional float embeddings (`people`, `faces`, `processed_files`). Can be completely wiped, purged, or rescanned at any time.
+3. `relationships.db` — User-curated social relationships, kinship ties, and identity metadata (`persons`, `person_social`).
+
+```
+                    ┌─────────────────────────┐
+                    │      config.yaml        │
+                    │   (me_name, filters)    │
+                    └────────────┬────────────┘
+                                 │
+           ┌─────────────────────┼─────────────────────┐
+           ▼                     ▼                     ▼
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│    archive.db    │  │  ai_metadata.db  │  │ relationships.db │
+│  (Indexed Files, │  │ (Face Clusters & │  │ (Stable Registry,│
+│ Virtual Folders) │  │   Embeddings)    │  │  Social Mapping) │
+└──────────────────┘  └──────────┬───────┘  └──────────┬───────┘
+                                 │                     │
+                                 └────── Soft-Link ────┘
+                                      (ai_person_id)
+```
+
+#### 11.2 Soft-Link Preservation on Database Rescans
+
+When `ai_metadata.db` is purged or face clusters are re-evaluated:
+* The user's relationship classifications (`relationships.db`) remain **100% intact**.
+* `persons` records hold stable primary keys (`id`, `name`) and store `ai_person_id` as a loose/soft link.
+* If a person is deleted from `ai_metadata.db`, the link is soft-unlinked (`ai_person_id = NULL`).
+* When the person is re-scanned or renamed in `ai_metadata.db` with the same name, `relationships.db` automatically soft-relinks the existing relationship data without manual user intervention.
+
+#### 11.3 Database Schema
+
+| Table | Column | Type | Purpose |
+|---|---|---|---|
+| `persons` | `id` | INTEGER PRIMARY KEY | Stable identity ID across AI database resets |
+| | `name` | TEXT UNIQUE NOT NULL | Canonical person name |
+| | `ai_person_id` | INTEGER | Soft reference to `ai_metadata.db.people.id` |
+| | `is_me` | BOOLEAN | Indicates if this profile represents the primary WABS user |
+| | `linked_at` | DATETIME | Timestamp of last link sync |
+| | `created_at` | DATETIME | Record creation timestamp |
+| `person_social` | `person_id` | INTEGER PRIMARY KEY | References `persons.id` (CASCADE DELETE) |
+| | `category` | TEXT | Primary classification: `Family`, `Friends`, `Others` |
+| | `subcategory` | TEXT | Kinship or social tier (e.g. `Spouse`, `Parent`, `Sibling`, `Close Friend`, `Colleague`) |
+| | `relation_label` | TEXT | Free-form user label (e.g. "Wife", "Sister", "College Roommate") |
+| | `updated_at` | DATETIME | Timestamp of last relationship change |
+
+#### 11.4 Hierarchical Relationship Tree (`RelationshipTree.jsx`)
+
+The frontend visualizes the kinship network anchored to the primary user profile (`"Me"`):
+* **Multi-Column Modular Cards**: Organizes categories (`Family`, `Friends`, `Others`) in responsive side-by-side card containers with live photo counters and person badges to minimize vertical scrolling.
+* **Instant Filtering & Expansion**: Includes real-time search filtering across branches and one-click "Expand All" / "Collapse All" actions.
+* **Tree Structure**:
+  - `Root (Me)` ➔ `Family` (Spouse, Parents, Siblings, Children, Grandparents, In-laws, Extended Family: Cousins 1st/2nd, Aunts/Uncles, Nieces/Nephews, Other Family)
+  - `Root (Me)` ➔ `Friends` (Close Friends, Colleagues, Classmates, Acquaintances, Other Friends)
+  - `Root (Me)` ➔ `Others` (Neighbors, Service Contacts, Other)
+* **Interactive Navigation**: Clicking any person node opens the tagged photo collection for that person directly in `person_files` view.
+
+#### 11.5 Search Integration & Kinship Enrichment
+
+Every `GET /people` query joins the stable social taxonomy in memory. Search queries in the People page and Person tagging bar match against `category`, `subcategory`, and `relation_label`, allowing instant discovery by terms like `"wife"`, `"sister"`, or `"colleague"`.

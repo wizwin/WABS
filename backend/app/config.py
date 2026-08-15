@@ -60,7 +60,9 @@ DEFAULT = {
     "thumbnail_path": "./cache/thumbnails",
     "thumbnail_size": 256,
     "auto_run_on_startup": False,
-    "idle_unload_timeout_seconds": 1800
+    "idle_unload_timeout_seconds": 1800,
+    "me_name": "",
+    "people_category_filter": "all"
 }
 
 def _get_machine_key():
@@ -124,22 +126,47 @@ def load_config():
     if "ai_api_key_enc" in config:
         config["ai_api_key"] = _decode_key(config.pop("ai_api_key_enc"))
 
+    missing_any = False
     for key, value in DEFAULT.items():
-        config.setdefault(key, value)
+        if key not in config:
+            config[key] = value
+            missing_any = True
+
+    if missing_any:
+        try:
+            save_config(config)
+        except Exception:
+            pass
 
     return config
 
 def save_config(data):
-    save_data = data.copy()
-    # Remove legacy ui_preferences just in case it was passed
-    save_data.pop("ui_preferences", None)
+    # Load existing config or initialize from DEFAULT
+    current = {}
+    if CFG.exists():
+        try:
+            with open(CFG, "r") as f:
+                current = yaml.safe_load(f) or {}
+        except Exception:
+            current = {}
+
+    # Ensure all defaults are present
+    for k, v in DEFAULT.items():
+        current.setdefault(k, v)
+
+    # Update with new data
+    for k, v in data.items():
+        if k != "ui_preferences":
+            current[k] = v
 
     # Obfuscate the API key before writing it to the disk
-    if "ai_api_key" in save_data:
-        save_data["ai_api_key_enc"] = _encode_key(save_data.pop("ai_api_key"))
-        
-    with open(CFG,"w") as f:
-        yaml.dump(save_data, f)
+    if "ai_api_key" in current:
+        current["ai_api_key_enc"] = _encode_key(current.pop("ai_api_key"))
+
+    current.pop("ui_preferences", None)
+
+    with open(CFG, "w") as f:
+        yaml.dump(current, f, default_flow_style=False, sort_keys=False)
 
 def get_thumbnail_dir(category: str = None) -> Path:
     config = load_config()

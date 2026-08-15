@@ -1,7 +1,7 @@
 import { createContext } from 'react';
 import axios from 'axios';
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 
 // Use relative path in production to support network IPs, fallback to localhost for Vite dev server
 export const API = window.location.port === '5173' ? 'http://127.0.0.1:8000' : '';

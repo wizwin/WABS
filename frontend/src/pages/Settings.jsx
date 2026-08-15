@@ -15,7 +15,9 @@ export default function Settings(props) {
     showDetails, toggleDetails, aiSearchPrompt, setAiSearchPrompt, generateSearchWithAI,
     generatingSearch, testingAI, testAIConnection, globalPeopleMap, choosePathForConfig,
     abortPeopleDataOpRef, abortTagsDataOpRef, cancelAiAction,
-    exportVirtualFolders, importVirtualFolders, exportAllWabs, importAllWabs
+    exportVirtualFolders, importVirtualFolders, exportAllWabs, importAllWabs,
+    setMeIdentity, sortedNamedPeopleDropdown, mePerson,
+    exportRelationships, importRelationships
   } = props;
 
   return (
@@ -57,6 +59,40 @@ export default function Settings(props) {
 
             {settingsTab === 'general' && (
             <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+                <h3 style={{ margin: '0 0 16px 0' }}>User Identity</h3>
+                <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>
+                    Who Am I? (Select your own profile to anchor family, friends, and the relationship tree relative to you)
+                </p>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '24px' }}>
+                    <select
+                        className="setting"
+                        style={{ marginBottom: 0, flex: 1, maxWidth: '400px' }}
+                        value={settings.me_name || ''}
+                        onChange={(e) => {
+                            const val = e.target.value;
+                            setSettings(prev => ({ ...prev, me_name: val }));
+                            if (setMeIdentity) setMeIdentity(val);
+                        }}
+                    >
+                        <option value="">— Not Configured —</option>
+                        {(sortedNamedPeopleDropdown || []).map(p => (
+                            <option key={p.id} value={p.name}>{p.name}</option>
+                        ))}
+                    </select>
+                    {settings.me_name && (
+                        <ActionButton
+                            className="btn btn-secondary"
+                            onClick={() => {
+                                setSettings(prev => ({ ...prev, me_name: '' }));
+                                if (setMeIdentity) setMeIdentity('');
+                            }}
+                            style={{ padding: '4px 12px' }}
+                        >
+                            Clear
+                        </ActionButton>
+                    )}
+                </div>
+
                 <h3 style={{ margin: '0 0 16px 0' }}>System Paths</h3>
                 <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Database Path</p>
                 <div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
@@ -175,7 +211,7 @@ export default function Settings(props) {
                 <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
                     <div>
                     <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Database Cleanup &amp; Optimization</h4>
-                    <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Scan for missing files, clear orphaned data, and vacuum databases to reclaim space.</p>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Scan for missing files, clear orphaned data and relationship records, and vacuum databases to reclaim space.</p>
                     </div>
                     <ActionButton 
                     disabled={(dataOpProgress && dataOpProgress.id === 'cleanup') ? indexer.cancel_data_operation : (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation))} 
@@ -198,7 +234,7 @@ export default function Settings(props) {
                 <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
                     <div>
                     <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Full Database Backup</h4>
-                    <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Create a safe, portable copy of your archive.db, ai_metadata.db, and config.yaml.</p>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Create a safe, portable copy of your archive.db, ai_metadata.db, relationships.db, and config.yaml.</p>
                     </div>
                     <ActionButton 
                     disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} 
@@ -314,8 +350,34 @@ export default function Settings(props) {
                 </div>
                 <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
                     <div style={{ flex: 1, minWidth: '250px' }}>
+                    <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Relationships &amp; People Categories</h4>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Export or import family &amp; friend classifications and custom labels as a JSON file.</p>
+                    </div>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                    <ActionButton 
+                        disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} 
+                        className="btn btn-secondary" 
+                        onClick={exportRelationships}
+                        title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to export data" : ""}
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                    >
+                        Export JSON
+                    </ActionButton>
+                    <ActionButton 
+                        disabled={actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)} 
+                        className="btn btn-secondary" 
+                        onClick={importRelationships}
+                        title={(actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) ? "Stop all background tasks to import data" : ""}
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                    >
+                        Import JSON
+                    </ActionButton>
+                    </div>
+                </div>
+                <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                    <div style={{ flex: 1, minWidth: '250px' }}>
                     <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>Combined WABS Backup</h4>
-                    <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Backup or restore all WABS metadata at once: Known People (Faces), Object &amp; Custom Tags, and Virtual Folders.</p>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>Backup or restore all WABS metadata at once: Known People (Faces), Relationships &amp; Categories, Object &amp; Custom Tags, and Virtual Folders.</p>
                     </div>
                     <div style={{ display: 'flex', gap: '10px' }}>
                     <ActionButton 
