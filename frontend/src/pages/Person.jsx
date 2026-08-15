@@ -363,11 +363,14 @@ export default function Person(props) {
                       <option value="Daughter-in-law (Son's Wife)" />
                       <option value="Co-Brother (Spouse's Sister's Husband)" />
                       <option value="Co-Sister (Spouse's Brother's Wife)" />
+                      <option value="Cousin-in-law (1st Cousin's Wife / Husband)" />
+                      <option value="Cousin's Wife (1st Cousin's Wife)" />
+                      <option value="Cousin's Husband (1st Cousin's Husband)" />
                       <option value="Spouse's Maternal Uncle (Uncle-in-law)" />
                       <option value="Spouse's Maternal Aunt (Aunt-in-law)" />
                       <option value="Spouse's Paternal Uncle (Uncle-in-law)" />
                       <option value="Spouse's Paternal Aunt (Aunt-in-law)" />
-                      <option value="Spouse's 1st Cousin (Cousin-in-law)" />
+                      <option value="Spouse's 1st Cousin (Spouse's Cousin)" />
                       <option value="Spouse's Grandfather" />
                       <option value="Spouse's Grandmother" />
                       <option value="Spouse's Nephew / Niece" />
@@ -423,22 +426,26 @@ export default function Person(props) {
                       <option value="Paternal 1st Cousin (Father's Sibling's Child)" />
                       <option value="Cousin Brother" />
                       <option value="Cousin Sister" />
+                      <option value="Cousin's Wife (Cousin-in-law)" />
+                      <option value="Cousin's Husband (Cousin-in-law)" />
                     </>
                   )}
                   {localSubcategory === 'Cousin (Once Removed)' && (
                     <>
-                      <option value="Mother's 1st Cousin (Maternal 1C1R)" />
-                      <option value="Father's 1st Cousin (Paternal 1C1R)" />
-                      <option value="Mother's Cousin's Son" />
-                      <option value="Mother's Cousin's Daughter" />
-                      <option value="Father's Cousin's Son" />
-                      <option value="Father's Cousin's Daughter" />
                       <option value="1st Cousin's Son (1C1R Downwards)" />
                       <option value="1st Cousin's Daughter (1C1R Downwards)" />
+                      <option value="Mother's 1st Cousin (Maternal 1C1R Upwards)" />
+                      <option value="Father's 1st Cousin (Paternal 1C1R Upwards)" />
+                      <option value="Mother's Cousin's Son (2nd Cousin)" />
+                      <option value="Mother's Cousin's Daughter (2nd Cousin)" />
+                      <option value="Father's Cousin's Son (2nd Cousin)" />
+                      <option value="Father's Cousin's Daughter (2nd Cousin)" />
                     </>
                   )}
                   {localSubcategory?.includes('2nd') && (
                     <>
+                      <option value="1st Cousin's Son (Cousin's Child)" />
+                      <option value="1st Cousin's Daughter (Cousin's Child)" />
                       <option value="Maternal 2nd Cousin (Mother's 1st Cousin's Child)" />
                       <option value="Paternal 2nd Cousin (Father's 1st Cousin's Child)" />
                       <option value="Mother's 1st Cousin's Son" />

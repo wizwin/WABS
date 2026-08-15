@@ -178,6 +178,39 @@ Once the Face Scanner identifies faces, it groups them under automatic profiles 
    * All relationship assignments are saved in a separate sidecar database (`relationships.db`).
    * If you ever wipe or rescan `ai_metadata.db`, your entire relationship hierarchy is preserved and automatically relinked when faces are renamed.
 
+### Relationship & Kinship Mapping Reference Guide
+
+WABS uses anchor-relative kinship modeling anchored to **"Me"**. Use the following reference guide to quickly categorize your family, in-laws, friends, and contacts:
+
+| Relative / Relation | Category | Type (Subcategory) | Suggested Custom Label | Tree Placement |
+| :--- | :--- | :--- | :--- | :--- |
+| **Spouse / Partner** | `Family` | `Spouse` | `"Wife"`, `"Husband"`, `"Partner"`, `"Fiancée"`, `"Fiancé"` | Family ➔ Spouse / Partner |
+| **Parents** | `Family` | `Parent` | `"Mother"`, `"Father"`, `"Mom"`, `"Dad"`, `"Stepmother"`, `"Stepfather"` | Family ➔ Parents |
+| **Children** | `Family` | `Child` | `"Son"`, `"Daughter"`, `"Eldest Son"`, `"Youngest Daughter"`, `"Stepson"` | Family ➔ Children |
+| **Siblings** | `Family` | `Sibling` | `"Brother"`, `"Sister"`, `"Elder Brother"`, `"Younger Sister"` | Family ➔ Siblings |
+| **Grandparents** | `Family` | `Grandparent` | `"Maternal Grandmother"`, `"Maternal Grandfather"`, `"Paternal Grandmother"`, `"Paternal Grandfather"` | Family ➔ Grandparents |
+| **Grandchildren** | `Family` | `Grandchild` | `"Grandson"`, `"Granddaughter"`, `"Great-Grandson"`, `"Great-Granddaughter"` | Family ➔ Extended ➔ Other Family |
+| **Great-Grandparents** | `Family` | `Great-Grandparent` | `"Maternal Great-Grandmother"`, `"Paternal Great-Grandfather"` | Family ➔ Extended ➔ Other Family |
+| **Parents' Siblings (Aunts / Uncles)** | `Family` | `Aunt / Uncle` | `"Maternal Uncle (Mother's Brother)"`, `"Maternal Aunt"`, `"Paternal Uncle"`, `"Paternal Aunt"` | Family ➔ Extended ➔ Aunts & Uncles |
+| **Grandparents' Siblings (Great-Aunts / Uncles)** | `Family` | `Great-Aunt / Uncle` | `"Maternal Great-Uncle (Grandpa's Brother)"`, `"Maternal Great-Aunt"`, `"Paternal Great-Uncle"` | Family ➔ Extended ➔ Great-Aunts & Uncles |
+| **1st Cousins (Parents' Siblings' Children)** | `Family` | `Cousin (1st)` | `"Maternal 1st Cousin"`, `"Paternal 1st Cousin"`, `"Cousin Brother"`, `"Cousin Sister"` | Family ➔ Extended ➔ 1st Cousins |
+| **1st Cousin's Spouse (Cousin-in-law)** | `Family` | `In-law` or `Cousin (1st)` | `"Cousin-in-law (1st Cousin's Wife / Husband)"`, `"Cousin's Wife"`, `"Cousin's Husband"` | Family ➔ Extended ➔ In-laws |
+| **1st Cousin's Children (1C1R Downwards)** | `Family` | `Cousin (Once Removed)` | `"1st Cousin's Son (1C1R Downwards)"`, `"1st Cousin's Daughter"`, `"Cousin's Child"` | Family ➔ Extended ➔ Cousins Once Removed |
+| **Parents' 1st Cousins (1C1R Upwards)** | `Family` | `Cousin (Once Removed)` | `"Mother's 1st Cousin (Maternal 1C1R)"`, `"Father's 1st Cousin (Paternal 1C1R)"` | Family ➔ Extended ➔ Cousins Once Removed |
+| **2nd Cousins (Parents' 1st Cousins' Children)** | `Family` | `Cousin (2nd / Distant)` | `"Maternal 2nd Cousin (Mother's Cousin's Child)"`, `"Mother's 1st Cousin's Son"`, `"2nd Cousin"` | Family ➔ Extended ➔ 2nd / Distant Cousins |
+| **Siblings' Children (Nieces / Nephews)** | `Family` | `Niece / Nephew` | `"Nephew (Brother's / Sister's Son)"`, `"Niece"`, `"Grandnephew"`, `"Grandniece"` | Family ➔ Extended ➔ Nieces & Nephews |
+| **Spouse's Parents (In-laws)** | `Family` | `In-law` | `"Mother-in-law (Spouse's Mother)"`, `"Father-in-law (Spouse's Father)"` | Family ➔ Extended ➔ In-laws |
+| **Spouse's Siblings (In-laws)** | `Family` | `In-law` | `"Brother-in-law (Spouse's Brother / Sister's Husband)"`, `"Sister-in-law"` | Family ➔ Extended ➔ In-laws |
+| **Spouse's Siblings' Spouses (Co-In-laws)** | `Family` | `In-law` | `"Co-Brother (Spouse's Sister's Husband)"`, `"Co-Sister (Spouse's Brother's Wife)"` | Family ➔ Extended ➔ In-laws |
+| **Children's Spouses (In-laws)** | `Family` | `In-law` | `"Son-in-law (Daughter's Husband)"`, `"Daughter-in-law (Son's Wife)"` | Family ➔ Extended ➔ In-laws |
+| **Spouse's Extended Family (Uncles / Cousins)** | `Family` | `Spouse's Family` | `"Spouse's Maternal Uncle"`, `"Spouse's 1st Cousin"`, `"Spouse's Grandparents"`, `"Spouse's Niece"` | Family ➔ Extended ➔ In-laws |
+| **Close Friends** | `Friends` | `Close Friend` | `"Best Friend"`, `"Childhood Friend"`, `"College Friend"`, `"School Friend"` | Friends ➔ Close Friends |
+| **Colleagues / Work** | `Friends` | `Colleague` | `"Manager"`, `"Teammate"`, `"Co-worker"`, `"Mentor"`, `"Client"`, `"Business Partner"` | Friends ➔ Colleagues & Work |
+| **Classmates / School** | `Friends` | `Classmate` | `"Schoolmate"`, `"College Roommate"`, `"Batchmate"`, `"Alumni"` | Friends ➔ Classmates / School |
+| **Acquaintances** | `Friends` | `Acquaintance` | `"Acquaintance"`, `"Club Member"` | Friends ➔ Acquaintances |
+| **Neighbors** | `Others` | `Neighbor` | `"Next-door Neighbor"`, `"Apartment Society"`, `"Community Member"` | Others ➔ Neighbors |
+| **Service & Professional Contacts** | `Others` | `Service Contact` | `"Doctor"`, `"Teacher"`, `"Lawyer"`, `"Driver"`, `"Contractor"` | Others ➔ Service & Professional Contacts |
+
 ### Clearing AI Data & Text Manually
 If you want to completely reset the AI's detected faces, people, and object tags, you can manually clear the AI database (or the text extraction cache):
 1. **Stop** the WABS application (close the terminal/command prompt window).
