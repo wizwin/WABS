@@ -93,6 +93,23 @@ export default function Settings(props) {
                     )}
                 </div>
 
+                <div 
+                    title="Changing 'Me' updates the tree root, but existing relationship labels (e.g. Dad, 1st Cousin) were assigned relative to the previous identity and will not automatically invert."
+                    style={{
+                        marginTop: '-16px',
+                        marginBottom: '20px',
+                        fontSize: '12px',
+                        color: '#f59e0b',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        cursor: 'help'
+                    }}
+                >
+                    <span>⚠️</span>
+                    <span><strong>Note:</strong> Changing 'Me' re-anchors the tree root; existing relationship labels will not automatically invert.</span>
+                </div>
+
                 <h3 style={{ margin: '0 0 16px 0' }}>System Paths</h3>
                 <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Database Path</p>
                 <div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>

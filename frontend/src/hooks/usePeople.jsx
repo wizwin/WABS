@@ -53,10 +53,13 @@ export function usePeople({
   const [mergeConflictData, setMergeConflictData] = useState(null);
   const [personPreviewPhotos, setPersonPreviewPhotos] = useState([]);
   const [thumbUpdateTimestamps, setThumbUpdateTimestamps] = useState({});
+  const [personConnections, setPersonConnections] = useState([]);
+  const [allConnections, setAllConnections] = useState([]);
 
   const findSimilarAbortController = useRef(null);
   const aiActionAbortController = useRef(null);
   const abortDataOpRef = useRef(false);
+  const personGalleryCache = useRef(new Map());
 
   useEffect(() => {
     if (selected && selected.is_person) {
@@ -89,9 +92,95 @@ export function usePeople({
     if (Array.isArray(personFiles)) personFiles.forEach(f => globalFileCache.current.set(f.path, f));
   }, [personFiles, globalFileCache]);
 
+  useEffect(() => {
+    if (page === 'person_files' && currentPerson?.id && Array.isArray(personFiles)) {
+      const existing = personGalleryCache.current.get(currentPerson.id);
+      if (existing) {
+        existing.files = personFiles;
+        existing.offset = personFiles.length;
+      }
+    }
+  }, [personFiles, currentPerson?.id, page]);
+
+  const savePersonScroll = (personId) => {
+    const targetId = personId || currentPerson?.id;
+    if (!targetId) return;
+    const contentEl = document.querySelector('.content');
+    const top = contentEl ? contentEl.scrollTop : 0;
+    const existing = personGalleryCache.current.get(targetId);
+    if (existing) {
+      existing.scrollTop = top;
+      existing.files = personFiles;
+      existing.offset = personFiles.length;
+    } else {
+      personGalleryCache.current.set(targetId, {
+        files: personFiles,
+        offset: personFiles.length,
+        startOffset: 0,
+        hasMore: false,
+        scrollTop: top
+      });
+    }
+  };
+
+  async function loadPersonConnections(personId) {
+    if (!personId) return;
+    try {
+      const r = await axios.get(`${API}/people/${personId}/connections`);
+      if (r.data?.connections) {
+        setPersonConnections(r.data.connections);
+      }
+    } catch (err) {
+      console.warn('Failed to load person connections', err);
+      setPersonConnections([]);
+    }
+  }
+
+  async function loadAllConnections() {
+    try {
+      const r = await axios.get(`${API}/people-connections`);
+      if (r.data?.connections) {
+        setAllConnections(r.data.connections);
+      }
+    } catch (err) {
+      console.warn('Failed to load all connections', err);
+    }
+  }
+
+  async function addPersonConnection(personId, relatedPersonId, relationType) {
+    try {
+      const r = await axios.post(`${API}/people/${personId}/connections`, {
+        related_person_id: relatedPersonId,
+        relation_type: relationType
+      });
+      if (r.data?.connections) {
+        setPersonConnections(r.data.connections);
+      }
+      loadAllConnections();
+      loadPeople();
+      if (showToastMessage) showToastMessage('Relationship connection added.');
+    } catch (err) {
+      alert('Error adding connection: ' + (err?.response?.data?.detail || err.message));
+    }
+  }
+
+  async function removePersonConnection(personId, relatedPersonId, relationType = null) {
+    try {
+      const q = relationType ? `?relation_type=${encodeURIComponent(relationType)}` : '';
+      await axios.delete(`${API}/people/${personId}/connections/${relatedPersonId}${q}`);
+      setPersonConnections(prev => prev.filter(c => !(c.related_person_id === relatedPersonId && (!relationType || c.relation_type === relationType))));
+      loadAllConnections();
+      loadPeople();
+      if (showToastMessage) showToastMessage('Relationship connection removed.');
+    } catch (err) {
+      alert('Error removing connection: ' + (err?.response?.data?.detail || err.message));
+    }
+  }
+
   // Fetches named and unknown profiles from the backend database.
   async function loadPeople() {
     try {
+      loadAllConnections();
       const minPhotos = (settings.min_unknown_photos !== undefined && settings.min_unknown_photos !== '') ? settings.min_unknown_photos : 1;
       const r = await axios.get(`${API}/people?min_unknown_photos=${minPhotos}&t=${Date.now()}`);
       if (Array.isArray(r.data)) {
@@ -111,8 +200,34 @@ export function usePeople({
     }
   }
   
-  async function openPersonPhotos(person) {
+  async function openPersonPhotos(person, forceReload = false) {
     try {
+      loadPersonConnections(person.id);
+      const cached = personGalleryCache.current.get(person.id);
+      if (!forceReload && cached && Array.isArray(cached.files) && cached.files.length > 0) {
+        setPersonFiles(cached.files);
+        setCurrentPerson(person);
+        setOffset(cached.offset || cached.files.length);
+        setStartOffset(cached.startOffset || 0);
+        setHasMore(cached.hasMore !== undefined ? cached.hasMore : false);
+        setPage('person_files');
+        setSimilarUnknowns(null);
+        setSimilarUnknownsPage(1);
+        setShowSimilarPanel(false);
+        setIsTaggingPerson(false);
+        setSelected(null);
+        setCheckedFiles(new Set());
+        if (cached.scrollTop) {
+          setTimeout(() => {
+            const contentEl = document.querySelector('.content');
+            if (contentEl) {
+              contentEl.scrollTo({ top: cached.scrollTop, behavior: 'auto' });
+            }
+          }, 40);
+        }
+        return;
+      }
+
       const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
       const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
       const r = await axios.get(`${API}/people/${person.id}/photos?offset=0&limit=${limit}`);
@@ -121,6 +236,13 @@ export function usePeople({
       setOffset(r.data.length);
       setStartOffset(0);
       setHasMore(r.data.length === limit);
+      personGalleryCache.current.set(person.id, {
+        files: r.data,
+        offset: r.data.length,
+        startOffset: 0,
+        hasMore: r.data.length === limit,
+        scrollTop: 0
+      });
       setPage('person_files');
       setSimilarUnknowns(null);
       setSimilarUnknownsPage(1);
@@ -1169,10 +1291,24 @@ export function usePeople({
       other: { id: 'sub_other', name: 'Other Contacts', icon: 'category', color: '#64748b', children: [] }
     };
 
+    const connectionsMap = new Map();
+    (allConnections || []).forEach(c => {
+      const key = (c.person_name || '').toLowerCase();
+      if (!connectionsMap.has(key)) connectionsMap.set(key, []);
+      connectionsMap.get(key).push(c);
+      if (c.person_ai_id) {
+        const idKey = `id_${c.person_ai_id}`;
+        if (!connectionsMap.has(idKey)) connectionsMap.set(idKey, []);
+        connectionsMap.get(idKey).push(c);
+      }
+    });
+
     (namedPeopleBase || []).forEach(p => {
       if (!p) return;
       const isMeFlag = (p.is_me || (p.name && (settings?.me_name || '').toLowerCase() === p.name.toLowerCase()));
       if (isMeFlag) return; // Don't place Me inside subbranches
+
+      const personConns = connectionsMap.get(`id_${p.id}`) || connectionsMap.get((p.name || '').toLowerCase()) || [];
 
       const node = {
         ...p,
@@ -1184,7 +1320,8 @@ export function usePeople({
         isPerson: true,
         thumbnail: p.thumbnail,
         category: p.category,
-        subcategory: p.subcategory
+        subcategory: p.subcategory,
+        connections: personConns
       };
 
       const cat = p.category;
@@ -1289,7 +1426,7 @@ export function usePeople({
       isMe: true,
       children: categoriesList
     };
-  }, [namedPeopleBase, settings?.me_name, mePerson]);
+  }, [namedPeopleBase, settings?.me_name, mePerson, allConnections]);
 
   const savePersonCategory = async (personId, category, subcategory, relationLabel) => {
     if (actionInProgress || !!dataOpProgress || indexer.running || indexer.combined_scanner_running || indexer.face_scanner_running || indexer.object_scanner_running || indexer.document_scanner_running || indexer.hasher_running || (indexer.data_operation_running && !indexer.cancel_data_operation)) {
@@ -1404,6 +1541,8 @@ export function usePeople({
     showRelationshipTree, setShowRelationshipTree,
     activeCategoryFilter, categoryCounts, relationshipTreeData, savePersonCategory, mePerson,
     setMeIdentity, exportRelationships, importRelationships,
+    personConnections, setPersonConnections, allConnections, setAllConnections,
+    loadPersonConnections, loadAllConnections, addPersonConnection, removePersonConnection, savePersonScroll,
     abortPeopleDataOpRef: abortDataOpRef,
     aiActionAbortController
   };

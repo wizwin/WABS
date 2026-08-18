@@ -33,11 +33,16 @@ export default function Person(props) {
     personFiles, viewMode, groupedPersonFiles, toggleCheck, handleItemClick,
     openContainingFolder, openFile, renderThumb, checkFileReadOnly, hasMore,
     loadingMore, showDetails, detailsWidth, selected, personPreviewPhotos,
-    renderMetadata, handleScroll, dataOpProgress, savePersonCategory
+    renderMetadata, handleScroll, dataOpProgress, savePersonCategory,
+    personConnections, addPersonConnection, removePersonConnection, savePersonScroll
   } = props;
 
   const [isAddToFolderOpen, setIsAddToFolderOpen] = useState(false);
   const [isAddToFolderMoveMode, setIsAddToFolderMoveMode] = useState(false);
+  const [showAddConnectionModal, setShowAddConnectionModal] = useState(false);
+  const [newConnType, setNewConnType] = useState('spouse');
+  const [newConnPersonId, setNewConnPersonId] = useState('');
+
   const openAddToFolder = (isMove = false) => {
     setIsAddToFolderMoveMode(isMove);
     setIsAddToFolderOpen(true);
@@ -47,6 +52,8 @@ export default function Person(props) {
   const [localCategory, setLocalCategory] = useState(currentPerson?.category || '');
   const [localSubcategory, setLocalSubcategory] = useState(currentPerson?.subcategory || '');
   const [localRelationLabel, setLocalRelationLabel] = useState(currentPerson?.relation_label || '');
+
+  const isMePerson = currentPerson?.is_me || (currentPerson?.name && (settings?.me_name || '').toLowerCase() === currentPerson.name.toLowerCase());
 
   React.useEffect(() => {
     setLocalCategory(currentPerson?.category || '');
@@ -153,6 +160,7 @@ export default function Person(props) {
         <div style={{display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0}}>
         <div style={{padding: '18px', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '16px'}}>
             <ActionButton className="btn btn-secondary" onClick={() => { 
+            if (savePersonScroll) savePersonScroll(currentPerson?.id);
             setPage('people'); 
             setCheckedFiles(new Set()); 
             setSelected(null);
@@ -215,8 +223,22 @@ export default function Person(props) {
             </div>
         </div>
 
-        {/* Inline Relationship Categorization Bar */}
-        {currentPerson && !currentPerson.name?.startsWith('Unknown Person') && (
+        {/* Primary Identity Badge for 'Me' Profile */}
+        {currentPerson && !currentPerson.name?.startsWith('Unknown Person') && isMePerson && (
+          <div style={{ padding: '10px 18px', background: 'rgba(37, 99, 235, 0.12)', borderBottom: '1px solid rgba(59, 130, 246, 0.3)', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '12px', background: '#3b82f6', color: '#0f172a', padding: '3px 10px', borderRadius: '12px', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                ★ Primary User Identity (Me)
+              </span>
+              <span style={{ fontSize: '13px', color: '#94a3b8' }}>
+                Central root of your family & social network. All relationships are anchored to you.
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Inline Relationship Categorization Bar (for non-Me profiles) */}
+        {currentPerson && !currentPerson.name?.startsWith('Unknown Person') && !isMePerson && (
           <div style={{ padding: '10px 18px', background: '#0f172a', borderBottom: '1px solid #1e293b', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <span style={{ fontSize: '13px', color: '#94a3b8', fontWeight: '500' }}>Relationship:</span>
@@ -555,6 +577,188 @@ export default function Person(props) {
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Connected Family & Relationships Bar (Inter-Person Network) */}
+        {currentPerson && !currentPerson.name?.startsWith('Unknown Person') && (
+          <div style={{ padding: '8px 18px', background: '#0b1329', borderBottom: '1px solid #1e293b', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '12.5px', color: '#94a3b8', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              Family Links:
+            </span>
+            {personConnections && personConnections.length > 0 ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                {personConnections.map(c => {
+                  let badgeColor = '#ec4899'; // pink for spouse/partner
+                  let icon = '💍';
+                  let label = 'Spouse';
+                  if (c.relation_type === 'parent') { badgeColor = '#38bdf8'; icon = '👨‍👩‍👦'; label = 'Parent'; }
+                  else if (c.relation_type === 'child') { badgeColor = '#f59e0b'; icon = '👶'; label = 'Child'; }
+                  else if (c.relation_type === 'sibling') { badgeColor = '#818cf8'; icon = '👫'; label = 'Sibling'; }
+                  else if (c.relation_type === 'partner') { badgeColor = '#ec4899'; icon = '❤️'; label = 'Partner'; }
+                  
+                  return (
+                    <div
+                      key={`${c.related_person_id}_${c.relation_type}`}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '3px 10px',
+                        borderRadius: '12px',
+                        background: 'rgba(30, 41, 59, 0.8)',
+                        border: `1px solid ${badgeColor}66`,
+                        fontSize: '12px',
+                        color: '#f8fafc'
+                      }}
+                    >
+                      <span>{icon}</span>
+                      <span
+                        onClick={() => {
+                          if (savePersonScroll) savePersonScroll(currentPerson.id);
+                          openPersonPhotos({ id: c.related_ai_person_id || c.related_person_id, name: c.related_name });
+                        }}
+                        style={{ cursor: 'pointer', fontWeight: '500', textDecoration: 'underline' }}
+                        title={`Open ${c.related_name}'s photos`}
+                      >
+                        {c.related_name}
+                      </span>
+                      <span style={{ fontSize: '11px', color: badgeColor, textTransform: 'capitalize', fontWeight: '600' }}>
+                        ({label})
+                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`Remove link "${label}" with ${c.related_name}?`)) {
+                            removePersonConnection(currentPerson.id, c.related_person_id, c.relation_type);
+                          }
+                        }}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#94a3b8',
+                          cursor: 'pointer',
+                          padding: '0 2px',
+                          marginLeft: '2px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          fontSize: '14px',
+                          lineHeight: 1
+                        }}
+                        title="Remove link"
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <span style={{ fontSize: '12px', color: '#64748b', fontStyle: 'italic' }}>No family connections linked yet.</span>
+            )}
+
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                onClick={() => setShowAddConnectionModal(prev => !prev)}
+                disabled={isTaskActive}
+                style={{
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  background: showAddConnectionModal ? '#3b82f6' : '#1e293b',
+                  color: showAddConnectionModal ? '#0f172a' : '#38bdf8',
+                  border: '1px solid #3b82f6',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  transition: 'all 0.15s'
+                }}
+                title="Link a spouse, parent, child, or sibling to this person"
+              >
+                + Link Family Member
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Modal / Inline Panel to Link a Connection */}
+        {showAddConnectionModal && (
+          <div style={{ padding: '12px 18px', background: '#131e36', borderBottom: '1px solid #2563eb', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '13px', color: '#93c5fd', fontWeight: 'bold' }}>Link to {currentPerson?.name}:</span>
+            
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontSize: '12px', color: '#94a3b8' }}>Relationship:</span>
+              <select
+                value={newConnType}
+                onChange={(e) => setNewConnType(e.target.value)}
+                style={{ padding: '4px 8px', borderRadius: '6px', background: '#1e293b', color: '#f8fafc', border: '1px solid #334155', outline: 'none', fontSize: '12.5px' }}
+              >
+                <option value="spouse">💍 Spouse (Wife / Husband)</option>
+                <option value="partner">❤️ Partner</option>
+                <option value="parent">👨‍👩‍👦 Parent (Mother / Father)</option>
+                <option value="child">👶 Child (Son / Daughter)</option>
+                <option value="sibling">👫 Sibling (Brother / Sister)</option>
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontSize: '12px', color: '#94a3b8' }}>Select Person:</span>
+              <select
+                value={newConnPersonId}
+                onChange={(e) => setNewConnPersonId(e.target.value)}
+                style={{ padding: '4px 8px', borderRadius: '6px', background: '#1e293b', color: '#f8fafc', border: '1px solid #334155', outline: 'none', fontSize: '12.5px', minWidth: '160px' }}
+              >
+                <option value="">— Choose a Person —</option>
+                {sortedNamedPeopleDropdown
+                  .filter(p => p.id !== currentPerson?.id && p.name !== currentPerson?.name)
+                  .map(p => (
+                    <option key={p.id} value={p.id}>{p.name} {p.relation_label ? `(${p.relation_label})` : p.subcategory ? `(${p.subcategory})` : ''}</option>
+                  ))}
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <button
+                disabled={!newConnPersonId || isTaskActive}
+                onClick={() => {
+                  if (!newConnPersonId) return;
+                  addPersonConnection(currentPerson.id, parseInt(newConnPersonId), newConnType);
+                  setNewConnPersonId('');
+                  setShowAddConnectionModal(false);
+                }}
+                style={{
+                  padding: '4px 12px',
+                  borderRadius: '6px',
+                  background: !newConnPersonId ? '#475569' : '#10b981',
+                  color: '#ffffff',
+                  border: 'none',
+                  cursor: !newConnPersonId ? 'not-allowed' : 'pointer',
+                  fontSize: '12.5px',
+                  fontWeight: '600'
+                }}
+              >
+                Save Connection
+              </button>
+              <button
+                onClick={() => {
+                  setShowAddConnectionModal(false);
+                  setNewConnPersonId('');
+                }}
+                style={{
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  background: '#334155',
+                  color: '#cbd5e1',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '12.5px'
+                }}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         )}
 

@@ -15,8 +15,13 @@ import FolderIcon from '@mui/icons-material/Folder';
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 import SearchIcon from '@mui/icons-material/Search';
+import DownloadIcon from '@mui/icons-material/Download';
+import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
+import AccountTreeIcon from '@mui/icons-material/AccountTree';
+import PrintIcon from '@mui/icons-material/Print';
 
 import { PersonThumb } from './PersonThumb';
+import { API } from '../../States';
 
 export const RELATION_ICON_MAP = {
   me: PersonPinIcon,
@@ -131,6 +136,104 @@ export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl
     return 0;
   };
 
+  const handleExportGedcom = (personId = null, personName = null) => {
+    const url = personId ? `${API}/people/${personId}/export/gedcom` : `${API}/people/export/gedcom`;
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', personName ? `wabs_family_tree_${personName.toLowerCase().replace(/\s+/g, '_')}.ged` : 'wabs_family_tree.ged');
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
+  const printTreeGraph = (targetNode = null) => {
+    const root = targetNode || treeData;
+    if (!root) return;
+
+    const printWindow = window.open('', '_blank', 'width=900,height=750');
+    if (!printWindow) {
+      alert('Please allow popups to export the PDF / Print view.');
+      return;
+    }
+
+    const renderHtmlNode = (n, depth = 0) => {
+      if (!n) return '';
+      const isPerson = n.isPerson;
+      const conns = n.connections || [];
+      let connsHtml = '';
+      if (conns.length > 0) {
+        connsHtml = conns.map(c => {
+          let label = c.relation_type;
+          let color = '#ec4899';
+          if (c.relation_type === 'parent') color = '#0284c7';
+          else if (c.relation_type === 'child') color = '#d97706';
+          else if (c.relation_type === 'sibling') color = '#4f46e5';
+          return `<span style="display:inline-block; margin-left:6px; padding:2px 8px; border-radius:12px; background:#f8fafc; border:1px solid ${color}44; font-size:11px; color:${color}; font-weight:500;">${label}: <strong>${c.related_name}</strong></span>`;
+        }).join(' ');
+      }
+
+      let childrenHtml = '';
+      if (Array.isArray(n.children) && n.children.length > 0) {
+        childrenHtml = `<div style="border-left: 2px solid #cbd5e1; margin-left: ${depth * 18 + 12}px; padding-left: 12px; margin-top: 4px;">
+          ${n.children.map(child => renderHtmlNode(child, depth + 1)).join('')}
+        </div>`;
+      }
+
+      const titleStyle = isPerson ? 'font-weight:600; color:#0f172a; font-size:13.5px;' : 'font-weight:bold; color:#1e40af; font-size:14px;';
+      const tag = n.label ? `<span style="color:#64748b; font-size:12px; margin-left:6px; font-style:italic;">(${n.label})</span>` : '';
+      const count = n.count !== undefined ? `<span style="color:#94a3b8; font-size:11px; margin-left:auto; padding-left:12px;">${n.count} photos</span>` : '';
+
+      return `
+        <div style="margin: 4px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+          <div style="display:flex; align-items:center; padding: 4px 0;">
+            <span style="${titleStyle}">${n.name}</span>
+            ${n.isMe ? '<span style="background:#2563eb; color:#fff; font-size:10px; padding:1px 6px; border-radius:8px; margin-left:6px; font-weight:bold;">ME</span>' : ''}
+            ${tag}
+            ${connsHtml}
+            ${count}
+          </div>
+          ${childrenHtml}
+        </div>
+      `;
+    };
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Family Tree & Graph - ${root.name}</title>
+          <style>
+            @media print {
+              body { -webkit-print-color-adjust: exact; print-color-adjust: exact; padding: 0; }
+              .no-print { display: none !important; }
+            }
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #0f172a; background: #ffffff; }
+            h1 { margin: 0 0 4px 0; font-size: 20px; color: #0f172a; }
+            .subtitle { color: #64748b; font-size: 12.5px; margin-bottom: 20px; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px; }
+            .tree-container { background: #ffffff; padding: 4px; }
+            .btn-print { background: #2563eb; color: #ffffff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
+            .btn-print:hover { background: #1d4ed8; }
+          </style>
+        </head>
+        <body>
+          <div class="no-print" style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; background: #f8fafc; padding: 12px 16px; border-radius: 8px; border: 1px solid #e2e8f0;">
+            <button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button>
+            <span style="font-size: 13px; color: #64748b;">Tip: Select <strong>"Save as PDF"</strong> in your browser's print destination to export a PDF document.</span>
+          </div>
+          <h1>WABS Family & Relationship Graph</h1>
+          <div class="subtitle">Root Anchor: <strong>${root.name}</strong> &bull; Exported on ${new Date().toLocaleDateString()}</div>
+          <div class="tree-container">
+            ${renderHtmlNode(root)}
+          </div>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.open();
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
+  };
+
   const renderNode = (node, depth = 0) => {
     if (!node) return null;
     const nodeKey = node.nodeId || node.id;
@@ -187,7 +290,7 @@ export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl
             <IconComp fontSize="small" style={{ color: node.color || '#38bdf8', flexShrink: 0 }} />
           )}
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, overflow: 'hidden', flexWrap: 'nowrap' }}>
             <span style={{ color: node.isMe ? '#93c5fd' : '#f8fafc', fontSize: '13.5px', fontWeight: (node.isMe || hasChildren) ? '600' : '400', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
               {node.name}
             </span>
@@ -197,17 +300,109 @@ export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl
               </span>
             )}
             {node.label && (
-              <span style={{ color: '#94a3b8', fontSize: '12px', fontStyle: 'italic' }}>
+              <span style={{ color: '#94a3b8', fontSize: '12px', fontStyle: 'italic', whiteSpace: 'nowrap' }}>
                 • {node.label}
               </span>
             )}
+            {node.connections && node.connections.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: '6px', flexWrap: 'nowrap' }}>
+                {node.connections.map(c => {
+                  let badgeColor = '#ec4899';
+                  let icon = '💍';
+                  let label = 'Spouse';
+                  if (c.relation_type === 'parent') { badgeColor = '#38bdf8'; icon = '👨‍👩‍👦'; label = 'Parent'; }
+                  else if (c.relation_type === 'child') { badgeColor = '#f59e0b'; icon = '👶'; label = 'Child'; }
+                  else if (c.relation_type === 'sibling') { badgeColor = '#818cf8'; icon = '👫'; label = 'Sibling'; }
+                  else if (c.relation_type === 'partner') { badgeColor = '#ec4899'; icon = '❤️'; label = 'Partner'; }
+
+                  return (
+                    <span
+                      key={`${c.related_person_id || c.related_name}_${c.relation_type}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openPersonPhotos({ id: c.related_ai_person_id || c.related_person_id, name: c.related_name });
+                      }}
+                      style={{
+                        fontSize: '11px',
+                        background: 'rgba(30, 41, 59, 0.9)',
+                        color: badgeColor,
+                        border: `1px solid ${badgeColor}55`,
+                        borderRadius: '10px',
+                        padding: '1px 7px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '3px',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap'
+                      }}
+                      title={`Open photos of ${label}: ${c.related_name}`}
+                    >
+                      <span>{icon}</span> {c.related_name}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
-          {node.count !== undefined && (
-            <span style={{ marginLeft: 'auto', color: '#64748b', fontSize: '12px', paddingLeft: '8px', whiteSpace: 'nowrap' }}>
-              {node.count} {node.count === 1 ? 'photo' : 'photos'}
-            </span>
-          )}
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {hasChildren && !node.isMe && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (node.isPerson) {
+                      handleExportGedcom(node.id, node.name);
+                    } else {
+                      handleExportGedcom();
+                    }
+                  }}
+                  style={{
+                    background: 'rgba(30, 41, 59, 0.6)',
+                    border: '1px solid #334155',
+                    borderRadius: '6px',
+                    color: '#94a3b8',
+                    padding: '2px 6px',
+                    fontSize: '10.5px',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '3px'
+                  }}
+                  title={`Export GEDCOM for ${node.name} branch`}
+                >
+                  <DownloadIcon style={{ fontSize: '11px' }} /> GEDCOM
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    printTreeGraph(node);
+                  }}
+                  style={{
+                    background: 'rgba(30, 41, 59, 0.6)',
+                    border: '1px solid #334155',
+                    borderRadius: '6px',
+                    color: '#94a3b8',
+                    padding: '2px 6px',
+                    fontSize: '10.5px',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '3px'
+                  }}
+                  title={`Print / PDF view for ${node.name} branch`}
+                >
+                  <PrintIcon style={{ fontSize: '11px' }} /> PDF
+                </button>
+              </div>
+            )}
+
+            {node.count !== undefined && (
+              <span style={{ color: '#64748b', fontSize: '12px', paddingLeft: '4px', whiteSpace: 'nowrap' }}>
+                {node.count} {node.count === 1 ? 'photo' : 'photos'}
+              </span>
+            )}
+          </div>
         </div>
 
         {hasChildren && isExpanded && (
@@ -262,8 +457,8 @@ export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl
           </div>
         </div>
 
-        {/* Action Controls & Search */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+        {/* Action Controls, Search & Exports */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
             <SearchIcon style={{ position: 'absolute', left: '10px', fontSize: '18px', color: '#64748b' }} />
             <input
@@ -279,7 +474,7 @@ export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl
                 color: '#f8fafc',
                 fontSize: '13px',
                 outline: 'none',
-                width: '180px'
+                width: '160px'
               }}
             />
           </div>
@@ -287,39 +482,79 @@ export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl
           <button
             onClick={handleExpandAll}
             style={{
-              padding: '6px 12px',
+              padding: '6px 10px',
               borderRadius: '8px',
               border: '1px solid #334155',
               background: '#1e293b',
               color: '#cbd5e1',
               cursor: 'pointer',
-              fontSize: '13px',
+              fontSize: '12.5px',
               display: 'flex',
               alignItems: 'center',
               gap: '4px'
             }}
             title="Expand all branches"
           >
-            <UnfoldMoreIcon style={{ fontSize: '16px' }} /> Expand All
+            <UnfoldMoreIcon style={{ fontSize: '15px' }} /> Expand
           </button>
 
           <button
             onClick={handleCollapseAll}
             style={{
-              padding: '6px 12px',
+              padding: '6px 10px',
               borderRadius: '8px',
               border: '1px solid #334155',
               background: '#1e293b',
               color: '#cbd5e1',
               cursor: 'pointer',
-              fontSize: '13px',
+              fontSize: '12.5px',
               display: 'flex',
               alignItems: 'center',
               gap: '4px'
             }}
             title="Collapse all branches"
           >
-            <UnfoldLessIcon style={{ fontSize: '16px' }} /> Collapse All
+            <UnfoldLessIcon style={{ fontSize: '15px' }} /> Collapse
+          </button>
+
+          <button
+            onClick={() => handleExportGedcom()}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '8px',
+              border: '1px solid #2563eb',
+              background: 'rgba(37, 99, 235, 0.18)',
+              color: '#60a5fa',
+              cursor: 'pointer',
+              fontSize: '12.5px',
+              fontWeight: '600',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px'
+            }}
+            title="Export complete family tree as GEDCOM 5.5.1 (.ged) for Gramps, Ancestry, FamilySearch, etc."
+          >
+            <AccountTreeIcon style={{ fontSize: '15px' }} /> Export GEDCOM
+          </button>
+
+          <button
+            onClick={() => printTreeGraph()}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '8px',
+              border: '1px solid #059669',
+              background: 'rgba(16, 185, 129, 0.18)',
+              color: '#34d399',
+              cursor: 'pointer',
+              fontSize: '12.5px',
+              fontWeight: '600',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px'
+            }}
+            title="Export / Print clean PDF view of the entire tree"
+          >
+            <PictureAsPdfIcon style={{ fontSize: '15px' }} /> Export PDF
           </button>
         </div>
       </div>

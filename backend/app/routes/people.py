@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 import concurrent.futures
 
-from fastapi import APIRouter, HTTPException, Body, Depends
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import APIRouter, HTTPException, Body, Depends, Response
+from fastapi.responses import FileResponse, StreamingResponse, PlainTextResponse
 
 def _get_cv2():
     try:
@@ -28,7 +28,12 @@ from backend.app.relationships_database import (
     sync_person_rename,
     unlink_person,
     merge_persons_rel,
-    init_relationships_database
+    init_relationships_database,
+    add_person_connection,
+    remove_person_connection,
+    get_person_connections,
+    get_all_person_connections,
+    generate_gedcom_export
 )
 import backend.app.shared_state as shared_state
 from backend.app.utils.validators import check_no_scanners_running, lock_data_operation, wait_for_stopping_scanners
@@ -1742,3 +1747,150 @@ def get_me_identity():
                     me_person = {"id": row[0], "name": row[1], "thumbnail": f"/people/{row[0]}/thumbnail"}
                     
     return {"me_name": me_name, "me_person": me_person}
+
+def _resolve_rel_person_id(cursor, person_id: int) -> int:
+    """
+    Finds or inserts the person in relationships.db 'persons' table and returns its id.
+    """
+    cursor.execute("SELECT id FROM persons WHERE ai_person_id = ?", (person_id,))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    
+    # Try looking up in ai_metadata.db by person_id to get their name
+    ai_db_path = get_ai_db_path()
+    person_name = None
+    if ai_db_path.exists():
+        with sqlite3.connect(str(ai_db_path), timeout=10) as aconn:
+            arow = aconn.execute("SELECT name FROM people WHERE id = ?", (person_id,)).fetchone()
+            if arow:
+                person_name = arow[0]
+                
+    if person_name:
+        cursor.execute("SELECT id FROM persons WHERE name = ?", (person_name,))
+        nrow = cursor.fetchone()
+        if nrow:
+            cursor.execute("UPDATE persons SET ai_person_id = ?, linked_at = datetime('now') WHERE id = ?", (person_id, nrow[0]))
+            return nrow[0]
+        else:
+            cursor.execute("INSERT INTO persons (name, ai_person_id, is_me, linked_at, created_at) VALUES (?, ?, 0, datetime('now'), datetime('now'))", (person_name, person_id))
+            return cursor.lastrowid
+            
+    # Fallback to direct ID match if already a rel_person_id
+    cursor.execute("SELECT id FROM persons WHERE id = ?", (person_id,))
+    irow = cursor.fetchone()
+    if irow:
+        return irow[0]
+    return None
+
+@router.get("/people/{person_id}/connections")
+def get_connections_for_person(person_id: int):
+    """
+    Returns all inter-person connections (spouse, partner, parent, child, sibling) for a person.
+    """
+    rel_db_path = get_relationships_db_path()
+    init_relationships_database(rel_db_path)
+    with sqlite3.connect(str(rel_db_path), timeout=10) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        rel_id = _resolve_rel_person_id(cursor, person_id)
+        if not rel_id:
+            return {"connections": []}
+    
+    connections = get_person_connections(rel_id, rel_db_path)
+    # Add thumbnail URLs
+    for c in connections:
+        if c.get("related_ai_person_id"):
+            c["thumbnail"] = f"/people/{c['related_ai_person_id']}/thumbnail"
+        else:
+            c["thumbnail"] = None
+    return {"connections": connections}
+
+@router.post("/people/{person_id}/connections")
+def create_person_connection(person_id: int, body: dict = Body(...)):
+    """
+    Creates an inter-person connection and its reciprocal relation.
+    """
+    related_person_id = body.get("related_person_id")
+    relation_type = body.get("relation_type") or "relative"
+    if not related_person_id:
+        raise HTTPException(status_code=400, detail="Missing related_person_id")
+        
+    rel_db_path = get_relationships_db_path()
+    init_relationships_database(rel_db_path)
+    with sqlite3.connect(str(rel_db_path), timeout=10) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        rel_id_1 = _resolve_rel_person_id(cursor, person_id)
+        rel_id_2 = _resolve_rel_person_id(cursor, related_person_id)
+        conn.commit()
+
+    if not rel_id_1 or not rel_id_2:
+        raise HTTPException(status_code=404, detail="One or both persons not found")
+    if rel_id_1 == rel_id_2:
+        raise HTTPException(status_code=400, detail="Cannot create a connection with oneself")
+
+    add_person_connection(rel_id_1, rel_id_2, relation_type, rel_db_path)
+    connections = get_person_connections(rel_id_1, rel_db_path)
+    for c in connections:
+        if c.get("related_ai_person_id"):
+            c["thumbnail"] = f"/people/{c['related_ai_person_id']}/thumbnail"
+    return {"status": "success", "connections": connections}
+
+@router.delete("/people/{person_id}/connections/{related_person_id}")
+def delete_person_connection(person_id: int, related_person_id: int, relation_type: str = None):
+    """
+    Deletes an inter-person connection and its reciprocal relation.
+    """
+    rel_db_path = get_relationships_db_path()
+    init_relationships_database(rel_db_path)
+    with sqlite3.connect(str(rel_db_path), timeout=10) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        rel_id_1 = _resolve_rel_person_id(cursor, person_id)
+        rel_id_2 = _resolve_rel_person_id(cursor, related_person_id)
+
+    if rel_id_1 and rel_id_2:
+        remove_person_connection(rel_id_1, rel_id_2, relation_type, rel_db_path)
+        
+    return {"status": "success"}
+
+@router.get("/people-connections")
+def get_all_connections():
+    """
+    Returns all inter-person connections across the whole database.
+    """
+    rel_db_path = get_relationships_db_path()
+    init_relationships_database(rel_db_path)
+    connections = get_all_person_connections(rel_db_path)
+    return {"connections": connections}
+
+@router.get("/people/export/gedcom")
+def export_gedcom_all(root_person_id: int = None):
+    """
+    Exports the family graph as a standard GEDCOM 5.5.1 (.ged) file for apps like Gramps.
+    """
+    rel_db_path = get_relationships_db_path()
+    init_relationships_database(rel_db_path)
+    
+    root_rel_id = None
+    if root_person_id:
+        with sqlite3.connect(str(rel_db_path), timeout=10) as conn:
+            cursor = conn.cursor()
+            root_rel_id = _resolve_rel_person_id(cursor, root_person_id)
+            
+    gedcom_str = generate_gedcom_export(root_rel_id, rel_db_path)
+    filename = "wabs_family_tree.ged" if not root_person_id else f"wabs_family_tree_person_{root_person_id}.ged"
+    
+    return PlainTextResponse(
+        content=gedcom_str,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
+    )
+
+@router.get("/people/{person_id}/export/gedcom")
+def export_gedcom_for_person(person_id: int):
+    """
+    Exports the family graph rooted from a specific person node as GEDCOM 5.5.1 (.ged).
+    """
+    return export_gedcom_all(root_person_id=person_id)
