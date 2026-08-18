@@ -397,3 +397,11 @@ A dedicated 5-stage test suite validates the security architecture:
 4. **Anti-Brute Force Protection**: Asserts non-lockout on <5 attempts and verified lockout on attempt 5.
 5. **PII Masking**: Validates regex redaction against mixed text samples.
 6. **API Authorization & Status Flow**: Exercises setup, 401 blocks, login token generation, protected 200 responses, PIN change invalidations, and PIN disable flows.
+
+#### 12.11 Data at Rest (DAR) & Physical Storage Security Guidance
+
+* **Unencrypted On-Disk Databases**: All underlying SQLite database files (`archive.db`, `ai_metadata.db`, `relationships.db`) and cached thumbnail directories (`.wabs_cache`) are stored as standard, unencrypted local files on the host filesystem. This architectural choice avoids the massive performance penalties of per-row database encryption, enabling microsecond query speeds across hundreds of thousands of files.
+* **User Responsibility for DAR Security**: While WABS secures the application at the network, browser, and session layers, it does not protect physical database files against someone who copies them directly from an unencrypted hard drive. Users requiring Data at Rest security should host WABS and its database directories on a volume protected with OS-level full-disk encryption:
+  - **Windows**: BitLocker Drive Encryption / VeraCrypt volume
+  - **Linux**: LUKS (Linux Unified Key Setup) / `dm-crypt`
+  - **macOS**: FileVault full-disk encryption

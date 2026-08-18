@@ -22,7 +22,8 @@ export default function Settings(props) {
     abortPeopleDataOpRef, abortTagsDataOpRef, cancelAiAction,
     exportVirtualFolders, importVirtualFolders, exportAllWabs, importAllWabs,
     setMeIdentity, sortedNamedPeopleDropdown, mePerson,
-    exportRelationships, importRelationships
+    exportRelationships, importRelationships,
+    checkAuthStatus, setAuthStatus, authStatus
   } = props;
 
   const [pinStatus, setPinStatus] = useState({ pin_enabled: false });
@@ -39,6 +40,9 @@ export default function Settings(props) {
       const res = await axios.get(`${API}/auth/status`);
       if (res.data) {
         setPinStatus(res.data);
+        if (setAuthStatus) {
+          setAuthStatus(res.data);
+        }
       }
     } catch (e) {
       console.error("Failed to fetch auth status:", e);
@@ -80,7 +84,8 @@ export default function Settings(props) {
         setPinSuccess('Security PIN enabled successfully.');
         setPinInputs({ current_pin: '', new_pin: '', confirm_pin: '' });
         setPinModalMode(null);
-        fetchPinStatus();
+        await fetchPinStatus();
+        if (checkAuthStatus) await checkAuthStatus();
       } else if (pinModalMode === 'change') {
         if (!cleanCurrent) {
           setPinError('Please enter your current PIN.');
@@ -107,7 +112,8 @@ export default function Settings(props) {
         setPinSuccess('Security PIN changed successfully.');
         setPinInputs({ current_pin: '', new_pin: '', confirm_pin: '' });
         setPinModalMode(null);
-        fetchPinStatus();
+        await fetchPinStatus();
+        if (checkAuthStatus) await checkAuthStatus();
       } else if (pinModalMode === 'disable') {
         if (!cleanCurrent) {
           setPinError('Please enter your current PIN to disable protection.');
@@ -117,10 +123,12 @@ export default function Settings(props) {
         await axios.post(`${API}/auth/disable-pin`, {
           current_pin: cleanCurrent
         });
+        setSessionToken('', true);
         setPinSuccess('Security PIN has been disabled.');
         setPinInputs({ current_pin: '', new_pin: '', confirm_pin: '' });
         setPinModalMode(null);
-        fetchPinStatus();
+        await fetchPinStatus();
+        if (checkAuthStatus) await checkAuthStatus();
       }
     } catch (err) {
       setPinError(err.response?.data?.detail || 'Operation failed.');
@@ -344,63 +352,55 @@ export default function Settings(props) {
             </div>
             )}
 
-            {settingsTab === 'security' && (
-            <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
-                <h3 style={{ margin: '0 0 16px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <ShieldIcon style={{ color: '#38bdf8' }} /> Security &amp; Privacy
-                </h3>
+            {settingsTab === 'security' && (() => {
+                const isPinOn = authStatus?.pin_enabled !== undefined ? authStatus.pin_enabled : pinStatus.pin_enabled;
+                return (
+                <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+                    <h3 style={{ margin: '0 0 16px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <ShieldIcon style={{ color: '#38bdf8' }} /> Security &amp; Privacy
+                    </h3>
 
-                {/* Master PIN Section */}
-                <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', marginBottom: '20px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-                        <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                                <h4 style={{ margin: 0, color: '#f8fafc', fontSize: '15px' }}>Master PIN / Password</h4>
-                                <span style={{
-                                    fontSize: '12px',
-                                    padding: '2px 8px',
-                                    borderRadius: '12px',
-                                    fontWeight: 'bold',
-                                    backgroundColor: pinStatus.pin_enabled ? 'rgba(34, 197, 94, 0.2)' : 'rgba(245, 158, 11, 0.2)',
-                                    color: pinStatus.pin_enabled ? '#4ade80' : '#fbbf24',
-                                    border: `1px solid ${pinStatus.pin_enabled ? '#22c55e' : '#f59e0b'}`
-                                }}>
-                                    {pinStatus.pin_enabled ? 'ENABLED' : 'DISABLED'}
-                                </span>
+                    {/* Master PIN Section */}
+                    <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', marginBottom: '20px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                            <div>
+                                <h4 style={{ margin: '0 0 4px 0', color: '#f8fafc', fontSize: '15px' }}>
+                                    Master PIN Authentication {isPinOn ? <span style={{ color: '#22c55e', fontSize: '12px', marginLeft: '6px' }}>● Enabled</span> : <span style={{ color: '#94a3b8', fontSize: '12px', marginLeft: '6px' }}>○ Disabled</span>}
+                                </h4>
+                                <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>
+                                    {isPinOn 
+                                        ? 'Your archive is protected with a PBKDF2 hashed PIN.' 
+                                        : 'Require a PIN/Password to access private messages, photos, and documents.'}
+                                </p>
                             </div>
-                            <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>
-                                {pinStatus.pin_enabled 
-                                    ? 'Your archive is protected with a PBKDF2 hashed PIN.' 
-                                    : 'Require a PIN/Password to access private messages, photos, and documents.'}
-                            </p>
-                        </div>
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                            {!pinStatus.pin_enabled ? (
-                                <ActionButton 
-                                    className="btn btn-primary"
-                                    onClick={() => { setPinModalMode('set'); setPinError(''); setPinSuccess(''); }}
-                                    style={{ padding: '6px 14px', fontSize: '13px' }}
-                                >
-                                    Set Master PIN
-                                </ActionButton>
-                            ) : (
-                                <>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                                {!isPinOn ? (
                                     <ActionButton 
-                                        className="btn btn-secondary"
-                                        onClick={() => { setPinModalMode('change'); setPinError(''); setPinSuccess(''); }}
+                                        className="btn btn-primary"
+                                        onClick={() => { setPinModalMode('set'); setPinError(''); setPinSuccess(''); }}
                                         style={{ padding: '6px 14px', fontSize: '13px' }}
                                     >
-                                        Change PIN
+                                        Set Master PIN
                                     </ActionButton>
-                                    <ActionButton 
-                                        className="btn btn-secondary"
-                                        onClick={() => { setPinModalMode('disable'); setPinError(''); setPinSuccess(''); }}
-                                        style={{ padding: '6px 14px', fontSize: '13px', color: '#f87171' }}
-                                    >
-                                        Disable PIN
-                                    </ActionButton>
-                                </>
-                            )}
+                                ) : (
+                                    <>
+                                        <ActionButton 
+                                            className="btn btn-secondary"
+                                            onClick={() => { setPinModalMode('change'); setPinError(''); setPinSuccess(''); }}
+                                            style={{ padding: '6px 14px', fontSize: '13px' }}
+                                        >
+                                            Change PIN
+                                        </ActionButton>
+                                        <ActionButton 
+                                            className="btn btn-secondary"
+                                            onClick={() => { setPinModalMode('disable'); setPinError(''); setPinSuccess(''); }}
+                                            style={{ padding: '6px 14px', fontSize: '13px', color: '#f87171' }}
+                                        >
+                                            Disable PIN
+                                        </ActionButton>
+                                    </>
+                                )}
+                            </div>
                         </div>
                     </div>
 
@@ -483,46 +483,67 @@ export default function Settings(props) {
                             </form>
                         </div>
                     )}
-                </div>
 
-                {/* Network & Localhost Security */}
-                <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', marginBottom: '20px' }}>
-                    <h4 style={{ margin: '0 0 8px 0', color: '#f8fafc', fontSize: '15px' }}>Network Exposure &amp; Binding</h4>
-                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', color: '#cbd5e1', cursor: 'pointer' }}>
-                        <input 
-                            type="checkbox"
-                            checked={settings.allow_lan_access || false}
-                            onChange={(e) => setSettings(prev => ({ ...prev, allow_lan_access: e.target.checked }))}
-                            style={{ marginTop: '3px' }}
-                        />
-                        <div>
-                            <span style={{ fontWeight: '500' }}>Allow Local Network (LAN / Wi-Fi) Connections</span>
-                            <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8', lineHeight: '1.4' }}>
-                                <strong>Default: Disabled (127.0.0.1 - Localhost Only).</strong> When disabled, WABS is completely inaccessible to other devices on your Wi-Fi network. Check this only if you want to browse WABS from your mobile phone or tablet on your home network.
-                            </p>
+                    {/* Network & Localhost Security */}
+                    <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', marginTop: '20px', marginBottom: '20px' }}>
+                        <h4 style={{ margin: '0 0 8px 0', color: '#f8fafc', fontSize: '15px' }}>Network Exposure &amp; Binding</h4>
+                        <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', color: '#cbd5e1', cursor: 'pointer' }}>
+                            <input 
+                                type="checkbox"
+                                checked={settings.allow_lan_access || false}
+                                onChange={(e) => setSettings(prev => ({ ...prev, allow_lan_access: e.target.checked }))}
+                                style={{ marginTop: '3px' }}
+                            />
+                            <div>
+                                <span style={{ fontWeight: '500' }}>Allow Local Network (LAN / Wi-Fi) Connections</span>
+                                <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8', lineHeight: '1.4' }}>
+                                    <strong>Default: Disabled (127.0.0.1 - Localhost Only).</strong> When disabled, WABS is completely inaccessible to other devices on your Wi-Fi network. Check this only if you want to browse WABS from your mobile phone or tablet on your home network.
+                                </p>
+                            </div>
+                        </label>
+                    </div>
+
+                    {/* Inactivity Auto-Lock */}
+                    <div style={{
+                        padding: '16px',
+                        background: '#0f172a',
+                        borderRadius: '10px',
+                        border: '1px solid #334155',
+                        marginBottom: '20px',
+                        opacity: isPinOn ? 1 : 0.65
+                    }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                            <h4 style={{ margin: 0, color: '#f8fafc', fontSize: '15px' }}>Inactivity Auto-Lock</h4>
+                            {!isPinOn && (
+                                <span style={{ fontSize: '11px', color: '#94a3b8', background: '#1e293b', border: '1px solid #334155', borderRadius: '4px', padding: '2px 6px' }}>
+                                    Requires Master PIN
+                                </span>
+                            )}
                         </div>
-                    </label>
-                </div>
-
-                {/* Inactivity Auto-Lock */}
-                <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', marginBottom: '20px' }}>
-                    <h4 style={{ margin: '0 0 8px 0', color: '#f8fafc', fontSize: '15px' }}>Inactivity Auto-Lock</h4>
-                    <p style={{ margin: '0 0 12px 0', fontSize: '13px', color: '#94a3b8' }}>
-                        Automatically lock the app session after a period of user inactivity.
-                    </p>
-                    <select
-                        className="setting"
-                        style={{ maxWidth: '240px', marginBottom: 0 }}
-                        value={settings.auto_lock_minutes ?? 15}
-                        onChange={(e) => setSettings(prev => ({ ...prev, auto_lock_minutes: parseInt(e.target.value, 10) }))}
-                    >
-                        <option value={0}>Never (Disabled)</option>
-                        <option value={5}>5 minutes</option>
-                        <option value={15}>15 minutes (Default)</option>
-                        <option value={30}>30 minutes</option>
-                        <option value={60}>1 hour</option>
-                    </select>
-                </div>
+                        <p style={{ margin: '0 0 12px 0', fontSize: '13px', color: '#94a3b8' }}>
+                            {isPinOn
+                                ? 'Automatically lock the app session after a period of user inactivity.'
+                                : 'Automatically locks the app session after inactivity. Enable a Master PIN above to activate this feature.'}
+                        </p>
+                        <select
+                            className="setting"
+                            disabled={!isPinOn}
+                            style={{
+                                maxWidth: '240px',
+                                marginBottom: 0,
+                                cursor: isPinOn ? 'pointer' : 'not-allowed',
+                                backgroundColor: isPinOn ? '#0f172a' : '#1e293b'
+                            }}
+                            value={isPinOn ? (settings.auto_lock_minutes ?? 15) : 0}
+                            onChange={(e) => setSettings(prev => ({ ...prev, auto_lock_minutes: parseInt(e.target.value, 10) }))}
+                        >
+                            <option value={0}>Never (Disabled)</option>
+                            <option value={5}>5 minutes</option>
+                            <option value={15}>15 minutes (Default)</option>
+                            <option value={30}>30 minutes</option>
+                            <option value={60}>1 hour</option>
+                        </select>
+                    </div>
 
                 {/* AI Privacy & Redaction */}
                 <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', marginBottom: '20px' }}>
@@ -576,8 +597,19 @@ export default function Settings(props) {
                         )}
                     </div>
                 </div>
+
+                {/* Data at Rest (DAR) Notice */}
+                <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', marginTop: '20px' }}>
+                    <h4 style={{ margin: '0 0 6px 0', color: '#f8fafc', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <ShieldIcon fontSize="small" style={{ color: '#38bdf8' }} /> Data at Rest (DAR) &amp; Storage Encryption
+                    </h4>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8', lineHeight: '1.5' }}>
+                        <strong>Important Security Note:</strong> SQLite database files (<code style={{ color: '#38bdf8' }}>archive.db</code>, <code style={{ color: '#38bdf8' }}>ai_metadata.db</code>, <code style={{ color: '#38bdf8' }}>relationships.db</code>) and generated previews are stored as standard unencrypted local files on your disk to maintain high search and indexing throughput. To protect data against unauthorized physical disk access, we strongly recommend storing your database and archives on an encrypted volume (e.g. <strong>BitLocker</strong> on Windows, <strong>LUKS</strong> on Linux, or <strong>FileVault</strong> on macOS).
+                    </p>
+                </div>
             </div>
-            )}
+            );
+            })()}
 
             {settingsTab === 'data' && (
             <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>

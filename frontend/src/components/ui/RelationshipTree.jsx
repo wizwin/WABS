@@ -42,6 +42,7 @@ export const RELATION_ICON_MAP = {
 
 export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl }) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [showExportMenu, setShowExportMenu] = useState(false);
   const [expanded, setExpanded] = useState({
     root_me: true,
     cat_family: true,
@@ -136,14 +137,37 @@ export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl
     return 0;
   };
 
-  const handleExportGedcom = (personId = null, personName = null) => {
-    const url = personId ? `${API}/people/${personId}/export/gedcom` : `${API}/people/export/gedcom`;
+  const handleExportGedcom = (personId = null, personName = null, category = null) => {
+    let url = personId ? `${API}/people/${personId}/export/gedcom` : `${API}/people/export/gedcom`;
+    if (category) {
+      url += `?category=${encodeURIComponent(category)}`;
+    }
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', personName ? `wabs_family_tree_${personName.toLowerCase().replace(/\s+/g, '_')}.ged` : 'wabs_family_tree.ged');
+    let defaultName = 'wabs_relationship_graph.ged';
+    if (personName) defaultName = `wabs_tree_${personName.toLowerCase().replace(/\s+/g, '_')}.ged`;
+    else if (category) defaultName = `wabs_${category.toLowerCase()}_tree.ged`;
+    link.setAttribute('download', defaultName);
     document.body.appendChild(link);
     link.click();
     link.remove();
+    setShowExportMenu(false);
+  };
+
+  const printTreeCategory = (categoryKey, categoryTitle) => {
+    if (!treeData) return;
+    const targetCategory = treeData.children?.find(c => c.id === categoryKey || c.nodeId === categoryKey);
+    if (!targetCategory) {
+      alert(`No ${categoryTitle} data found to export.`);
+      return;
+    }
+    const customRoot = {
+      ...treeData,
+      name: `${treeData.name} - ${categoryTitle}`,
+      children: [targetCategory]
+    };
+    printTreeGraph(customRoot);
+    setShowExportMenu(false);
   };
 
   const printTreeGraph = (targetNode = null) => {
@@ -346,57 +370,6 @@ export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl
           </div>
 
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {hasChildren && !node.isMe && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (node.isPerson) {
-                      handleExportGedcom(node.id, node.name);
-                    } else {
-                      handleExportGedcom();
-                    }
-                  }}
-                  style={{
-                    background: 'rgba(30, 41, 59, 0.6)',
-                    border: '1px solid #334155',
-                    borderRadius: '6px',
-                    color: '#94a3b8',
-                    padding: '2px 6px',
-                    fontSize: '10.5px',
-                    cursor: 'pointer',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '3px'
-                  }}
-                  title={`Export GEDCOM for ${node.name} branch`}
-                >
-                  <DownloadIcon style={{ fontSize: '11px' }} /> GEDCOM
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    printTreeGraph(node);
-                  }}
-                  style={{
-                    background: 'rgba(30, 41, 59, 0.6)',
-                    border: '1px solid #334155',
-                    borderRadius: '6px',
-                    color: '#94a3b8',
-                    padding: '2px 6px',
-                    fontSize: '10.5px',
-                    cursor: 'pointer',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '3px'
-                  }}
-                  title={`Print / PDF view for ${node.name} branch`}
-                >
-                  <PrintIcon style={{ fontSize: '11px' }} /> PDF
-                </button>
-              </div>
-            )}
-
             {node.count !== undefined && (
               <span style={{ color: '#64748b', fontSize: '12px', paddingLeft: '4px', whiteSpace: 'nowrap' }}>
                 {node.count} {node.count === 1 ? 'photo' : 'photos'}
@@ -517,45 +490,211 @@ export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl
             <UnfoldLessIcon style={{ fontSize: '15px' }} /> Collapse
           </button>
 
-          <button
-            onClick={() => handleExportGedcom()}
-            style={{
-              padding: '6px 12px',
-              borderRadius: '8px',
-              border: '1px solid #2563eb',
-              background: 'rgba(37, 99, 235, 0.18)',
-              color: '#60a5fa',
-              cursor: 'pointer',
-              fontSize: '12.5px',
-              fontWeight: '600',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '5px'
-            }}
-            title="Export complete family tree as GEDCOM 5.5.1 (.ged) for Gramps, Ancestry, FamilySearch, etc."
-          >
-            <AccountTreeIcon style={{ fontSize: '15px' }} /> Export GEDCOM
-          </button>
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={() => setShowExportMenu(prev => !prev)}
+              style={{
+                padding: '6px 14px',
+                borderRadius: '8px',
+                border: '1px solid #3b82f6',
+                background: showExportMenu ? '#2563eb' : 'rgba(37, 99, 235, 0.18)',
+                color: showExportMenu ? '#ffffff' : '#60a5fa',
+                cursor: 'pointer',
+                fontSize: '12.5px',
+                fontWeight: '600',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                transition: 'all 0.15s'
+              }}
+              title="Export Family Tree, Friends Network, or Full Graph"
+            >
+              <DownloadIcon style={{ fontSize: '15px' }} /> Export Tree <ExpandMoreIcon style={{ fontSize: '16px', transform: showExportMenu ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+            </button>
 
-          <button
-            onClick={() => printTreeGraph()}
-            style={{
-              padding: '6px 12px',
-              borderRadius: '8px',
-              border: '1px solid #059669',
-              background: 'rgba(16, 185, 129, 0.18)',
-              color: '#34d399',
-              cursor: 'pointer',
-              fontSize: '12.5px',
-              fontWeight: '600',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '5px'
-            }}
-            title="Export / Print clean PDF view of the entire tree"
-          >
-            <PictureAsPdfIcon style={{ fontSize: '15px' }} /> Export PDF
-          </button>
+            {showExportMenu && (
+              <>
+                <div
+                  onClick={() => setShowExportMenu(false)}
+                  style={{ position: 'fixed', inset: 0, zIndex: 998 }}
+                />
+                <div style={{
+                  position: 'absolute',
+                  right: 0,
+                  top: 'calc(100% + 8px)',
+                  width: '320px',
+                  background: '#0f172a',
+                  border: '1px solid #334155',
+                  borderRadius: '12px',
+                  boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.5)',
+                  padding: '12px',
+                  zIndex: 999,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px'
+                }}>
+                  {/* Category 1: Family Tree */}
+                  <div style={{ background: '#1e293b', borderRadius: '8px', padding: '10px 12px', border: '1px solid #334155' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                      <span style={{ fontSize: '15px' }}>👨‍👩‍👧‍👦</span>
+                      <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#f8fafc' }}>Family Tree</span>
+                      <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: 'auto' }}>Kinship & Relatives</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={() => handleExportGedcom(null, null, 'family')}
+                        style={{
+                          flex: 1,
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          background: 'rgba(37, 99, 235, 0.2)',
+                          border: '1px solid #3b82f6',
+                          color: '#93c5fd',
+                          fontSize: '11.5px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '4px'
+                        }}
+                        title="Export Family Tree as GEDCOM 5.5.1 (.ged) for Gramps, Ancestry, FamilySearch"
+                      >
+                        <AccountTreeIcon style={{ fontSize: '14px' }} /> GEDCOM
+                      </button>
+                      <button
+                        onClick={() => printTreeCategory('cat_family', 'Family Tree')}
+                        style={{
+                          flex: 1,
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          background: 'rgba(16, 185, 129, 0.2)',
+                          border: '1px solid #10b981',
+                          color: '#6ee7b7',
+                          fontSize: '11.5px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '4px'
+                        }}
+                        title="Print / Save PDF of Family Tree only"
+                      >
+                        <PictureAsPdfIcon style={{ fontSize: '14px' }} /> PDF / Print
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Category 2: Friends & Contacts */}
+                  <div style={{ background: '#1e293b', borderRadius: '8px', padding: '10px 12px', border: '1px solid #334155' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                      <span style={{ fontSize: '15px' }}>🤝</span>
+                      <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#f8fafc' }}>Friends & Contacts</span>
+                      <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: 'auto' }}>Social Circles</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={() => printTreeCategory('cat_friends', 'Friends & Contacts')}
+                        style={{
+                          flex: 1,
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          background: 'rgba(16, 185, 129, 0.2)',
+                          border: '1px solid #10b981',
+                          color: '#6ee7b7',
+                          fontSize: '11.5px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '4px'
+                        }}
+                        title="Print / Save PDF of Friends & Contacts only"
+                      >
+                        <PictureAsPdfIcon style={{ fontSize: '14px' }} /> PDF / Print
+                      </button>
+                      <button
+                        onClick={() => handleExportGedcom(null, null, 'friends')}
+                        style={{
+                          flex: 1,
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          background: 'rgba(37, 99, 235, 0.2)',
+                          border: '1px solid #3b82f6',
+                          color: '#93c5fd',
+                          fontSize: '11.5px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '4px'
+                        }}
+                        title="Export Friends Network as GEDCOM (.ged)"
+                      >
+                        <AccountTreeIcon style={{ fontSize: '14px' }} /> GEDCOM
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Category 3: Complete Network (All) */}
+                  <div style={{ background: '#1e293b', borderRadius: '8px', padding: '10px 12px', border: '1px solid #334155' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                      <span style={{ fontSize: '15px' }}>🌐</span>
+                      <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#f8fafc' }}>Complete Graph (All)</span>
+                      <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: 'auto' }}>All Categories</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={() => handleExportGedcom()}
+                        style={{
+                          flex: 1,
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          background: 'rgba(99, 102, 241, 0.2)',
+                          border: '1px solid #6366f1',
+                          color: '#a5b4fc',
+                          fontSize: '11.5px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '4px'
+                        }}
+                        title="Export Complete Social Network as GEDCOM 5.5.1 (.ged)"
+                      >
+                        <AccountTreeIcon style={{ fontSize: '14px' }} /> Full GEDCOM
+                      </button>
+                      <button
+                        onClick={() => { printTreeGraph(); setShowExportMenu(false); }}
+                        style={{
+                          flex: 1,
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          background: 'rgba(16, 185, 129, 0.2)',
+                          border: '1px solid #10b981',
+                          color: '#6ee7b7',
+                          fontSize: '11.5px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '4px'
+                        }}
+                        title="Print / Save PDF of complete relationship tree"
+                      >
+                        <PictureAsPdfIcon style={{ fontSize: '14px' }} /> Full PDF
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 

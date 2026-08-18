@@ -353,7 +353,7 @@ def import_relationships_internal(data: dict, rel_db_path: Path = None):
         conn.commit()
     print(f"[RELATIONSHIPS] Imported {len(persons)} persons, {len(social)} social, and {len(connections)} connections")
 
-def generate_gedcom_export(root_rel_person_id: int = None, rel_db_path: Path = None) -> str:
+def generate_gedcom_export(root_rel_person_id: int = None, category_filter: str = None, rel_db_path: Path = None) -> str:
     """
     Generates a standard GEDCOM 5.5.1 string representation of the family graph,
     compatible with Gramps, Ancestry, FamilySearch, etc.
@@ -378,6 +378,13 @@ def generate_gedcom_export(root_rel_person_id: int = None, rel_db_path: Path = N
     if not persons:
         return ""
 
+    # If category_filter is specified, filter by social category (or is_me root)
+    if category_filter:
+        cat_lower = category_filter.strip().lower()
+        allowed_pids = {pid for pid, p in persons.items() if p.get("is_me") or social.get(pid, {}).get("category", "").lower() == cat_lower}
+    else:
+        allowed_pids = set(persons.keys())
+
     # If root_rel_person_id is specified, find reachable connected component
     if root_rel_person_id and root_rel_person_id in persons:
         visited = set([root_rel_person_id])
@@ -389,13 +396,13 @@ def generate_gedcom_export(root_rel_person_id: int = None, rel_db_path: Path = N
         while queue:
             curr = queue.pop(0)
             for neighbor in adj.get(curr, []):
-                if neighbor in persons and neighbor not in visited:
+                if neighbor in persons and neighbor not in visited and neighbor in allowed_pids:
                     visited.add(neighbor)
                     queue.append(neighbor)
         
         filtered_persons = {pid: persons[pid] for pid in visited}
     else:
-        filtered_persons = persons
+        filtered_persons = {pid: persons[pid] for pid in allowed_pids if pid in persons}
 
     def infer_gender(pid):
         s = social.get(pid, {})

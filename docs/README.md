@@ -118,6 +118,7 @@ Manage archive authentication, network exposure, and privacy guardrails:
 * **Inactivity Auto-Lock**: Automatically locks the user session after a configured duration of idle time (5m, 15m, 30m, 1h, Never).
 * **AI Privacy & PII Redaction**: Automatically sanitizes and redacts phone numbers, email addresses, and IP addresses before sending file classification queries to external AI models.
 * **Cache Cleanup**: Option to clear preview and thumbnail caches on demand or automatically whenever WABS exits.
+* **Data at Rest (DAR) & Physical Disk Security**: SQLite databases (`archive.db`, `ai_metadata.db`, `relationships.db`) and preview thumbnails are stored unencrypted on disk to maximize indexing speed. For physical device security and Data at Rest protection, we recommend hosting WABS on an encrypted drive (e.g. **BitLocker**, **LUKS**, or **FileVault**).
 
 #### 7. Data Management
 * **Database Cleanup & Optimization**: Removes missing file indices from the database, deletes orphaned face crops/records and tag associations, purges empty person profiles and orphaned relationship links, and runs SQLite `VACUUM` across all databases to reclaim disk space.

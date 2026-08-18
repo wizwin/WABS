@@ -1866,9 +1866,10 @@ def get_all_connections():
     return {"connections": connections}
 
 @router.get("/people/export/gedcom")
-def export_gedcom_all(root_person_id: int = None):
+def export_gedcom_all(root_person_id: int = None, category: str = None):
     """
     Exports the family graph as a standard GEDCOM 5.5.1 (.ged) file for apps like Gramps.
+    Supports filtering by category (e.g. 'family', 'friends', 'others').
     """
     rel_db_path = get_relationships_db_path()
     init_relationships_database(rel_db_path)
@@ -1879,8 +1880,14 @@ def export_gedcom_all(root_person_id: int = None):
             cursor = conn.cursor()
             root_rel_id = _resolve_rel_person_id(cursor, root_person_id)
             
-    gedcom_str = generate_gedcom_export(root_rel_id, rel_db_path)
-    filename = "wabs_family_tree.ged" if not root_person_id else f"wabs_family_tree_person_{root_person_id}.ged"
+    gedcom_str = generate_gedcom_export(root_rel_id, category_filter=category, rel_db_path=rel_db_path)
+    
+    if root_person_id:
+        filename = f"wabs_tree_person_{root_person_id}.ged"
+    elif category:
+        filename = f"wabs_{category.lower()}_tree.ged"
+    else:
+        filename = "wabs_relationship_graph.ged"
     
     return PlainTextResponse(
         content=gedcom_str,
@@ -1889,8 +1896,8 @@ def export_gedcom_all(root_person_id: int = None):
     )
 
 @router.get("/people/{person_id}/export/gedcom")
-def export_gedcom_for_person(person_id: int):
+def export_gedcom_for_person(person_id: int, category: str = None):
     """
     Exports the family graph rooted from a specific person node as GEDCOM 5.5.1 (.ged).
     """
-    return export_gedcom_all(root_person_id=person_id)
+    return export_gedcom_all(root_person_id=person_id, category=category)

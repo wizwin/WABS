@@ -202,11 +202,22 @@ export function usePeople({
   
   async function openPersonPhotos(person, forceReload = false) {
     try {
-      loadPersonConnections(person.id);
-      const cached = personGalleryCache.current.get(person.id);
+      if (!person) return;
+      const canonical = (people || []).find(p => (person.id && p.id === person.id) || (person.name && p.name && p.name.toLowerCase() === person.name.toLowerCase()));
+      const targetPerson = canonical ? {
+        ...canonical,
+        ...person,
+        category: canonical.category ?? person.category,
+        subcategory: canonical.subcategory ?? person.subcategory,
+        relation_label: canonical.relation_label ?? person.relation_label,
+        is_me: canonical.is_me ?? person.is_me
+      } : person;
+
+      loadPersonConnections(targetPerson.id);
+      const cached = personGalleryCache.current.get(targetPerson.id);
       if (!forceReload && cached && Array.isArray(cached.files) && cached.files.length > 0) {
         setPersonFiles(cached.files);
-        setCurrentPerson(person);
+        setCurrentPerson(targetPerson);
         setOffset(cached.offset || cached.files.length);
         setStartOffset(cached.startOffset || 0);
         setHasMore(cached.hasMore !== undefined ? cached.hasMore : false);
@@ -230,13 +241,13 @@ export function usePeople({
 
       const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
       const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
-      const r = await axios.get(`${API}/people/${person.id}/photos?offset=0&limit=${limit}`);
+      const r = await axios.get(`${API}/people/${targetPerson.id}/photos?offset=0&limit=${limit}`);
       setPersonFiles(r.data);
-      setCurrentPerson(person);
+      setCurrentPerson(targetPerson);
       setOffset(r.data.length);
       setStartOffset(0);
       setHasMore(r.data.length === limit);
-      personGalleryCache.current.set(person.id, {
+      personGalleryCache.current.set(targetPerson.id, {
         files: r.data,
         offset: r.data.length,
         startOffset: 0,
@@ -1321,6 +1332,8 @@ export function usePeople({
         thumbnail: p.thumbnail,
         category: p.category,
         subcategory: p.subcategory,
+        relation_label: p.relation_label,
+        is_me: p.is_me,
         connections: personConns
       };
 

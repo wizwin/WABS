@@ -926,7 +926,14 @@ function renderValue(value){
     ...peopleState,
     ...scannerState,
     ...systemOpsState,
-    timelineItems
+    timelineItems,
+    authStatus,
+    setAuthStatus,
+    checkAuthStatus,
+    isLocked,
+    setIsLocked,
+    handleManualLock,
+    handleUnlocked
   };
 
   return {
