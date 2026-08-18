@@ -17,6 +17,7 @@ import { ActionButton } from './components/ui/ActionButton';
 import { PersonThumb } from './components/ui/PersonThumb';
 import { Sidebar } from './components/ui/Sidebar';
 import { Topbar } from './components/ui/Topbar';
+import { LockScreen } from './components/ui/LockScreen';
 import { useTags } from './hooks/useTags';
 import { usePeople } from './hooks/usePeople';
 import { useExplorer } from './hooks/useExplorer';
@@ -24,6 +25,9 @@ import { useScanners } from './hooks/useScanners';
 import { useSystemOps } from './hooks/useSystemOps';
 
 export function useAppState() {
+const [authStatus, setAuthStatus] = useState(null)
+const [isLocked, setIsLocked] = useState(false)
+const lastUserActivityRef = useRef(Date.now())
 const [page,setPage]=useState('dashboard')
 const [query,setQuery]=useState('')
 const [settings,setSettings]=useState({})
@@ -634,13 +638,100 @@ useEffect(() => {
   return () => document.removeEventListener('mousedown', handleClickOutside);
 }, []);
 
+const checkAuthStatus = async () => {
+  try {
+    const res = await axios.get(`${API}/auth/status`);
+    if (res.data) {
+      setAuthStatus(res.data);
+      if (res.data.pin_enabled && !res.data.is_authenticated) {
+        setIsLocked(true);
+      } else {
+        setIsLocked(false);
+      }
+      return res.data;
+    }
+  } catch (e) {
+    console.error("Auth status error:", e);
+  }
+  return null;
+};
+
+useEffect(() => {
+  checkAuthStatus();
+}, []);
+
+useEffect(() => {
+  const handleLocked = () => {
+    setIsLocked(true);
+    setSessionToken('', true);
+    setAuthStatus(prev => prev ? { ...prev, is_authenticated: false } : null);
+    checkAuthStatus();
+  };
+  window.addEventListener('wabs-auth-locked', handleLocked);
+  return () => window.removeEventListener('wabs-auth-locked', handleLocked);
+}, []);
+
+useEffect(() => {
+  const updateActivity = () => {
+    lastUserActivityRef.current = Date.now();
+  };
+
+  window.addEventListener('mousemove', updateActivity, { passive: true });
+  window.addEventListener('keydown', updateActivity, { passive: true });
+  window.addEventListener('touchstart', updateActivity, { passive: true });
+  window.addEventListener('scroll', updateActivity, { passive: true });
+
+  const interval = setInterval(() => {
+    if (isLocked) return;
+    const lockMinutes = settings?.auto_lock_minutes ?? authStatus?.auto_lock_minutes ?? 15;
+    if (lockMinutes > 0 && authStatus?.pin_enabled) {
+      const idleMs = Date.now() - lastUserActivityRef.current;
+      if (idleMs > lockMinutes * 60 * 1000) {
+        handleManualLock();
+      }
+    }
+  }, 10000);
+
+  return () => {
+    window.removeEventListener('mousemove', updateActivity);
+    window.removeEventListener('keydown', updateActivity);
+    window.removeEventListener('touchstart', updateActivity);
+    window.removeEventListener('scroll', updateActivity);
+    clearInterval(interval);
+  };
+}, [isLocked, settings?.auto_lock_minutes, authStatus?.pin_enabled]);
+
+const handleUnlocked = () => {
+  setIsLocked(false);
+  lastUserActivityRef.current = Date.now();
+  checkAuthStatus();
+  explorer.loadFiles();
+  loadSettings();
+  loadDashboard();
+  peopleState.loadPeople();
+  tagsState.loadTags();
+};
+
+const handleManualLock = async () => {
+  setIsLocked(true);
+  try {
+    await axios.post(`${API}/auth/logout`);
+  } catch (e) {}
+  setSessionToken('', true);
+  setAuthStatus(prev => prev ? { ...prev, is_authenticated: false } : null);
+};
+
 useEffect(()=>{
  document.title = `WABS v${VERSION}`;
- explorer.loadFiles()
- loadSettings()
- loadDashboard()
- peopleState.loadPeople()
- tagsState.loadTags()
+ checkAuthStatus().then(status => {
+   if (!status?.pin_enabled || status?.is_authenticated) {
+     explorer.loadFiles();
+     loadSettings();
+     loadDashboard();
+     peopleState.loadPeople();
+     tagsState.loadTags();
+   }
+ });
 },[])
 
 useEffect(() => {
@@ -844,7 +935,8 @@ function renderValue(value){
     toggleSidebar, toggleTimeline, toggleTreeView, toggleDetails, isResizing, setIsResizing,
     searchContainerRef, handleSearchChange, handleKeyDown, toastTimeoutRef,
     toastAction, getPersonThumbUrl: peopleState.getPersonThumbUrl,
-    explorer, tagsState, peopleState, scannerState, systemOpsState
+    explorer, tagsState, peopleState, scannerState, systemOpsState,
+    authStatus, isLocked, handleManualLock, handleUnlocked
   };
 }
 
@@ -855,7 +947,8 @@ export default function App() {
     toggleSidebar, toggleTimeline, toggleTreeView, toggleDetails, isResizing, setIsResizing,
     searchContainerRef, handleSearchChange, handleKeyDown, toastTimeoutRef,
     toastAction, getPersonThumbUrl,
-    explorer, tagsState, peopleState, scannerState, systemOpsState
+    explorer, tagsState, peopleState, scannerState, systemOpsState,
+    authStatus, isLocked, handleManualLock, handleUnlocked
   } = useAppState();
 
   const {
@@ -1129,6 +1222,8 @@ export default function App() {
   toggleDetails={toggleDetails}
   showDetails={showDetails}
   page={page}
+  onLockApp={handleManualLock}
+  pinEnabled={authStatus?.pin_enabled}
 />
 
 {indexer.system_warning && (
@@ -1286,6 +1381,12 @@ export default function App() {
     }} />
     <span style={{ color: '#f8fafc', fontSize: '13px', fontWeight: 'bold' }}>{taskText}</span>
   </div>
+)}
+{isLocked && (
+  <LockScreen 
+    initialStatus={authStatus} 
+    onUnlocked={handleUnlocked} 
+  />
 )}
 </div>
 </SettingsContext.Provider>

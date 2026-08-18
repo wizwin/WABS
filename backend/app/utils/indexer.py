@@ -2400,6 +2400,13 @@ def llm_classify(metadata, ext, cfg):
     
     prompt = f"Identify the specific file type or category for a file with the extension '{ext}' and the following metadata: {json.dumps(metadata) if metadata else 'None'}. Reply with a short, highly descriptive category (e.g., 'Source Code', '3D Model', 'Audio', 'Configuration', 'Disk Image'). Maximum 2 words. Only reply with the category name, no punctuation."
     
+    if cfg.get("ai_redact_personal_info", True):
+        try:
+            from backend.app.utils.security import redact_pii
+            prompt = redact_pii(prompt)
+        except Exception:
+            pass
+
     data = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],

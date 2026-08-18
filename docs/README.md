@@ -12,12 +12,13 @@ WABS is a modern, 100% offline archival management system designed to help you o
 * **Rich Previews:** Auto-generates thumbnails for photos, videos, PDFs, Word documents, and code.
 * **Smart Categorization:** Automatically groups files into categories like Photos, Videos, Code, etc.
 * **Offline Face Recognition:** Scans photos using local AI to find and group people automatically.
-* **People Categorization & Relationship Tree:** Organize named profiles into Family, Friends, and Other categories with custom relationship labels. View an interactive, collapsible relationship tree anchored to your profile ("Me") to search and browse photos of relatives and friends faster. *(Note: This feature is designed to enrich media search and browsing, not serve as a full genealogy manager).*
+* **People Categorization, Inter-Person Graph & Relationship Tree:** Organize named profiles into Family, Friends, and Other categories with custom relationship labels. Connect inter-person family relationships (spouses, parents, children, siblings) and view an interactive, multi-column relationship tree anchored to your profile ("Me"). Export full trees or subtrees directly to standard **GEDCOM 5.5.1 (`.ged`)** for tools like Gramps, Ancestry, and FamilySearch, or export clean printable PDF views.
 * **Object & Scene Tagging:** Classifies objects and scenes in photos completely offline, allowing you to easily search by content.
 * **Document Text Extraction:** Automatically extracts and intelligently filters text from PDFs, documents, and code files, making their inner contents instantly searchable.
 * **Combined Background Scanning:** Scan for files, faces, objects, and document text simultaneously to massively speed up index generation.
 * **Advanced JSON Search:** Native, high-speed metadata querying (FPS, Camera Model, ID3 Tags, etc.) powered by SQLite's JSON1 extension.
 * **Virtual Folders:** Create custom, cross-drive folder views that group any files from your archive regardless of where they physically live. Supports both manual curation and smart dynamic rules.
+* **Multi-Layer Security & Master PIN:** Protect personal archive data with a Master PIN/Password (PBKDF2-HMAC-SHA256), session tokens, brute-force rate-limiting, inactivity auto-lock, 127.0.0.1 localhost network isolation, CORS lockdown, and automated AI PII masking.
 * **Database Management:** Built-in tools to cleanly remove missing files, purge orphaned AI profiles, and vacuum the databases to reclaim disk space.
 * **Portable:** Move your backup drives around? WABS easily remaps your indexed files to new drive letters.
 
@@ -44,7 +45,7 @@ Once the terminal window opens and the backend starts, open your web browser and
 
 ### Settings Reference
 
-The Settings page is divided into six tabs to let you customize WABS's database path, backups, UI preferences, AI parameters, Smart Searches, and clean up or backup your data:
+The Settings page is divided into seven tabs to let you customize WABS's database path, backups, UI preferences, AI parameters, Smart Searches, Security & Privacy, and clean up or backup your data:
 
 #### 1. General (System Settings)
 * **Who Am I? (WABS User Identity)**: Select your own profile from your named people list. WABS uses this identity to anchor your relationship tree ("Me") and establish relationships relative to you.
@@ -110,7 +111,15 @@ Manage and build saved searches:
 * **AI Search Assistant**: Use natural language prompts to generate search queries (requires LLM setup in AI tab).
 * **Remove / Edit Query**: Update saved shortcuts and their underlying search operators.
 
-#### 6. Data Management
+#### 6. Security & Privacy
+Manage archive authentication, network exposure, and privacy guardrails:
+* **Master PIN / Password**: Set, change, or disable your archive PIN. When enabled, all data endpoints and UI views require authentication.
+* **Local Network (LAN / Wi-Fi) Access**: Toggles between strict Localhost-only binding (`127.0.0.1`) and LAN network binding (`0.0.0.0`) for connecting from mobile devices on home Wi-Fi.
+* **Inactivity Auto-Lock**: Automatically locks the user session after a configured duration of idle time (5m, 15m, 30m, 1h, Never).
+* **AI Privacy & PII Redaction**: Automatically sanitizes and redacts phone numbers, email addresses, and IP addresses before sending file classification queries to external AI models.
+* **Cache Cleanup**: Option to clear preview and thumbnail caches on demand or automatically whenever WABS exits.
+
+#### 7. Data Management
 * **Database Cleanup & Optimization**: Removes missing file indices from the database, deletes orphaned face crops/records and tag associations, purges empty person profiles and orphaned relationship links, and runs SQLite `VACUUM` across all databases to reclaim disk space.
 * **Full Database Backup**: Creates a backup copy containing `archive.db`, `ai_metadata.db`, `relationships.db`, and `config.yaml`.
 * **Data Portability (Import/Export JSON)**:
@@ -152,8 +161,9 @@ Once the Face Scanner identifies faces, it groups them under automatic profiles 
 1. **Configuring "Who Am I?" Identity:**
    * Go to **Settings** ➔ **General** and choose your own profile from the **Who Am I?** dropdown.
    * WABS uses this identity to anchor your relationship tree (`"Me"`) and build relative branches for parents, spouse, children, siblings, and extended family.
+   * When viewing your own profile in Person view, a dedicated **★ Primary User Identity (Me)** badge is displayed.
 
-2. **Categorizing Named People:**
+2. **Categorizing Named People & Inter-Person Links:**
    * Open any named person's photo collection from the **People** tab.
    * Use the **Relationship Bar** directly below the header to choose:
      * **Primary Category:** `Family`, `Friends`, or `Others`.
@@ -163,20 +173,23 @@ Once the Face Scanner identifies faces, it groups them under automatic profiles 
        * *Others:* Neighbor, Service Contact, Other.
      * **Custom Label:** Add a custom label (e.g. `"Wife"`, `"Sister"`, `"Acme Corp"`, `"College roommate"`).
    * **Explicit Confirmation:** Changes are staged locally; click the **✓ (Save)** button or press <kbd>Enter</kbd> to apply them, or click **✕ (Cancel)** or press <kbd>Escape</kbd> to discard changes.
+   * **Family Links:** Use the **+ Link Family Member** button in the Family Links bar to establish inter-person relationships (`Spouse`, `Partner`, `Parent`, `Child`, `Sibling`). Reciprocal connections are automatically created and displayed as interactive badges.
 
 3. **Filtering & Searching by Relationships:**
    * **Category Filter Pills:** Click the `All`, `Family`, `Friends`, `Others`, or `Uncategorized` filter pills on the People page to view matching profiles with live counts. Your active filter preference is saved automatically.
    * **Unified Search:** Typing kinship terms or custom labels (e.g. `wife`, `colleague`, `cousin`) into the search bar matches people instantly.
 
-4. **Interactive Multi-Column Relationship Tree View:**
+4. **Interactive Multi-Column Relationship Tree View & Exports:**
    * Switch to the dedicated **Tree View** tab on the People page to view your structured kinship hierarchy.
    * **Modular Side-by-Side Cards:** Family, Friends, and Others are organized in responsive side-by-side category cards, minimizing vertical scrolling.
-   * **Search & Controls:** Real-time tree search box, person count badges, and one-click **Expand All** / **Collapse All** controls.
-   * Clicking any person node opens their photo timeline immediately.
+   * **Search & Controls:** Real-time tree search box, person count badges, and one-click **Expand** / **Collapse** controls.
+   * **GEDCOM 5.5.1 Export:** Click **Export GEDCOM** in the top bar (or on any family branch) to download standard `.ged` genealogy files compatible with **Gramps**, **Ancestry**, and **FamilySearch**.
+   * **PDF / Print View:** Click **Export PDF** to generate clean, printable graph views of the entire tree or individual sub-branches.
+   * Clicking any person node opens their photo timeline immediately with smooth scroll and photo cache retention.
 
 5. **Safe Sidecar Storage (`relationships.db`):**
-   * All relationship assignments are saved in a separate sidecar database (`relationships.db`).
-   * If you ever wipe or rescan `ai_metadata.db`, your entire relationship hierarchy is preserved and automatically relinked when faces are renamed.
+   * All relationship assignments and inter-person connections are saved in a separate sidecar database (`relationships.db`).
+   * If you ever wipe or rescan `ai_metadata.db`, your entire relationship hierarchy and inter-person connections are preserved and automatically relinked when faces are renamed.
 
 ### Relationship & Kinship Mapping Reference Guide
 

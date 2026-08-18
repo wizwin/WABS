@@ -1,10 +1,15 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import SettingsIcon from '@mui/icons-material/Settings';
 import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
+import SecurityIcon from '@mui/icons-material/Security';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import KeyIcon from '@mui/icons-material/Key';
+import ShieldIcon from '@mui/icons-material/Shield';
+import CleaningServicesIcon from '@mui/icons-material/CleaningServices';
 import axios from 'axios';
 
 import { ActionButton } from '../components/ui/ActionButton';
-import { API } from '../States';
+import { API, setSessionToken } from '../States';
 
 export default function Settings(props) {
   const { 
@@ -19,6 +24,123 @@ export default function Settings(props) {
     setMeIdentity, sortedNamedPeopleDropdown, mePerson,
     exportRelationships, importRelationships
   } = props;
+
+  const [pinStatus, setPinStatus] = useState({ pin_enabled: false });
+  const [pinModalMode, setPinModalMode] = useState(null); // 'set' | 'change' | 'disable' | null
+  const [pinInputs, setPinInputs] = useState({ current_pin: '', new_pin: '', confirm_pin: '' });
+  const [pinError, setPinError] = useState('');
+  const [pinSuccess, setPinSuccess] = useState('');
+  const [pinLoading, setPinLoading] = useState(false);
+  const [cacheClearStatus, setCacheClearStatus] = useState('');
+  const [cacheClearing, setCacheClearing] = useState(false);
+
+  const fetchPinStatus = async () => {
+    try {
+      const res = await axios.get(`${API}/auth/status`);
+      if (res.data) {
+        setPinStatus(res.data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch auth status:", e);
+    }
+  };
+
+  useEffect(() => {
+    if (page === 'settings') {
+      fetchPinStatus();
+    }
+  }, [page, settingsTab]);
+
+  const handlePinActionSubmit = async (e) => {
+    if (e) e.preventDefault();
+    setPinError('');
+    setPinSuccess('');
+    setPinLoading(true);
+
+    const cleanCurrent = pinInputs.current_pin.replace(/\D/g, '');
+    const cleanNew = pinInputs.new_pin.replace(/\D/g, '');
+    const cleanConfirm = pinInputs.confirm_pin.replace(/\D/g, '');
+
+    try {
+      if (pinModalMode === 'set') {
+        if (!/^\d{4,12}$/.test(cleanNew)) {
+          setPinError('PIN must be 4 to 12 digits (numbers only).');
+          setPinLoading(false);
+          return;
+        }
+        if (cleanNew !== cleanConfirm) {
+          setPinError('PIN and Confirmation PIN do not match.');
+          setPinLoading(false);
+          return;
+        }
+        const res = await axios.post(`${API}/auth/setup`, { pin: cleanNew });
+        if (res.data?.token) {
+          setSessionToken(res.data.token, true);
+        }
+        setPinSuccess('Security PIN enabled successfully.');
+        setPinInputs({ current_pin: '', new_pin: '', confirm_pin: '' });
+        setPinModalMode(null);
+        fetchPinStatus();
+      } else if (pinModalMode === 'change') {
+        if (!cleanCurrent) {
+          setPinError('Please enter your current PIN.');
+          setPinLoading(false);
+          return;
+        }
+        if (!/^\d{4,12}$/.test(cleanNew)) {
+          setPinError('New PIN must be 4 to 12 digits (numbers only).');
+          setPinLoading(false);
+          return;
+        }
+        if (cleanNew !== cleanConfirm) {
+          setPinError('New PIN and Confirmation PIN do not match.');
+          setPinLoading(false);
+          return;
+        }
+        const res = await axios.post(`${API}/auth/change-pin`, {
+          current_pin: cleanCurrent,
+          new_pin: cleanNew
+        });
+        if (res.data?.token) {
+          setSessionToken(res.data.token, true);
+        }
+        setPinSuccess('Security PIN changed successfully.');
+        setPinInputs({ current_pin: '', new_pin: '', confirm_pin: '' });
+        setPinModalMode(null);
+        fetchPinStatus();
+      } else if (pinModalMode === 'disable') {
+        if (!cleanCurrent) {
+          setPinError('Please enter your current PIN to disable protection.');
+          setPinLoading(false);
+          return;
+        }
+        await axios.post(`${API}/auth/disable-pin`, {
+          current_pin: cleanCurrent
+        });
+        setPinSuccess('Security PIN has been disabled.');
+        setPinInputs({ current_pin: '', new_pin: '', confirm_pin: '' });
+        setPinModalMode(null);
+        fetchPinStatus();
+      }
+    } catch (err) {
+      setPinError(err.response?.data?.detail || 'Operation failed.');
+    } finally {
+      setPinLoading(false);
+    }
+  };
+
+  const handleClearCacheNow = async () => {
+    setCacheClearing(true);
+    setCacheClearStatus('');
+    try {
+      await axios.post(`${API}/auth/clear-cache`);
+      setCacheClearStatus('Thumbnail cache successfully emptied.');
+    } catch (err) {
+      setCacheClearStatus('Failed to clear cache: ' + (err.response?.data?.detail || 'Error'));
+    } finally {
+      setCacheClearing(false);
+    }
+  };
 
   return (
     <>
@@ -36,7 +158,7 @@ export default function Settings(props) {
 
             {/* Tab Navigation */}
             <div style={{ display: 'flex', gap: '10px', borderBottom: '1px solid #334155', paddingBottom: '10px', marginBottom: '24px', flexWrap: 'wrap' }}>
-            {['general', 'locations', 'ui', 'ai', 'search', 'data'].map(tab => (
+            {['general', 'locations', 'ui', 'ai', 'search', 'security', 'data'].map(tab => (
                 <button 
                 key={tab}
                 onClick={() => setSettingsTab(tab)}
@@ -52,6 +174,7 @@ export default function Settings(props) {
                 tab === 'ui' ? 'UI Preferences' : 
                 tab === 'ai' ? 'AI & Vision' : 
                 tab === 'search' ? 'Smart Searches' : 
+                tab === 'security' ? 'Security & Privacy' :
                 tab === 'data' ? 'Data Management' : ''}
                 </button>
             ))}
@@ -218,6 +341,241 @@ export default function Settings(props) {
                 />
                 Enable Background Logging (wabs.log)
                 </label>
+            </div>
+            )}
+
+            {settingsTab === 'security' && (
+            <div style={{ padding: '20px', background: '#1e293b', borderRadius: '10px', border: '1px solid #334155', marginBottom: '24px' }}>
+                <h3 style={{ margin: '0 0 16px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <ShieldIcon style={{ color: '#38bdf8' }} /> Security &amp; Privacy
+                </h3>
+
+                {/* Master PIN Section */}
+                <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', marginBottom: '20px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                        <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                                <h4 style={{ margin: 0, color: '#f8fafc', fontSize: '15px' }}>Master PIN / Password</h4>
+                                <span style={{
+                                    fontSize: '12px',
+                                    padding: '2px 8px',
+                                    borderRadius: '12px',
+                                    fontWeight: 'bold',
+                                    backgroundColor: pinStatus.pin_enabled ? 'rgba(34, 197, 94, 0.2)' : 'rgba(245, 158, 11, 0.2)',
+                                    color: pinStatus.pin_enabled ? '#4ade80' : '#fbbf24',
+                                    border: `1px solid ${pinStatus.pin_enabled ? '#22c55e' : '#f59e0b'}`
+                                }}>
+                                    {pinStatus.pin_enabled ? 'ENABLED' : 'DISABLED'}
+                                </span>
+                            </div>
+                            <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>
+                                {pinStatus.pin_enabled 
+                                    ? 'Your archive is protected with a PBKDF2 hashed PIN.' 
+                                    : 'Require a PIN/Password to access private messages, photos, and documents.'}
+                            </p>
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            {!pinStatus.pin_enabled ? (
+                                <ActionButton 
+                                    className="btn btn-primary"
+                                    onClick={() => { setPinModalMode('set'); setPinError(''); setPinSuccess(''); }}
+                                    style={{ padding: '6px 14px', fontSize: '13px' }}
+                                >
+                                    Set Master PIN
+                                </ActionButton>
+                            ) : (
+                                <>
+                                    <ActionButton 
+                                        className="btn btn-secondary"
+                                        onClick={() => { setPinModalMode('change'); setPinError(''); setPinSuccess(''); }}
+                                        style={{ padding: '6px 14px', fontSize: '13px' }}
+                                    >
+                                        Change PIN
+                                    </ActionButton>
+                                    <ActionButton 
+                                        className="btn btn-secondary"
+                                        onClick={() => { setPinModalMode('disable'); setPinError(''); setPinSuccess(''); }}
+                                        style={{ padding: '6px 14px', fontSize: '13px', color: '#f87171' }}
+                                    >
+                                        Disable PIN
+                                    </ActionButton>
+                                </>
+                            )}
+                        </div>
+                    </div>
+
+                    {pinSuccess && (
+                        <div style={{ marginTop: '12px', padding: '8px 12px', background: 'rgba(34, 197, 94, 0.15)', border: '1px solid #22c55e', borderRadius: '6px', color: '#86efac', fontSize: '13px' }}>
+                            {pinSuccess}
+                        </div>
+                    )}
+
+                    {/* Inline PIN Management Form */}
+                    {pinModalMode && (
+                        <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #334155' }}>
+                            <h5 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#38bdf8' }}>
+                                {pinModalMode === 'set' && 'Configure Master PIN'}
+                                {pinModalMode === 'change' && 'Change Master PIN'}
+                                {pinModalMode === 'disable' && 'Confirm Disabling Master PIN'}
+                            </h5>
+
+                            {pinError && (
+                                <div style={{ marginBottom: '12px', padding: '8px 12px', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid #ef4444', borderRadius: '6px', color: '#fca5a5', fontSize: '13px' }}>
+                                    {pinError}
+                                </div>
+                            )}
+
+                            <form onSubmit={handlePinActionSubmit} style={{ display: 'grid', gap: '10px', maxWidth: '360px' }}>
+                                {(pinModalMode === 'change' || pinModalMode === 'disable') && (
+                                    <input 
+                                        type="password"
+                                        inputMode="numeric"
+                                        pattern="[0-9]*"
+                                        maxLength={12}
+                                        placeholder="Current PIN (digits only)"
+                                        value={pinInputs.current_pin}
+                                        onChange={(e) => setPinInputs(prev => ({ ...prev, current_pin: e.target.value.replace(/\D/g, '') }))}
+                                        style={{ padding: '8px 12px', background: '#1e293b', border: '1px solid #475569', borderRadius: '6px', color: '#fff', fontSize: '14px' }}
+                                    />
+                                )}
+                                {(pinModalMode === 'set' || pinModalMode === 'change') && (
+                                    <>
+                                        <input 
+                                            type="password"
+                                            inputMode="numeric"
+                                            pattern="[0-9]*"
+                                            maxLength={12}
+                                            placeholder="New PIN (4-12 digits)"
+                                            value={pinInputs.new_pin}
+                                            onChange={(e) => setPinInputs(prev => ({ ...prev, new_pin: e.target.value.replace(/\D/g, '') }))}
+                                            style={{ padding: '8px 12px', background: '#1e293b', border: '1px solid #475569', borderRadius: '6px', color: '#fff', fontSize: '14px' }}
+                                        />
+                                        <input 
+                                            type="password"
+                                            inputMode="numeric"
+                                            pattern="[0-9]*"
+                                            maxLength={12}
+                                            placeholder="Confirm New PIN (digits only)"
+                                            value={pinInputs.confirm_pin}
+                                            onChange={(e) => setPinInputs(prev => ({ ...prev, confirm_pin: e.target.value.replace(/\D/g, '') }))}
+                                            style={{ padding: '8px 12px', background: '#1e293b', border: '1px solid #475569', borderRadius: '6px', color: '#fff', fontSize: '14px' }}
+                                        />
+                                    </>
+                                )}
+                                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                                    <ActionButton 
+                                        type="submit"
+                                        className="btn btn-primary"
+                                        disabled={pinLoading}
+                                        style={{ padding: '6px 14px', fontSize: '13px' }}
+                                    >
+                                        {pinLoading ? 'Processing...' : pinModalMode === 'disable' ? 'Confirm Disable' : 'Save PIN'}
+                                    </ActionButton>
+                                    <ActionButton 
+                                        type="button"
+                                        className="btn btn-secondary"
+                                        onClick={() => { setPinModalMode(null); setPinError(''); }}
+                                        style={{ padding: '6px 14px', fontSize: '13px' }}
+                                    >
+                                        Cancel
+                                    </ActionButton>
+                                </div>
+                            </form>
+                        </div>
+                    )}
+                </div>
+
+                {/* Network & Localhost Security */}
+                <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', marginBottom: '20px' }}>
+                    <h4 style={{ margin: '0 0 8px 0', color: '#f8fafc', fontSize: '15px' }}>Network Exposure &amp; Binding</h4>
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', color: '#cbd5e1', cursor: 'pointer' }}>
+                        <input 
+                            type="checkbox"
+                            checked={settings.allow_lan_access || false}
+                            onChange={(e) => setSettings(prev => ({ ...prev, allow_lan_access: e.target.checked }))}
+                            style={{ marginTop: '3px' }}
+                        />
+                        <div>
+                            <span style={{ fontWeight: '500' }}>Allow Local Network (LAN / Wi-Fi) Connections</span>
+                            <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8', lineHeight: '1.4' }}>
+                                <strong>Default: Disabled (127.0.0.1 - Localhost Only).</strong> When disabled, WABS is completely inaccessible to other devices on your Wi-Fi network. Check this only if you want to browse WABS from your mobile phone or tablet on your home network.
+                            </p>
+                        </div>
+                    </label>
+                </div>
+
+                {/* Inactivity Auto-Lock */}
+                <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', marginBottom: '20px' }}>
+                    <h4 style={{ margin: '0 0 8px 0', color: '#f8fafc', fontSize: '15px' }}>Inactivity Auto-Lock</h4>
+                    <p style={{ margin: '0 0 12px 0', fontSize: '13px', color: '#94a3b8' }}>
+                        Automatically lock the app session after a period of user inactivity.
+                    </p>
+                    <select
+                        className="setting"
+                        style={{ maxWidth: '240px', marginBottom: 0 }}
+                        value={settings.auto_lock_minutes ?? 15}
+                        onChange={(e) => setSettings(prev => ({ ...prev, auto_lock_minutes: parseInt(e.target.value, 10) }))}
+                    >
+                        <option value={0}>Never (Disabled)</option>
+                        <option value={5}>5 minutes</option>
+                        <option value={15}>15 minutes (Default)</option>
+                        <option value={30}>30 minutes</option>
+                        <option value={60}>1 hour</option>
+                    </select>
+                </div>
+
+                {/* AI Privacy & Redaction */}
+                <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155', marginBottom: '20px' }}>
+                    <h4 style={{ margin: '0 0 8px 0', color: '#f8fafc', fontSize: '15px' }}>AI Privacy &amp; Data Redaction</h4>
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', color: '#cbd5e1', cursor: 'pointer' }}>
+                        <input 
+                            type="checkbox"
+                            checked={settings.ai_redact_personal_info ?? true}
+                            onChange={(e) => setSettings(prev => ({ ...prev, ai_redact_personal_info: e.target.checked }))}
+                            style={{ marginTop: '3px' }}
+                        />
+                        <div>
+                            <span style={{ fontWeight: '500' }}>Mask Personally Identifiable Information (PII) before AI Submission</span>
+                            <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8', lineHeight: '1.4' }}>
+                                Automatically redacts phone numbers, email addresses, and IP addresses before sending classification requests to external AI providers (e.g. OpenAI).
+                            </p>
+                        </div>
+                    </label>
+                </div>
+
+                {/* Data at Rest & Cache */}
+                <div style={{ padding: '16px', background: '#0f172a', borderRadius: '10px', border: '1px solid #334155' }}>
+                    <h4 style={{ margin: '0 0 8px 0', color: '#f8fafc', fontSize: '15px' }}>Cache &amp; Media Cleanup</h4>
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', color: '#cbd5e1', cursor: 'pointer', marginBottom: '16px' }}>
+                        <input 
+                            type="checkbox"
+                            checked={settings.clear_cache_on_exit || false}
+                            onChange={(e) => setSettings(prev => ({ ...prev, clear_cache_on_exit: e.target.checked }))}
+                            style={{ marginTop: '3px' }}
+                        />
+                        <div>
+                            <span style={{ fontWeight: '500' }}>Clear Thumbnail and Preview Cache on App Exit</span>
+                            <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8', lineHeight: '1.4' }}>
+                                Empties the temporary thumbnail cache from disk whenever WABS is closed.
+                            </p>
+                        </div>
+                    </label>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <ActionButton
+                            className="btn btn-secondary"
+                            onClick={handleClearCacheNow}
+                            disabled={cacheClearing}
+                            style={{ padding: '6px 14px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                        >
+                            <CleaningServicesIcon fontSize="small" />
+                            {cacheClearing ? 'Clearing Cache...' : 'Clear Thumbnail Cache Now'}
+                        </ActionButton>
+                        {cacheClearStatus && (
+                            <span style={{ fontSize: '13px', color: '#38bdf8' }}>{cacheClearStatus}</span>
+                        )}
+                    </div>
+                </div>
             </div>
             )}
 

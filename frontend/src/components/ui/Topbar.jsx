@@ -6,6 +6,7 @@ import HelpIcon from '@mui/icons-material/Help';
 import ViewTimelineIcon from '@mui/icons-material/ViewTimeline';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import InfoIcon from '@mui/icons-material/Info';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 
 import { ActionButton } from './ActionButton';
 
@@ -13,7 +14,8 @@ export function Topbar({
   toggleSidebar, showSidebar, searchContainerRef, query, handleSearchChange,
   handleKeyDown, suggestionsData, focusedSuggestionIndex, setFocusedSuggestionIndex,
   applySuggestion, explorer, showSearchHelp, setShowSearchHelp, toggleTimeline,
-  showTimeline, toggleTreeView, showTreeView, viewType, toggleDetails, showDetails, page
+  showTimeline, toggleTreeView, showTreeView, viewType, toggleDetails, showDetails, page,
+  onLockApp, pinEnabled
 }) {
   return (
     <div className='topbar' style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
@@ -136,6 +138,17 @@ export function Topbar({
           </div>
         );
       })()}
+
+      {pinEnabled && onLockApp && (
+        <ActionButton
+          className=""
+          onClick={onLockApp}
+          style={{ padding: '8px', background: '#172033', border: 'none', borderRadius: '8px', color: '#f59e0b', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+          title="Lock Archive (Session)"
+        >
+          <LockOutlinedIcon />
+        </ActionButton>
+      )}
     </div>
   );
 }

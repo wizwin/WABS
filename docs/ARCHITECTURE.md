@@ -268,18 +268,132 @@ When `ai_metadata.db` is purged or face clusters are re-evaluated:
 | | `subcategory` | TEXT | Kinship or social tier (e.g. `Spouse`, `Parent`, `Sibling`, `Close Friend`, `Colleague`) |
 | | `relation_label` | TEXT | Free-form user label (e.g. "Wife", "Sister", "College Roommate") |
 | | `updated_at` | DATETIME | Timestamp of last relationship change |
+| `person_connections` | `id` | INTEGER PRIMARY KEY AUTOINCREMENT | Unique connection record ID |
+| | `person_id` | INTEGER NOT NULL | Source `persons.id` |
+| | `related_person_id` | INTEGER NOT NULL | Target `persons.id` |
+| | `relation_type` | TEXT NOT NULL | Connection type: `spouse`, `partner`, `parent`, `child`, `sibling` |
+| | `created_at` | DATETIME | Timestamp of connection creation |
 
 #### 11.4 Hierarchical Relationship Tree (`RelationshipTree.jsx`)
 
 The frontend visualizes the kinship network anchored to the primary user profile (`"Me"`):
 * **Multi-Column Modular Cards**: Organizes categories (`Family`, `Friends`, `Others`) in responsive side-by-side card containers with live photo counters and person badges to minimize vertical scrolling.
-* **Instant Filtering & Expansion**: Includes real-time search filtering across branches and one-click "Expand All" / "Collapse All" actions.
+* **Instant Filtering & Expansion**: Includes real-time search filtering across branches and one-click "Expand" / "Collapse" actions.
 * **Tree Structure**:
   - `Root (Me)` ➔ `Family` (Spouse, Parents, Siblings, Children, Grandparents, In-laws, Extended Family: Cousins 1st/2nd, Aunts/Uncles, Nieces/Nephews, Other Family)
   - `Root (Me)` ➔ `Friends` (Close Friends, Colleagues, Classmates, Acquaintances, Other Friends)
   - `Root (Me)` ➔ `Others` (Neighbors, Service Contacts, Other)
-* **Interactive Navigation**: Clicking any person node opens the tagged photo collection for that person directly in `person_files` view.
+* **Connected Relative Chips**: Inter-person links (spouse, parent, child, sibling) are dynamically rendered on person nodes with one-click navigation to their photos.
 
 #### 11.5 Search Integration & Kinship Enrichment
 
 Every `GET /people` query joins the stable social taxonomy in memory. Search queries in the People page and Person tagging bar match against `category`, `subcategory`, and `relation_label`, allowing instant discovery by terms like `"wife"`, `"sister"`, or `"colleague"`.
+
+#### 11.6 Inter-Person Connections & Reciprocal Graph Engine
+
+To model complex multi-person kinship (e.g. spouse couples, parent-child links across cousins and nieces):
+* **Reciprocal Edge Synchronization**: Creating a connection (e.g., Person A is Parent of Person B) automatically ensures the reciprocal edge (Person B is Child of Person A) is synchronized. Sibling-to-sibling and spouse-to-spouse links are symmetric.
+* **Cascading Merge & Import**: Merging two profiles automatically migrates all associated `person_connections` to the destination profile, removing redundant self-links.
+
+#### 11.7 GEDCOM 5.5.1 Lineage & PDF Export Engine (`relationships_database.py`)
+
+* **Genealogy Export (`generate_gedcom_export`)**: Generates valid GEDCOM 5.5.1 text for integration into tools like **Gramps**, **Ancestry**, and **FamilySearch**. Maps `persons` to `0 @I<id>@ INDI` individual records with inferred gender and relationship notes, and groups couples and children into `0 @F<id>@ FAM` family units (`HUSB`, `WIFE`, `CHIL`, `FAMS`, `FAMC`).
+* **Printable PDF Export**: Formats a clean, high-contrast, printable tree report containing the root anchor, date, categorized sub-branches, and connected family links with one-click print/save-as-PDF dialog.
+
+#### 11.8 Client-Side Gallery Cache & Scroll Restoration (`usePeople.jsx`)
+
+To ensure seamless navigation between the People grid and individual photo galleries:
+* `personGalleryCache` stores `{ files, offset, startOffset, hasMore, scrollTop }` keyed by `personId`.
+* Navigating back from a person's photos (`savePersonScroll`) records the exact scroll offset in memory.
+* Returning to that person immediately restores all previously loaded photos and scrolls smoothly to the last viewed position without restarting from offset 0.
+
+---
+
+### 12. Multi-Layer Security Architecture & Authentication
+
+To protect sensitive personal archives (messages, documents, face embeddings, and photos) against unauthorized local network access, browser-based exfiltration, and physical device snooping, WABS employs a defense-in-depth security model across four operational tiers:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. Network Layer: Strict 127.0.0.1 Binding (Optional LAN)    │
+├─────────────────────────────────────────────────────────────┤
+│ 2. Browser & CORS Layer: Strict Origin Regex Filtering       │
+├─────────────────────────────────────────────────────────────┤
+│ 3. App Access & Session Layer: PBKDF2 Master PIN + Tokens    │
+├─────────────────────────────────────────────────────────────┤
+│ 4. Privacy & Data Layer: AI PII Redaction & Cache Management │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 12.1 Network Layer Isolation (`run.py`)
+
+* **Default Localhost Binding**: The Uvicorn HTTP server binds strictly to `127.0.0.1` by default. This ensures that machines on the same local Wi-Fi / Ethernet subnet cannot connect to the server.
+* **Controlled LAN Access (`allow_lan_access`)**: Remote access (binding to `0.0.0.0`) can be toggled in Settings. When enabled, startup alerts notify the user of the external IP address and port (`http://<local-ip>:8000`).
+
+#### 12.2 CORS & Cross-Origin Regex Enforcement (`main.py`)
+
+* **Wildcard Elimination**: Removes permissive `allow_origins=["*"]` defaults.
+* **Local Origin Regex**: When LAN access is disabled, CORS middleware enforces an exact regular expression:
+  ```python
+  allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$"
+  ```
+  This restricts cross-origin `fetch()` / `XMLHttpRequest` calls strictly to local browser contexts while blocking arbitrary external web tabs from querying WABS in the background.
+
+#### 12.3 Cryptographic PIN Derivation & Storage (`security.py`)
+
+* **Algorithm**: `PBKDF2-HMAC-SHA256` with **100,000 iterations** and a cryptographically secure 16-byte random salt (`secrets.token_bytes(16)`).
+* **Numeric Format Enforcement**: PINs are strictly constrained to numeric digits (`0-9`, 4 to 12 digits). Non-digit characters are stripped on the frontend and rejected with HTTP 400 on the backend.
+* **Constant-Time Comparison**: PIN verification utilizes `secrets.compare_digest` to prevent timing attacks.
+* **Storage**: Salt and derived hash are hex-encoded and stored in `config.yaml` (`security_pin_salt`, `security_pin_hash`). The plain-text PIN is never stored on disk or cached in memory.
+
+#### 12.4 Session Token Management & Strict Revocation Lifecycle
+
+* **Session Token Generation**: On successful PIN authentication or setup, a 32-byte URL-safe cryptographically random token is generated (`secrets.token_urlsafe(32)`).
+* **Token Expiry**: Tokens are valid for up to 14 days and managed in an in-memory session registry (`ACTIVE_SESSIONS`).
+* **Header Transmission**: The frontend transmits the token via the `X-Session-Token` HTTP header (or `Authorization: Bearer <token>`).
+* **Strict Revocation on Lock**: When the user clicks **Lock** or the **Inactivity Auto-Lock** timer expires, the frontend immediately posts to `POST /auth/logout` and wipes `wabs_session_token` from both `localStorage` and `sessionStorage`. This guarantees that refreshing the page, opening from the System Tray, or connecting from another device cannot access the archive without entering the PIN.
+* **Global Invalidation**: Modifying or disabling the Master PIN immediately invalidates all active session tokens across all devices.
+
+#### 12.5 Anti-Brute Force Rate Limiting
+
+* **Failure Tracking**: Tracks consecutive failed PIN attempts per client IP within a sliding 5-minute window (`LOCKOUT_DURATION_SECONDS = 300`).
+* **Lockout Enforcement**: After **5 failed attempts**, the server responds with `HTTP 429 Too Many Requests` and a remaining seconds countdown.
+* **Lockout Reset**: Successfully authenticating with the valid PIN immediately resets the failed attempt counter.
+
+#### 12.6 API Middleware Protection & Interception Flow
+
+* **Protected API Endpoints**: All data-exposing and administrative routes (`/files`, `/indexer`, `/search`, `/documents`, `/people`, `/tags`, `/system`, `/virtual-folders`, `/stats`, `/directories`, `/settings`, `/thumbnail`, `/preview`, `/view`, etc.) are intercepted by `security_auth_middleware`.
+* **Public Route Exclusions**: Static asset mounts (`/assets/*`), frontend entrypoints (`/`, HTML pages, `/favicon.ico`), and auth status endpoints (`/auth/status`, `/auth/setup`, `/auth/login`) are excluded so the frontend SPA can load and render the Lock Screen modal seamlessly.
+* **Unauthorized Rejection**: Missing or invalid tokens return `HTTP 401 Unauthorized` with a JSON payload, prompting the frontend to display the Lock Screen.
+
+#### 12.7 Inactivity Auto-Lock & UI Integration (`App.jsx` / `LockScreen.jsx`)
+
+* **Event Listeners**: Activity listeners (`mousemove`, `keydown`, `touchstart`, `scroll`) continuously refresh the user's active timestamp.
+* **Idle Timeout**: If user inactivity exceeds `auto_lock_minutes` (configurable: 5m, 15m, 30m, 1h, Never), the frontend locks the workspace, revokes the session token, and displays `LockScreen.jsx`.
+* **Axios Interceptor**: Automatically catches `401 Unauthorized` responses and fires the `wabs-auth-locked` window event to lock the UI in real-time.
+* **One-Click Manual Lock**: Topbar action button triggers instant logout and session token destruction.
+
+#### 12.8 AI Privacy & PII Redaction (`security.py` & `indexer.py`)
+
+* When `ai_redact_personal_info` is enabled, an automated regex sanitization pipeline masks:
+  - Phone numbers (`[PHONE REDACTED]`)
+  - Email addresses (`[EMAIL REDACTED]`)
+  - IP addresses (`[IP REDACTED]`)
+* Sanitization executes before file classification prompts or metadata are transmitted to external LLM providers (e.g. OpenAI).
+
+#### 12.9 Background Indexing Behavior When Locked
+
+* **Persistent Server Worker Execution**: All background workers (file discovery, thumbnail generation, face clustering, object scanning, OCR text extraction, lazy duplicate hashing) run as daemonized Python threads on the local machine.
+* **Uninterrupted Progress**: When the user locks the application, ongoing background scans continue running to completion safely on the server without interruption.
+* **Data Access Quarantine**: While locked, all data retrieval APIs (`/files`, `/indexer/status`, `/search`) return 401 to unauthenticated network clients, preventing anyone from viewing or modifying files.
+* **Instant State Synchronization**: As soon as the user enters the PIN, the frontend automatically re-authenticates and pulls the latest real-time indexing progress and updated statistics.
+
+#### 12.10 Automated Security Test Suite (`tests/test_security.py`)
+
+A dedicated 5-stage test suite validates the security architecture:
+1. **PBKDF2 Hashing & Verification**: Tests unique salting, matching validations, and negative assertions.
+2. **Numeric PIN & Format Validation**: Tests digit-only requirements and 4-12 length boundary assertions.
+3. **Session Token Lifecycle**: Tests generation, validation, single revocation, and global flush.
+4. **Anti-Brute Force Protection**: Asserts non-lockout on <5 attempts and verified lockout on attempt 5.
+5. **PII Masking**: Validates regex redaction against mixed text samples.
+6. **API Authorization & Status Flow**: Exercises setup, 401 blocks, login token generation, protected 200 responses, PIN change invalidations, and PIN disable flows.

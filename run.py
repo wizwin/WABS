@@ -46,17 +46,31 @@ def get_local_ip():
         return "127.0.0.1"
 
 def on_startup(port, show_info=False, open_browser=True):
+    try:
+        from backend.app.config import load_config
+        cfg = load_config()
+        allow_lan = cfg.get("allow_lan_access", False)
+    except Exception:
+        allow_lan = False
+
     ip = get_local_ip()
     # Automatically open the user's default web browser locally
     if open_browser:
         webbrowser.open(f"http://127.0.0.1:{port}")
     
     if show_info:
-        info_text = (
-            "WABS is now running in the background.\n\n"
-            f"Access on this PC: http://127.0.0.1:{port}\n"
-            f"Access on your phone: http://{ip}:{port}"
-        )
+        if allow_lan:
+            info_text = (
+                "WABS is running in the background (LAN Access: ENABLED).\n\n"
+                f"Access on this PC: http://127.0.0.1:{port}\n"
+                f"Access on your phone: http://{ip}:{port}"
+            )
+        else:
+            info_text = (
+                "WABS is running in secure local mode.\n\n"
+                f"Access on this PC: http://127.0.0.1:{port}\n\n"
+                "(LAN access is disabled for security. Enable in Settings if you want to access from your phone)"
+            )
         try:
             import tkinter as tk
             from tkinter import messagebox
@@ -337,10 +351,19 @@ if __name__ == "__main__":
             print("Invalid port specified. Using default 8000.")
             port = 8000
 
+    try:
+        from backend.app.config import load_config
+        cfg = load_config()
+        allow_lan = cfg.get("allow_lan_access", False)
+    except Exception:
+        allow_lan = False
+
+    bind_host = "0.0.0.0" if allow_lan else "127.0.0.1"
+
     # Check if port is already in use to prevent duplicate launches
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("0.0.0.0", port))
+            s.bind((bind_host, port))
     except OSError:
         msg = f"Port {port} is already in use.\nAnother instance of WABS or another application is already running."
         print(f"Error: {msg}", file=sys.stderr, flush=True)
@@ -360,7 +383,7 @@ if __name__ == "__main__":
 
     # We instantiate the server manually to gain access to the server object
     # for a graceful shutdown.
-    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
+    config = uvicorn.Config(app, host=bind_host, port=port, log_level="info")
     server = uvicorn.Server(config)
 
     # Attach the server object to the app's state so it can be accessed from endpoints

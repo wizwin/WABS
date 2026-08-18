@@ -6,12 +6,47 @@ export const VERSION = '1.2.0';
 // Use relative path in production to support network IPs, fallback to localhost for Vite dev server
 export const API = window.location.port === '5173' ? 'http://127.0.0.1:8000' : '';
 
+export function getSessionToken() {
+  return sessionStorage.getItem('wabs_session_token') || localStorage.getItem('wabs_session_token') || '';
+}
+
+export function setSessionToken(token, persist = true) {
+  if (token) {
+    sessionStorage.setItem('wabs_session_token', token);
+    if (persist) {
+      localStorage.setItem('wabs_session_token', token);
+    }
+  } else {
+    sessionStorage.removeItem('wabs_session_token');
+    localStorage.removeItem('wabs_session_token');
+  }
+}
+
+// Global Axios Request Interceptor to attach X-Session-Token
+axios.interceptors.request.use((config) => {
+  const token = getSessionToken();
+  if (token) {
+    config.headers = config.headers || {};
+    config.headers['X-Session-Token'] = token;
+  }
+  return config;
+});
+
 // Global Axios Interceptor to automatically retry requests if the SQLite database is locked
+// and trigger lock screen on 401 Unauthorized responses
 axios.interceptors.response.use(
   (response) => response,
   async (error) => {
     const config = error.config;
+    const url = config?.url || "";
     const errorDetail = error.response?.data?.detail?.toLowerCase() || "";
+
+    if (error.response && error.response.status === 401) {
+      if (!url.includes('/auth/login') && !url.includes('/auth/change-pin') && !url.includes('/auth/disable-pin')) {
+        window.dispatchEvent(new CustomEvent('wabs-auth-locked', { detail: { reason: 'unauthorized' } }));
+      }
+    }
+
     if (error.response && error.response.status === 500 && errorDetail.includes("locked")) {
       config._retryCount = config._retryCount || 0;
       if (config._retryCount < 3) {

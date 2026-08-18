@@ -29,7 +29,7 @@ except Exception:
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 from fastapi.staticfiles import StaticFiles
 
@@ -42,7 +42,9 @@ from backend.app.routes.tags import router as tags_router
 from backend.app.routes.documents import router as documents_router
 from backend.app.routes.people import router as people_router
 from backend.app.routes.virtual_folders import router as virtual_folders_router
+from backend.app.routes.auth import router as auth_router
 import backend.app.shared_state as shared_state
+from backend.app.utils.security import is_security_pin_enabled, validate_session, clear_thumbnail_cache
 
 try:
     from backend.app.database import SessionLocal, FileIndex
@@ -69,6 +71,7 @@ app.include_router(tags_router)
 app.include_router(documents_router)
 app.include_router(people_router)
 app.include_router(virtual_folders_router)
+app.include_router(auth_router)
 
 import asyncio
 
@@ -167,6 +170,13 @@ def graceful_os_shutdown():
     try:
         from backend.app.utils.memory import unload_heavy_modules
         unload_heavy_modules()
+    except Exception:
+        pass
+
+    try:
+        cfg = load_config()
+        if cfg.get("clear_cache_on_exit", False):
+            clear_thumbnail_cache()
     except Exception:
         pass
 
@@ -269,12 +279,90 @@ async def track_activity_and_cache(request: Request, call_next):
                 response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"]
+# API endpoints that access or modify personal archive data
+PROTECTED_API_PREFIXES = (
+    "/files",
+    "/indexer",
+    "/search",
+    "/documents",
+    "/people",
+    "/tags",
+    "/system",
+    "/virtual-folders",
+    "/stats",
+    "/directories",
+    "/settings",
+    "/thumbnail",
+    "/preview",
+    "/view",
+    "/stream",
+    "/transcode",
+    "/open-with-default",
+    "/locate-file",
+    "/export",
+    "/backup",
+    "/restore",
+    "/choose-path",
+    "/clear-cache",
+    "/save-settings",
 )
+
+@app.middleware("http")
+async def security_auth_middleware(request: Request, call_next):
+    # Allow CORS preflight requests
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    path = request.url.path
+
+    # Only enforce token authentication on protected API endpoints when PIN is active
+    is_protected_api = any(
+        path == prefix or path.startswith(prefix + "/") or path.startswith(prefix + "?")
+        for prefix in PROTECTED_API_PREFIXES
+    )
+
+    if is_protected_api and is_security_pin_enabled():
+        token = request.headers.get("X-Session-Token")
+        if not token:
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                token = auth_header[7:]
+
+        if not token or not validate_session(token):
+            client_ip = request.client.host if request.client else "127.0.0.1"
+            import logging
+            logging.getLogger("wabs.security").warning(
+                f"[Security] Blocked unauthenticated request to protected API: '{path}' from '{client_ip}'"
+            )
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required. Application is locked."}
+            )
+
+    return await call_next(request)
+
+try:
+    _cfg = load_config()
+    _allow_lan = _cfg.get("allow_lan_access", False)
+except Exception:
+    _allow_lan = False
+
+if _allow_lan:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"]
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"]
+    )
 @app.on_event("startup")
 def startup_event():
     import logging

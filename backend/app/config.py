@@ -62,7 +62,13 @@ DEFAULT = {
     "auto_run_on_startup": False,
     "idle_unload_timeout_seconds": 1800,
     "me_name": "",
-    "people_category_filter": "all"
+    "people_category_filter": "all",
+    "allow_lan_access": False,
+    "security_pin_hash": "",
+    "security_pin_salt": "",
+    "auto_lock_minutes": 15,
+    "ai_redact_personal_info": True,
+    "clear_cache_on_exit": False
 }
 
 def _get_machine_key():
@@ -108,12 +114,28 @@ def _decode_key(encoded_str):
     except Exception:
         return ""
 
-def load_config():
-    if not CFG.exists():
-        save_config(DEFAULT)
+_CONFIG_CACHE = None
+_CONFIG_MTIME = 0
 
-    with open(CFG,"r") as f:
-        config = yaml.safe_load(f) or {}
+def load_config():
+    global _CONFIG_CACHE, _CONFIG_MTIME
+    try:
+        if CFG.exists():
+            current_mtime = CFG.stat().st_mtime
+            if _CONFIG_CACHE is not None and current_mtime == _CONFIG_MTIME:
+                return dict(_CONFIG_CACHE)
+            with open(CFG, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+            _CONFIG_MTIME = current_mtime
+        else:
+            config = dict(DEFAULT)
+            save_config(config)
+            _CONFIG_CACHE = dict(config)
+            return config
+    except Exception as e:
+        if _CONFIG_CACHE is not None:
+            return dict(_CONFIG_CACHE)
+        config = dict(DEFAULT)
 
     # Flatten legacy ui_preferences if present in existing config
     if "ui_preferences" in config:
@@ -138,14 +160,15 @@ def load_config():
         except Exception:
             pass
 
+    _CONFIG_CACHE = dict(config)
     return config
 
 def save_config(data):
-    # Load existing config or initialize from DEFAULT
+    global _CONFIG_CACHE, _CONFIG_MTIME
     current = {}
     if CFG.exists():
         try:
-            with open(CFG, "r") as f:
+            with open(CFG, "r", encoding="utf-8") as f:
                 current = yaml.safe_load(f) or {}
         except Exception:
             current = {}
@@ -165,8 +188,17 @@ def save_config(data):
 
     current.pop("ui_preferences", None)
 
-    with open(CFG, "w") as f:
-        yaml.dump(current, f, default_flow_style=False, sort_keys=False)
+    try:
+        temp_file = CFG.with_suffix(".tmp")
+        with open(temp_file, "w", encoding="utf-8") as f:
+            yaml.dump(current, f, default_flow_style=False, sort_keys=False)
+        temp_file.replace(CFG)
+        _CONFIG_MTIME = CFG.stat().st_mtime
+    except Exception:
+        with open(CFG, "w", encoding="utf-8") as f:
+            yaml.dump(current, f, default_flow_style=False, sort_keys=False)
+
+    _CONFIG_CACHE = dict(data)
 
 def get_thumbnail_dir(category: str = None) -> Path:
     config = load_config()
