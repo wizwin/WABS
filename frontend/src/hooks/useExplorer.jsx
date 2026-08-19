@@ -441,8 +441,9 @@ export function useExplorer({
   useEffect(() => {
     if (page === 'explorer' || page === 'virtual_folder' || page === 'virtual_folders') {
       loadVirtualFolders();
+      loadDirectories();
     }
-  }, [page]);
+  }, [page, viewType]);
 
   useEffect(() => {
     if (page === 'explorer') {

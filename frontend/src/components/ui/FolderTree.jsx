@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import FolderIcon from '@mui/icons-material/Folder';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -26,30 +26,41 @@ export function FolderTree({
   const [expanded, setExpanded] = useState({});
 
   const toggleExpand = (nodeId) => {
+    if (!nodeId) return;
+    const key = String(nodeId).replace(/\\/g, '/').toLowerCase();
     setExpanded(prev => ({
       ...prev,
-      [nodeId]: !prev[nodeId]
+      [nodeId]: !prev[key],
+      [key]: !prev[key]
     }));
   };
 
   // 1. Build physical folders tree (only folders!)
   const backups = useMemo(() => {
-    return settings?.backup_configs || [{
-      id: 'default',
-      name: 'Default Backup Location',
-      backup_path: settings?.backup_path || ''
-    }];
+    const list = settings?.backup_configs || [];
+    const valid = list.filter(b => b.backup_path && b.backup_path.trim() !== '');
+    if (valid.length > 0) {
+      return valid;
+    }
+    if (settings?.backup_path && settings.backup_path.trim() !== '') {
+      return [{
+        id: 'default',
+        name: 'Default Backup Location',
+        backup_path: settings.backup_path
+      }];
+    }
+    return [];
   }, [settings]);
 
   // 1. Build physical folders tree (only folders!) with backup locations as roots
   const physicalFolderTree = useMemo(() => {
-    // Create a tree node for each backup configuration
+    // Create a tree node for each configured backup location
     const backupsList = backups.map(b => {
       let pathKey = String(b.backup_path || '').replace(/\\/g, '/').toLowerCase();
       if (pathKey.endsWith('/') && pathKey.length > 1) {
         pathKey = pathKey.slice(0, -1);
       }
-      let displayPath = b.backup_path ? String(b.backup_path).replace(/\\/g, '/') : 'root';
+      let displayPath = String(b.backup_path || '').replace(/\\/g, '/');
       if (displayPath.endsWith('/') && displayPath.length > 1) {
         displayPath = displayPath.slice(0, -1);
       }
@@ -62,6 +73,8 @@ export function FolderTree({
         children: {}
       };
     });
+
+    const fallbackRoots = {};
 
     (directories || []).forEach(dirPath => {
       if (!dirPath) return;
@@ -96,54 +109,78 @@ export function FolderTree({
         }
       });
 
-      if (!matchedRoot) {
-        return;
-      }
-
-      // Compute path relative to backup root
-      let relativePath = normalized;
-      if (matchedPathKey) {
-        relativePath = normalized.substring(matchedPathKey.length);
-        if (relativePath.startsWith('/')) {
-          relativePath = relativePath.substring(1);
-        }
-      }
-
-      const parts = relativePath.split('/').filter(Boolean);
-      let current = matchedRoot;
-      let accumulatedPath = matchedRoot.path === 'root' ? '' : matchedRoot.path;
-
-      parts.forEach(part => {
-        if (accumulatedPath) {
-          accumulatedPath += '/' + part;
-        } else {
-          accumulatedPath = part;
+      if (matchedRoot) {
+        // Compute path relative to backup root
+        let relativePath = normalized;
+        if (matchedPathKey) {
+          relativePath = normalized.substring(matchedPathKey.length);
+          if (relativePath.startsWith('/')) {
+            relativePath = relativePath.substring(1);
+          }
         }
 
-        if (!current.children[part]) {
-          current.children[part] = {
-            name: part,
-            path: accumulatedPath,
+        const parts = relativePath.split('/').filter(Boolean);
+        let current = matchedRoot;
+        let accumulatedPath = matchedRoot.path === 'root' ? '' : matchedRoot.path;
+
+        parts.forEach(part => {
+          if (accumulatedPath) {
+            accumulatedPath += '/' + part;
+          } else {
+            accumulatedPath = part;
+          }
+
+          if (!current.children[part]) {
+            current.children[part] = {
+              name: part,
+              path: accumulatedPath,
+              type: 'folder',
+              children: {}
+            };
+          }
+          current = current.children[part];
+        });
+      } else {
+        // Fallback: Group under drive letter / root directory (e.g. C:, D:, /)
+        const parts = normalized.split('/').filter(Boolean);
+        if (parts.length === 0) return;
+
+        const driveName = normalized.startsWith('/') ? '/' + parts[0] : parts[0];
+        const driveKey = driveName.toLowerCase();
+
+        if (!fallbackRoots[driveKey]) {
+          fallbackRoots[driveKey] = {
+            name: driveName,
+            path: driveName,
             type: 'folder',
+            isDriveRoot: true,
             children: {}
           };
         }
-        current = current.children[part];
-      });
-    });
 
-    const activeRoots = [];
-    backupsList.forEach(r => {
-      if (!r.path || r.path === 'root') {
-        if (Object.keys(r.children).length > 0) {
-          activeRoots.push(r);
+        let current = fallbackRoots[driveKey];
+        let accumulatedPath = driveName;
+
+        for (let i = 1; i < parts.length; i++) {
+          const part = parts[i];
+          accumulatedPath += '/' + part;
+          if (!current.children[part]) {
+            current.children[part] = {
+              name: part,
+              path: accumulatedPath,
+              type: 'folder',
+              children: {}
+            };
+          }
+          current = current.children[part];
         }
-      } else {
-        activeRoots.push(r);
       }
     });
 
-
+    const activeRoots = [
+      ...backupsList,
+      ...Object.values(fallbackRoots).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+    ];
 
     return activeRoots;
   }, [directories, backups]);
@@ -210,6 +247,7 @@ export function FolderTree({
         for (let i = 0; i < parts.length - 1; i++) {
           acc = i === 0 ? parts[i] : acc + '/' + parts[i];
           newExpanded[acc] = true;
+          newExpanded[acc.toLowerCase()] = true;
         }
       });
       setExpanded(newExpanded);
@@ -225,8 +263,9 @@ export function FolderTree({
         const next = { ...prev };
         let acc = '';
         for (let i = 0; i < parts.length; i++) {
-          acc = i === 0 ? parts[i] : acc + '/' + parts[i];
+          acc = i === 0 ? (activeFolderPath.startsWith('/') ? '/' + parts[0] : parts[0]) : acc + '/' + parts[i];
           next[acc] = true;
+          next[acc.toLowerCase()] = true;
         }
         return next;
       });
@@ -241,6 +280,7 @@ export function FolderTree({
         let currentId = virtualFolderId;
         while (currentId) {
           next[currentId] = true;
+          next[String(currentId).toLowerCase()] = true;
           const folder = (virtualFolders || []).find(f => f.id === currentId);
           currentId = folder ? folder.parent_id : null;
         }
@@ -252,7 +292,8 @@ export function FolderTree({
   // Recursive folder node renderer
   const renderFolderNode = (node, depth = 0) => {
     const nodeId = node.path || node.id;
-    const isExpanded = !!expanded[nodeId];
+    const nodeKey = nodeId ? String(nodeId).replace(/\\/g, '/').toLowerCase() : '';
+    const isExpanded = !!expanded[nodeId] || !!expanded[nodeKey];
     
     // Check if node has subfolders
     let childrenList = [];
@@ -276,9 +317,9 @@ export function FolderTree({
       FolderIconComponent = ICON_MAP[iconKey] || FolderIcon;
     }
 
-    const isActiveVirtual = page === 'virtual_folder' && node.isVirtual && node.id === virtualFolderId;
+    const isActiveVirtual = page === 'virtual_folder' && node.isVirtual && (node.id === virtualFolderId || String(node.id) === String(virtualFolderId));
     const isCleanActive = isPhys ? (
-      (activeFolderPath === null && node.path === 'root') ||
+      (activeFolderPath === null && (node.path === 'root' || (node.isBackupRoot && !activeFolderPath))) ||
       (activeFolderPath !== null && activeFolderPath.replace(/\\/g, '/').toLowerCase() === (node.path || '').replace(/\\/g, '/').toLowerCase())
     ) : isActiveVirtual;
 
@@ -379,6 +420,25 @@ export function FolderTree({
     }
   }, [isPhys, physicalFolderTree, virtualFolderTree]);
 
+  // 6. Auto-expand root nodes on initial load so the user sees the folder tree
+  const initializedRootsRef = useRef(false);
+  useEffect(() => {
+    if (topLevelNodes && topLevelNodes.length > 0 && !initializedRootsRef.current) {
+      initializedRootsRef.current = true;
+      setExpanded(prev => {
+        const next = { ...prev };
+        topLevelNodes.forEach(node => {
+          const id = node.path || node.id;
+          if (id) {
+            next[id] = true;
+            next[String(id).replace(/\\/g, '/').toLowerCase()] = true;
+          }
+        });
+        return next;
+      });
+    }
+  }, [topLevelNodes]);
+
   const getAllNodeIds = (nodes) => {
     const ids = [];
     const traverse = (node) => {
@@ -405,6 +465,7 @@ export function FolderTree({
     const newExpanded = {};
     ids.forEach(id => {
       newExpanded[id] = true;
+      newExpanded[String(id).replace(/\\/g, '/').toLowerCase()] = true;
     });
     setExpanded(newExpanded);
   };

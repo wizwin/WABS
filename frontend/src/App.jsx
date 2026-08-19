@@ -706,6 +706,8 @@ const handleUnlocked = () => {
   lastUserActivityRef.current = Date.now();
   checkAuthStatus();
   explorer.loadFiles();
+  explorer.loadDirectories();
+  explorer.loadVirtualFolders();
   loadSettings();
   loadDashboard();
   peopleState.loadPeople();
@@ -726,6 +728,8 @@ useEffect(()=>{
  checkAuthStatus().then(status => {
    if (!status?.pin_enabled || status?.is_authenticated) {
      explorer.loadFiles();
+     explorer.loadDirectories();
+     explorer.loadVirtualFolders();
      loadSettings();
      loadDashboard();
      peopleState.loadPeople();

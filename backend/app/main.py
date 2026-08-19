@@ -286,10 +286,12 @@ PROTECTED_API_PREFIXES = (
     "/search",
     "/documents",
     "/people",
+    "/people-connections",
     "/tags",
     "/system",
     "/virtual-folders",
     "/stats",
+    "/timeline",
     "/directories",
     "/settings",
     "/thumbnail",
@@ -305,6 +307,10 @@ PROTECTED_API_PREFIXES = (
     "/choose-path",
     "/clear-cache",
     "/save-settings",
+    "/stop-scan-faces",
+    "/stop-scan-objects",
+    "/stop-scan-documents",
+    "/stop-verify-duplicates",
 )
 
 @app.middleware("http")
