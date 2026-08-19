@@ -268,6 +268,12 @@ export default function AddToFolderModal({
     };
   }, [onClose]);
 
+  React.useEffect(() => {
+    if (isOpen && loadVirtualFolders) {
+      loadVirtualFolders();
+    }
+  }, [isOpen, loadVirtualFolders]);
+
   const toggleExpand = (folderId) => {
     setExpandedFolders(prev => ({
       ...prev,

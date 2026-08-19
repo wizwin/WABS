@@ -439,6 +439,12 @@ export function useExplorer({
   }, []);
 
   useEffect(() => {
+    if (page === 'explorer' || page === 'virtual_folder' || page === 'virtual_folders') {
+      loadVirtualFolders();
+    }
+  }, [page]);
+
+  useEffect(() => {
     if (page === 'explorer') {
       if (suppressNextAutoLoad.current) {
         return;
