@@ -37,14 +37,20 @@ from backend.app.routes.auth import (
 from fastapi import HTTPException
 
 class DummyRequest:
-    def __init__(self, client_ip="127.0.0.1", token=None):
+    def __init__(self, client_ip="127.0.0.1", token=None, cookie_token=None, query_token=None):
         class Client:
             def __init__(self, host):
                 self.host = host
         self.client = Client(client_ip)
         self.headers = {}
+        self.cookies = {}
+        self.query_params = {}
         if token:
             self.headers["X-Session-Token"] = token
+        if cookie_token:
+            self.cookies["wabs_session_token"] = cookie_token
+        if query_token:
+            self.query_params["token"] = query_token
 
 class TestSecurityLayer(unittest.TestCase):
     def setUp(self):
@@ -163,10 +169,16 @@ class TestSecurityLayer(unittest.TestCase):
         self.assertIn("token", setup_res)
         session_token = setup_res["token"]
 
-        # 3. Status with valid token vs without
+        # 3. Status with valid token vs without (test headers, cookies, and query params)
         status_with_token = get_auth_status(DummyRequest(token=session_token))
         self.assertTrue(status_with_token["pin_enabled"])
         self.assertTrue(status_with_token["is_authenticated"])
+
+        status_with_cookie = get_auth_status(DummyRequest(cookie_token=session_token))
+        self.assertTrue(status_with_cookie["is_authenticated"])
+
+        status_with_query = get_auth_status(DummyRequest(query_token=session_token))
+        self.assertTrue(status_with_query["is_authenticated"])
 
         status_without_token = get_auth_status(req_unauth)
         self.assertTrue(status_without_token["pin_enabled"])

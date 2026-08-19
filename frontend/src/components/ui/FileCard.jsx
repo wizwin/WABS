@@ -87,7 +87,13 @@ export function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, on
     );
   }
 
-  let currentSrc = imgError ? renderThumb({ ...item, thumbnail: null }) : renderThumb(item);
+  const isGif = Boolean(
+    (item.extension && item.extension.toLowerCase().includes('gif')) ||
+    (item.filename && item.filename.toLowerCase().endsWith('.gif')) ||
+    (item.path && item.path.toLowerCase().endsWith('.gif'))
+  );
+
+  let currentSrc = imgError ? renderThumb({ ...item, thumbnail: null }) : renderThumb(item, { animated: isGif && isHovered });
   if (!imgError && retryKey > 0 && !currentSrc.startsWith('data:')) {
       currentSrc += (currentSrc.includes('?') ? '&' : '?') + `retry=${retryKey}`;
   }

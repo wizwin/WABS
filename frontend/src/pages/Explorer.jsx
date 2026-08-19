@@ -29,6 +29,40 @@ import { LocateButton } from '../components/ui/LocateButton';
 
 import { API, formatSize, parseFileDate, dateFormatter, validateFolderName } from '../States';
 
+function HoverableImage({ item, renderThumb, style, onClick, title, className }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [item?.thumbnail, item?.path]);
+
+  if (!item) return null;
+
+  const isGif = Boolean(
+    (item.extension && item.extension.toLowerCase().includes('gif')) ||
+    (item.filename && item.filename.toLowerCase().endsWith('.gif')) ||
+    (item.path && item.path.toLowerCase().endsWith('.gif'))
+  );
+
+  const src = imgError
+    ? renderThumb({ ...item, thumbnail: null })
+    : renderThumb(item, { animated: isGif && isHovered });
+
+  return (
+    <img
+      src={src}
+      className={className}
+      style={style}
+      title={title}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      onClick={onClick}
+      onError={() => setImgError(true)}
+    />
+  );
+}
+
 export default function Explorer(props) {
   const { 
     page, showTimeline, showTreeView, viewType, setViewType, timelineWidth, timelineItems, activeDate, settings,
@@ -782,7 +816,7 @@ export default function Explorer(props) {
         <div style={{ margin: '10px 18px', background: '#1e293b', padding: '12px 16px', borderRadius: '12px', border: '1px solid #334155' }}>
             <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc' }}>Duplicate Verification Progress</span>
             <ProgressBar current={indexer.hasher_current} total={indexer.hasher_total} color="#10b981" />
-            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left' }}>{indexer.hasher_current_file || ''}</div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{indexer.hasher_current_file || ''}</div>
         </div>
         )}
 
@@ -1315,10 +1349,10 @@ export default function Explorer(props) {
             <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#f8fafc' }}><b>Sample Photos</b></p>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
             {personPreviewPhotos.map(photo => (
-                <img 
+                <HoverableImage
                 key={photo.path} 
-                src={renderThumb(photo)} 
-                        onError={(e) => { e.target.onerror = null; e.target.src = renderThumb({ ...photo, thumbnail: null }) }}
+                item={photo}
+                renderThumb={renderThumb}
                 style={{ width: '100%', height: '80px', objectFit: 'cover', borderRadius: '8px', cursor: 'pointer', border: '1px solid #334155' }} 
                 onClick={() => openFile(photo.path)}
                 title={photo.filename}
@@ -1331,8 +1365,9 @@ export default function Explorer(props) {
         ) : (
         <div>
 
-        <img
-        src={renderThumb(selected)}
+        <HoverableImage
+        item={selected}
+        renderThumb={renderThumb}
         style={{
         width:'100%',
         borderRadius:'12px',
@@ -1340,7 +1375,6 @@ export default function Explorer(props) {
         }}
         key={selected.path}
         onClick={()=>openFile(selected.path)}
-                onError={(e) => { e.target.onerror = null; e.target.src = renderThumb({ ...selected, thumbnail: null }) }}
         />
 
         <h2>{selected.filename}</h2>

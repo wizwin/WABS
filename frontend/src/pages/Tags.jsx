@@ -57,7 +57,7 @@ export default function Tags(props) {
         <div style={{ marginBottom: '20px', background: '#1e293b', padding: '12px 16px', borderRadius: '12px', border: '1px solid #334155' }}>
             <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc' }}>Object Scanner Progress</span>
             <ProgressBar current={indexer.object_scanner_current} total={indexer.object_scanner_total} color="#f59e0b" />
-            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left' }}>{indexer.object_scanner_current_file || ''}</div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{indexer.object_scanner_current_file || ''}</div>
         </div>
         )}
 
@@ -160,7 +160,7 @@ export default function Tags(props) {
         <div style={{ marginBottom: '20px', background: '#1e293b', padding: '12px 16px', borderRadius: '12px', border: '1px solid #334155' }}>
             <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc' }}>Text Extractor Progress</span>
             <ProgressBar current={indexer.document_scanner_current} total={indexer.document_scanner_total} color="#ec4899" />
-            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left' }}>{indexer.document_scanner_current_file || ''}</div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{indexer.document_scanner_current_file || ''}</div>
         </div>
         )}
 

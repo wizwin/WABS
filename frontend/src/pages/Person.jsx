@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
@@ -16,6 +16,40 @@ import { PersonThumb } from '../components/ui/PersonThumb';
 import { SelectionBar } from '../components/ui/SelectionBar';
 import AddToFolderModal from '../components/ui/AddToFolderModal';
 import { API, formatSize } from '../States';
+
+function HoverableImage({ item, renderThumb, style, onClick, title, className }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [item?.thumbnail, item?.path]);
+
+  if (!item) return null;
+
+  const isGif = Boolean(
+    (item.extension && item.extension.toLowerCase().includes('gif')) ||
+    (item.filename && item.filename.toLowerCase().endsWith('.gif')) ||
+    (item.path && item.path.toLowerCase().endsWith('.gif'))
+  );
+
+  const src = imgError
+    ? renderThumb({ ...item, thumbnail: null })
+    : renderThumb(item, { animated: isGif && isHovered });
+
+  return (
+    <img
+      src={src}
+      className={className}
+      style={style}
+      title={title}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      onClick={onClick}
+      onError={() => setImgError(true)}
+    />
+  );
+}
 
 export default function Person(props) {
   const { 
@@ -951,10 +985,10 @@ export default function Person(props) {
             <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#f8fafc' }}><b>Sample Photos</b></p>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
             {personPreviewPhotos.map(photo => (
-                <img 
+                <HoverableImage 
                 key={photo.path} 
-                src={renderThumb(photo)} 
-                        onError={(e) => { e.target.onerror = null; e.target.src = renderThumb({ ...photo, thumbnail: null }) }}
+                item={photo}
+                renderThumb={renderThumb}
                 style={{ width: '100%', height: '80px', objectFit: 'cover', borderRadius: '8px', cursor: 'pointer', border: '1px solid #334155' }} 
                 onClick={() => openFile(photo.path)}
                 title={photo.filename}
@@ -967,8 +1001,9 @@ export default function Person(props) {
         ) : (
         <div>
 
-        <img
-        src={renderThumb(selected)}
+        <HoverableImage
+        item={selected}
+        renderThumb={renderThumb}
         style={{
         width:'100%',
         borderRadius:'12px',
@@ -976,7 +1011,6 @@ export default function Person(props) {
         }}
         key={selected.path}
         onClick={()=>openFile(selected.path)}
-                onError={(e) => { e.target.onerror = null; e.target.src = renderThumb({ ...selected, thumbnail: null }) }}
         />
 
         <h2>{selected.filename}</h2>

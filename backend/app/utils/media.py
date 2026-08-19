@@ -22,40 +22,53 @@ def get_cv2_dnn_backends():
 
 def generate_photo_thumbnail(file_path: Path, cached_thumb: Path) -> bool:
     success = False
-    try:
-        import cv2
-    except ImportError:
-        cv2 = None
-    if cv2 is not None:
+    is_gif = file_path.suffix.lower() == ".gif"
+    if not is_gif:
         try:
-            import numpy as np
-            with open(file_path, 'rb') as f:
-                img_array = np.frombuffer(f.read(), np.uint8)
-            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-            if img is not None:
-                height, width = img.shape[:2]
-                scaling_factor = min(400 / width, 400 / height)
-                if scaling_factor < 1.0:
-                    new_size = (int(width * scaling_factor), int(height * scaling_factor))
-                    resized_img = cv2.resize(img, new_size, interpolation=cv2.INTER_AREA)
-                else:
-                    resized_img = img
-                    
-                is_success, buffer = cv2.imencode(".jpg", resized_img)
-                if is_success:
-                    with open(str(cached_thumb), "wb") as f:
-                        f.write(buffer.tobytes())
-                    success = True
-        except Exception as e:
-            print(f"OpenCV photo cache failed for {file_path.name}: {e}")
+            import cv2
+        except ImportError:
+            cv2 = None
+        if cv2 is not None:
+            try:
+                import numpy as np
+                with open(file_path, 'rb') as f:
+                    img_array = np.frombuffer(f.read(), np.uint8)
+                img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                if img is not None:
+                    height, width = img.shape[:2]
+                    scaling_factor = min(400 / width, 400 / height)
+                    if scaling_factor < 1.0:
+                        new_size = (int(width * scaling_factor), int(height * scaling_factor))
+                        resized_img = cv2.resize(img, new_size, interpolation=cv2.INTER_AREA)
+                    else:
+                        resized_img = img
+                        
+                    is_success, buffer = cv2.imencode(".jpg", resized_img)
+                    if is_success:
+                        with open(str(cached_thumb), "wb") as f:
+                            f.write(buffer.tobytes())
+                        success = True
+            except Exception as e:
+                print(f"OpenCV photo cache failed for {file_path.name}: {e}")
             
     if not success:
         try:
             from PIL import Image, ImageOps
             with Image.open(file_path) as pil_img:
-                pil_img = ImageOps.exif_transpose(pil_img)
-                if pil_img.mode != 'RGB':
+                try:
+                    pil_img.seek(0)
+                except Exception:
+                    pass
+                if pil_img.mode in ('RGBA', 'LA') or (pil_img.mode == 'P' and 'transparency' in pil_img.info):
+                    bg = Image.new("RGB", pil_img.size, (255, 255, 255))
+                    if pil_img.mode == 'P':
+                        pil_img = pil_img.convert('RGBA')
+                    mask = pil_img.split()[3] if pil_img.mode == 'RGBA' else pil_img.split()[1]
+                    bg.paste(pil_img, mask=mask)
+                    pil_img = bg
+                elif pil_img.mode != 'RGB':
                     pil_img = pil_img.convert('RGB')
+                pil_img = ImageOps.exif_transpose(pil_img)
                 pil_img.thumbnail((400, 400), Image.Resampling.LANCZOS)
                 pil_img.save(str(cached_thumb), "JPEG", quality=85)
                 success = True

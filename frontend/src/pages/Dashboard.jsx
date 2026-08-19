@@ -87,7 +87,7 @@ export default function Dashboard(props) {
             <ProgressBar current={indexer.current} total={indexer.total} color="#3b82f6" />
             <div style={{marginTop: '12px', display: 'flex', gap: '6px', alignItems: 'center'}}>
             <b style={{whiteSpace: 'nowrap'}}>Current File:</b>
-            <span style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', flex: 1, minWidth: 0, color: '#94a3b8', fontSize: '13px'}}>{indexer.current_file || '—'}</span>
+            <span style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0, color: '#94a3b8', fontSize: '13px'}}>{indexer.current_file || '—'}</span>
             </div>
         </>
         )}
@@ -139,7 +139,7 @@ export default function Dashboard(props) {
         {indexer.hasher_stopped ? 'Stopping Hash Verification...' : 'Stop Hash Verification'}
         </ActionButton>
         <ProgressBar current={indexer.hasher_current} total={indexer.hasher_total} color="#10b981" />
-        <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.hasher_current_file || ''}</div>
+        <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: '4px' }}>{indexer.hasher_current_file || ''}</div>
         </>
         ) : (
         <ActionButton disabled={isTaskActive} onClick={verifyDuplicates} style={{ width: '100%' }}>
@@ -154,7 +154,7 @@ export default function Dashboard(props) {
         {indexer.face_scanner_stopped ? 'Stopping Face Scan...' : 'Stop Face Scan'}
         </ActionButton>
         <ProgressBar current={indexer.face_scanner_current} total={indexer.face_scanner_total} color="#8b5cf6" />
-        <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.face_scanner_current_file || ''}</div>
+        <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: '4px' }}>{indexer.face_scanner_current_file || ''}</div>
         </>
         ) : (
         <ActionButton disabled={isTaskActive} onClick={startFaceScan} style={{ width: '100%' }}>
@@ -169,7 +169,7 @@ export default function Dashboard(props) {
         {indexer.object_scanner_stopped ? 'Stopping Object Scan...' : 'Stop Object Scan'}
         </ActionButton>
         <ProgressBar current={indexer.object_scanner_current} total={indexer.object_scanner_total} color="#f59e0b" />
-        <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.object_scanner_current_file || ''}</div>
+        <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: '4px' }}>{indexer.object_scanner_current_file || ''}</div>
         </>
         ) : (
         <ActionButton disabled={isTaskActive} onClick={startObjectScan} style={{ width: '100%' }}>
@@ -184,7 +184,7 @@ export default function Dashboard(props) {
         {indexer.document_scanner_stopped ? 'Stopping Text Extraction...' : 'Stop Text Extraction'}
         </ActionButton>
         <ProgressBar current={indexer.document_scanner_current} total={indexer.document_scanner_total} color="#ec4899" />
-        <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginTop: '4px' }}>{indexer.document_scanner_current_file || ''}</div>
+        <div style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: '4px' }}>{indexer.document_scanner_current_file || ''}</div>
         </>
         ) : (
         <ActionButton disabled={isTaskActive} onClick={startDocumentScan} style={{ width: '100%' }} title="Extract content from PDFs, documents, and photos so they appear in search results">

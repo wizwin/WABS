@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, Request, HTTPException, Header, Depends
+from fastapi import APIRouter, Request, Response, HTTPException, Header, Depends
 from pydantic import BaseModel
 from typing import Optional
 
@@ -28,12 +28,19 @@ def get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "127.0.0.1"
 
 def extract_token(request: Request) -> Optional[str]:
-    # Check X-Session-Token header or Authorization header
+    # 1. Check X-Session-Token header
     token = request.headers.get("X-Session-Token")
     if not token:
+        # 2. Check Authorization header
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
             token = auth_header[7:]
+    if not token:
+        # 3. Check Cookie (sent automatically by browser with <img>, <video>, <audio>, <a> tags)
+        token = request.cookies.get("wabs_session_token")
+    if not token:
+        # 4. Check Query parameter
+        token = request.query_params.get("token") or request.query_params.get("session_token")
     return token
 
 class PinSetupRequest(BaseModel):
@@ -76,7 +83,7 @@ def get_auth_status(request: Request):
     }
 
 @router.post("/setup")
-def setup_pin(payload: PinSetupRequest, request: Request):
+def setup_pin(payload: PinSetupRequest, request: Request, response: Response = None):
     client_ip = get_client_ip(request)
     if is_security_pin_enabled():
         logger.warning(f"[Auth] PIN setup rejected for '{client_ip}': PIN already configured.")
@@ -96,10 +103,12 @@ def setup_pin(payload: PinSetupRequest, request: Request):
     logger.info(f"[Auth] Master PIN successfully initialized and enabled from '{client_ip}'.")
     # Automatically issue session token upon successful setup
     token = create_session(client_ip)
+    if response:
+        response.set_cookie(key="wabs_session_token", value=token, max_age=14 * 86400, path="/", samesite="lax")
     return {"status": "success", "message": "Security PIN enabled successfully.", "token": token}
 
 @router.post("/login")
-def login_pin(payload: PinLoginRequest, request: Request):
+def login_pin(payload: PinLoginRequest, request: Request, response: Response = None):
     client_ip = get_client_ip(request)
     is_locked, remaining_seconds = check_lockout(client_ip)
     if is_locked:
@@ -111,6 +120,8 @@ def login_pin(payload: PinLoginRequest, request: Request):
 
     if not is_security_pin_enabled():
         token = create_session(client_ip)
+        if response:
+            response.set_cookie(key="wabs_session_token", value=token, max_age=14 * 86400, path="/", samesite="lax")
         return {"status": "success", "token": token}
 
     pin_candidate = payload.pin.strip()
@@ -124,6 +135,8 @@ def login_pin(payload: PinLoginRequest, request: Request):
     if verify_pin(pin_candidate, stored_hash, stored_salt):
         reset_failed_attempts(client_ip)
         token = create_session(client_ip)
+        if response:
+            response.set_cookie(key="wabs_session_token", value=token, max_age=14 * 86400, path="/", samesite="lax")
         logger.info(f"[Auth] Master PIN successfully verified. Session granted to '{client_ip}'.")
         return {"status": "success", "token": token}
     else:
@@ -139,16 +152,18 @@ def login_pin(payload: PinLoginRequest, request: Request):
         raise HTTPException(status_code=401, detail="Incorrect PIN. Please try again.")
 
 @router.post("/logout")
-def logout(request: Request):
+def logout(request: Request, response: Response = None):
     client_ip = get_client_ip(request)
     token = extract_token(request)
     if token:
         revoke_session(token)
         logger.info(f"[Auth] Session explicitly terminated by client '{client_ip}'.")
+    if response:
+        response.delete_cookie(key="wabs_session_token", path="/")
     return {"status": "success", "message": "Logged out successfully."}
 
 @router.post("/change-pin")
-def change_pin(payload: PinChangeRequest, request: Request):
+def change_pin(payload: PinChangeRequest, request: Request, response: Response = None):
     client_ip = get_client_ip(request)
     if not is_security_pin_enabled():
         raise HTTPException(status_code=400, detail="Security PIN is not enabled.")
@@ -174,13 +189,17 @@ def change_pin(payload: PinChangeRequest, request: Request):
     # Invalidate old sessions and issue new session token
     revoke_all_sessions()
     token = create_session(client_ip)
+    if response:
+        response.set_cookie(key="wabs_session_token", value=token, max_age=14 * 86400, path="/", samesite="lax")
     logger.info(f"[Auth] Master PIN updated by '{client_ip}'. All existing sessions revoked.")
     return {"status": "success", "message": "PIN updated successfully.", "token": token}
 
 @router.post("/disable-pin")
-def disable_pin(payload: PinDisableRequest, request: Request):
+def disable_pin(payload: PinDisableRequest, request: Request, response: Response = None):
     client_ip = get_client_ip(request)
     if not is_security_pin_enabled():
+        if response:
+            response.delete_cookie(key="wabs_session_token", path="/")
         return {"status": "success", "message": "PIN is already disabled."}
 
     cfg = load_config()
@@ -197,6 +216,8 @@ def disable_pin(payload: PinDisableRequest, request: Request):
     invalidate_security_cache()
 
     revoke_all_sessions()
+    if response:
+        response.delete_cookie(key="wabs_session_token", path="/")
     logger.info(f"[Auth] Master PIN protection has been disabled by '{client_ip}'.")
     return {"status": "success", "message": "Security PIN disabled."}
 

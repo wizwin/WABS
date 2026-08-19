@@ -497,7 +497,7 @@ export default function Settings(props) {
                             <div>
                                 <span style={{ fontWeight: '500' }}>Allow Local Network (LAN / Wi-Fi) Connections</span>
                                 <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8', lineHeight: '1.4' }}>
-                                    <strong>Default: Disabled (127.0.0.1 - Localhost Only).</strong> When disabled, WABS is completely inaccessible to other devices on your Wi-Fi network. Check this only if you want to browse WABS from your mobile phone or tablet on your home network.
+                                    <strong>Default: Disabled (127.0.0.1 - Localhost Only).</strong> When disabled, WABS is completely inaccessible to other devices on your Wi-Fi network. Check this only if you want to browse WABS from your mobile phone or tablet on your home network. <em>(Note: Requires restarting WABS for the network socket rebinding to take effect.)</em>
                                 </p>
                             </div>
                         </label>

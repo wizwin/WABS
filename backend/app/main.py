@@ -327,6 +327,10 @@ async def security_auth_middleware(request: Request, call_next):
             auth_header = request.headers.get("Authorization")
             if auth_header and auth_header.startswith("Bearer "):
                 token = auth_header[7:]
+        if not token:
+            token = request.cookies.get("wabs_session_token")
+        if not token:
+            token = request.query_params.get("token") or request.query_params.get("session_token")
 
         if not token or not validate_session(token):
             client_ip = request.client.host if request.client else "127.0.0.1"

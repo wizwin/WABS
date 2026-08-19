@@ -16,11 +16,25 @@ export function setSessionToken(token, persist = true) {
     if (persist) {
       localStorage.setItem('wabs_session_token', token);
     }
+    try {
+      document.cookie = `wabs_session_token=${encodeURIComponent(token)}; path=/; SameSite=Lax; max-age=${14 * 86400}`;
+    } catch (e) {}
   } else {
     sessionStorage.removeItem('wabs_session_token');
     localStorage.removeItem('wabs_session_token');
+    try {
+      document.cookie = 'wabs_session_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax';
+    } catch (e) {}
   }
 }
+
+// Sync existing session token to cookie on startup for browser <img>, <video>, <audio> tags
+try {
+  const initToken = getSessionToken();
+  if (initToken) {
+    document.cookie = `wabs_session_token=${encodeURIComponent(initToken)}; path=/; SameSite=Lax; max-age=${14 * 86400}`;
+  }
+} catch (e) {}
 
 // Global Axios Request Interceptor to attach X-Session-Token
 axios.interceptors.request.use((config) => {

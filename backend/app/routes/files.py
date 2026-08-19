@@ -223,7 +223,7 @@ def get_file_offset(
         return {"offset": offset}
 
 @router.get("/preview/{item_id}")
-def preview(item_id:int, theme: str = "dark"):
+def preview(item_id:int, theme: str = "dark", animated: bool = False):
     with SessionLocal() as session:
         item = session.get(FileIndex, item_id)
         if not item:
@@ -234,13 +234,21 @@ def preview(item_id:int, theme: str = "dark"):
 
     cfg = load_config()
 
+    is_dng = file_path and file_path.suffix.lower() == ".dng"
+    is_gif = file_path and file_path.suffix.lower() == ".gif"
+
+    # If full animation is explicitly requested for a GIF, serve the raw GIF file
+    if animated and is_gif and file_path and file_path.exists() and file_path.is_file():
+        media_type, _ = mimetypes.guess_type(str(file_path))
+        return FileResponse(str(file_path), media_type=media_type or "image/gif")
+
     # --- OFFLINE CACHE CHECK ---
     if file_category == "photo":
         ui_prefs = cfg.get("ui_preferences") or {}
         cache_enabled = cfg.get("enable_photo_thumbnail_cache")
         if cache_enabled is None:
             cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
-        if str(cache_enabled).lower() in ("true", "1", "yes") or (file_path and file_path.suffix.lower() == ".dng"):
+        if str(cache_enabled).lower() in ("true", "1", "yes") or is_dng or is_gif:
             cached_thumb = get_thumbnail_dir("photos") / f"{item_id}.jpg"
             if cached_thumb.exists():
                 return FileResponse(str(cached_thumb), media_type="image/jpeg")
@@ -257,15 +265,14 @@ def preview(item_id:int, theme: str = "dark"):
         if cached_thumb.exists():
             return FileResponse(str(cached_thumb), media_type="image/jpeg")
 
-    if file_path.exists() and file_path.is_file():
+    if file_path and file_path.exists() and file_path.is_file():
         if file_category == "photo":
             ui_prefs = cfg.get("ui_preferences") or {}
             cache_enabled = cfg.get("enable_photo_thumbnail_cache")
             if cache_enabled is None:
                 cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
             
-            is_dng = file_path.suffix.lower() == ".dng"
-            if str(cache_enabled).lower() in ("true", "1", "yes") or is_dng:
+            if str(cache_enabled).lower() in ("true", "1", "yes") or is_dng or is_gif:
                 try:
                     limit_val = cfg.get("photo_thumbnail_size_limit_mb")
                     if limit_val is None:
@@ -275,7 +282,7 @@ def preview(item_id:int, theme: str = "dark"):
                         size_limit_mb = 0.1
                     size_limit_bytes = size_limit_mb * 1024 * 1024
                     
-                    if file_path.stat().st_size > size_limit_bytes or is_dng:
+                    if file_path.stat().st_size > size_limit_bytes or is_dng or is_gif:
                         thumb_dir = get_thumbnail_dir("photos")
                         thumb_dir.mkdir(parents=True, exist_ok=True)
                         cached_thumb = thumb_dir / f"{item_id}.jpg"
@@ -288,7 +295,7 @@ def preview(item_id:int, theme: str = "dark"):
                         if success and cached_thumb.exists():
                             return FileResponse(str(cached_thumb), media_type="image/jpeg")
                 except Exception as e:
-                    print(f"Large photo/DNG thumbnail error: {e}")
+                    print(f"Photo/DNG/GIF thumbnail error: {e}")
 
             if not is_dng:
                 media_type, _ = mimetypes.guess_type(str(file_path))

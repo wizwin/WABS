@@ -114,7 +114,7 @@ Manage and build saved searches:
 #### 6. Security & Privacy
 Manage archive authentication, network exposure, and privacy guardrails:
 * **Master PIN / Password**: Set, change, or disable your archive PIN. When enabled, all data endpoints and UI views require authentication.
-* **Local Network (LAN / Wi-Fi) Access**: Toggles between strict Localhost-only binding (`127.0.0.1`) and LAN network binding (`0.0.0.0`) for connecting from mobile devices on home Wi-Fi.
+* **Local Network (LAN / Wi-Fi) Access**: Toggles between strict Localhost-only binding (`127.0.0.1`) and LAN network binding (`0.0.0.0`) for connecting from mobile devices on home Wi-Fi. *(Requires restarting WABS to rebind the network socket).*
 * **Inactivity Auto-Lock**: Automatically locks the user session after a configured duration of idle time (5m, 15m, 30m, 1h, Never).
 * **AI Privacy & PII Redaction**: Automatically sanitizes and redacts phone numbers, email addresses, and IP addresses before sending file classification queries to external AI models.
 * **Cache Cleanup**: Option to clear preview and thumbnail caches on demand or automatically whenever WABS exits.

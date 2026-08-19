@@ -78,7 +78,7 @@ export default function People(props) {
         <div style={{ marginBottom: '20px', background: '#1e293b', padding: '12px 16px', borderRadius: '12px', border: '1px solid #334155' }}>
             <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc' }}>Face Scanner Progress</span>
             <ProgressBar current={indexer.face_scanner_current} total={indexer.face_scanner_total} color="#8b5cf6" />
-            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left' }}>{indexer.face_scanner_current_file || ''}</div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{indexer.face_scanner_current_file || ''}</div>
         </div>
         )}
 

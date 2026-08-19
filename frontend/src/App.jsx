@@ -833,11 +833,14 @@ function getOfflinePlaceholder(text, bgColor, textColor) {
   return result;
 }
 
-function renderThumb(item){
+function renderThumb(item, options = {}){
  const currentTheme = settings?.theme || 'dark';
  if(item.thumbnail){
    let url = item.thumbnail.startsWith('http') ? item.thumbnail : `${API}${item.thumbnail}`
    url += (url.includes('?') ? '&' : '?') + `theme=${currentTheme}`
+   if (options && options.animated) {
+     url += '&animated=true';
+   }
    return url
  }
 
