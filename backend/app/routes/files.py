@@ -373,6 +373,20 @@ def get_clean_env():
             env.pop(var, None)
     return env
 
+def _allow_foreground_window():
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            # Pulsing VK_MENU (Alt key) signals user activity to Windows,
+            # resetting the foreground lock timer and allowing the subsequent
+            # ShellExecute window to take active foreground focus over the browser.
+            user32.keybd_event(0x12, 0, 0, 0) # VK_MENU down
+            user32.keybd_event(0x12, 0, 2, 0) # VK_MENU up
+            user32.AllowSetForegroundWindow(-1) # ASFW_ANY = -1
+        except Exception:
+            pass
+
 @router.post("/open-path")
 def open_file_path(path: str = Body(..., embed=True)):
     file_path = _resolve_path(Path(path))
@@ -382,14 +396,26 @@ def open_file_path(path: str = Body(..., embed=True)):
     system_name = platform.system()
     try:
         if system_name == "Windows":
+            _allow_foreground_window()
             norm_path = os.path.normpath(str(file_path))
+            opened = False
             try:
-                if hasattr(os, "startfile"):
-                    os.startfile(norm_path)
-                else:
-                    subprocess.Popen(f'start "" "{norm_path}"', shell=True)
+                import ctypes
+                # SW_SHOWNORMAL = 1; return value > 32 means success
+                res = ctypes.windll.shell32.ShellExecuteW(None, "open", norm_path, None, None, 1)
+                if res > 32:
+                    opened = True
             except Exception:
-                subprocess.Popen(['explorer', norm_path])
+                pass
+
+            if not opened:
+                try:
+                    if hasattr(os, "startfile"):
+                        os.startfile(norm_path)
+                    else:
+                        subprocess.Popen(f'start "" "{norm_path}"', shell=True)
+                except Exception:
+                    subprocess.Popen(['explorer', norm_path])
         elif system_name == "Darwin":
             subprocess.Popen(["open", str(file_path)], env=get_clean_env())
         else:
@@ -409,6 +435,7 @@ def open_folder(path: str = Body(..., embed=True)):
     system_name = platform.system()
     try:
         if system_name == "Windows":
+            _allow_foreground_window()
             if resolved_path.exists() and resolved_path.is_file():
                 norm_path = os.path.normpath(resolved_path)
                 subprocess.Popen(['explorer', '/select,', norm_path])
