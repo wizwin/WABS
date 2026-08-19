@@ -382,8 +382,14 @@ def open_file_path(path: str = Body(..., embed=True)):
     system_name = platform.system()
     try:
         if system_name == "Windows":
-            norm_path = os.path.normpath(file_path)
-            subprocess.Popen(f'start "" "{norm_path}"', shell=True)
+            norm_path = os.path.normpath(str(file_path))
+            try:
+                if hasattr(os, "startfile"):
+                    os.startfile(norm_path)
+                else:
+                    subprocess.Popen(f'start "" "{norm_path}"', shell=True)
+            except Exception:
+                subprocess.Popen(['explorer', norm_path])
         elif system_name == "Darwin":
             subprocess.Popen(["open", str(file_path)], env=get_clean_env())
         else:

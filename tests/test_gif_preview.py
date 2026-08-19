@@ -12,7 +12,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from backend.app.database import SessionLocal, FileIndex
 from backend.app.config import get_thumbnail_dir
 from backend.app.utils.media import generate_photo_thumbnail
-from backend.app.routes.files import preview
+from backend.app.routes.files import preview, open_file_path
+from unittest.mock import patch
 
 class TestGifPreview(unittest.TestCase):
     def setUp(self):
@@ -98,6 +99,12 @@ class TestGifPreview(unittest.TestCase):
         resp = preview(item_id=self.file_id, animated=True)
         self.assertEqual(resp.media_type, "image/gif")
         self.assertEqual(resp.path, str(self.gif_path))
+
+    def test_open_file_path(self):
+        with patch("os.startfile", create=True) as mock_startfile:
+            res = open_file_path(str(self.gif_path))
+            self.assertTrue(res.get("opened"))
+            self.assertEqual(res.get("path"), str(self.gif_path))
 
 if __name__ == "__main__":
     unittest.main()
