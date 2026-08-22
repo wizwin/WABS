@@ -36,13 +36,15 @@ try {
   }
 } catch (e) {}
 
-// Global Axios Request Interceptor to attach X-Session-Token
+// Global Axios Request Interceptor to attach X-Session-Token and prevent stale HTTP caching
 axios.interceptors.request.use((config) => {
   const token = getSessionToken();
+  config.headers = config.headers || {};
   if (token) {
-    config.headers = config.headers || {};
     config.headers['X-Session-Token'] = token;
   }
+  config.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+  config.headers['Pragma'] = 'no-cache';
   return config;
 });
 
@@ -104,7 +106,7 @@ export function formatSize(size) {
 
 export function parseFileDate(file) {
   if (fileDateCache.has(file)) return fileDateCache.get(file);
-  let dateStr = file.metadata?.date || file.modified;
+  let dateStr = (file.metadata?.date && String(file.metadata.date).trim()) ? file.metadata.date : file.modified;
   if (Array.isArray(dateStr)) {
     dateStr = dateStr[0];
   }

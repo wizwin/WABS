@@ -1,5 +1,11 @@
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import axios from 'axios';
+
+function sendLog(msg) {
+  try {
+    axios.post(`${API}/log/frontend`, { message: msg }).catch(() => {});
+  } catch(e) {}
+}
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import FolderIcon from '@mui/icons-material/Folder';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -113,17 +119,10 @@ export default function Explorer(props) {
     if (activeViewType === 'flat' || page === 'virtual_folder' || page === 'search') {
       return sortedFiles || [];
     }
-    const cleanActive = activeFolderPath ? activeFolderPath.replace(/\\/g, '/').toLowerCase() : null;
-    return (sortedFiles || []).filter(file => {
-      if (!file || !file.path) return false;
-      const cleanFile = file.path.replace(/\\/g, '/');
-      const lastSlash = cleanFile.lastIndexOf('/');
-      if (lastSlash === -1) {
-        return cleanActive === null;
-      }
-      const fileParent = cleanFile.substring(0, lastSlash).toLowerCase();
-      return cleanActive !== null && fileParent === cleanActive;
-    });
+    if (!activeFolderPath) {
+      return [];
+    }
+    return sortedFiles || [];
   }, [sortedFiles, activeFolderPath, activeViewType, page]);
 
   // Grouped files for display
@@ -149,7 +148,7 @@ export default function Explorer(props) {
     if (page === 'virtual_folder') return [];
     const subfolderPaths = new Set();
     const subfoldersList = [];
-    const cleanActive = activeFolderPath ? activeFolderPath.replace(/\\/g, '/').toLowerCase() : '';
+    const cleanActive = activeFolderPath ? activeFolderPath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() : '';
 
     const backups = settings?.backup_configs || [{
       id: 'default',
@@ -479,8 +478,12 @@ export default function Explorer(props) {
             <ActionButton
             className="btn btn-secondary"
             onClick={() => {
-                document.querySelector('.content')?.scrollTo({ top: 0, behavior: 'smooth' });
-                document.querySelector('.timeline')?.scrollTo({ top: 0, behavior: 'smooth' });
+                if (startOffset > 0) {
+                  loadFiles(0, false, filterCategory);
+                } else {
+                  document.querySelector('.content')?.scrollTo({ top: 0, behavior: 'smooth' });
+                  document.querySelector('.timeline')?.scrollTo({ top: 0, behavior: 'smooth' });
+                }
             }}
             style={{ margin: '8px auto', padding: '4px 12px', width: '90px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: 'rgba(30, 41, 59, 0.9)', border: '1px solid #334155', color: '#94a3b8', position: 'sticky', top: '8px', zIndex: 10, borderRadius: '16px', fontSize: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.2)' }}
             title="Jump to Top"
@@ -498,11 +501,9 @@ export default function Explorer(props) {
                 if (el) {
                 el.scrollIntoView({ behavior: 'auto', block: 'start' });
                 } else {
-                const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
-                if (showFull) {
-                    const tData = fullTimelineData.find(t => t.key === dateKey);
-                    if (tData) {
-                        if (page === 'explorer') {
+                const tData = (fullTimelineData || []).find(t => t.key === dateKey);
+                if (tData) {
+                    if (page === 'explorer') {
                             const targetOffset = sortOrder === 'asc' ? tData.offsetAsc : tData.offsetDesc;
                             const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
                             const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
@@ -532,10 +533,10 @@ export default function Explorer(props) {
                               }
                             }, 100);
                             }).catch(err => {
-                            if (!axios.isCancel(err)) {
+                              if (!axios.isCancel(err)) {
                                 setLoadingMore(false);
                                 loadingMoreRef.current = false;
-                            }
+                              }
                             });
                         } else if (page === 'search') {
                             const targetOffset = sortOrder === 'asc' ? tData.offsetAsc : tData.offsetDesc;
@@ -564,18 +565,16 @@ export default function Explorer(props) {
                                 el.scrollIntoView({ behavior: 'auto', block: 'start' });
                                 const content = document.querySelector('.content');
                                 if (content) lastScrollTopRef.current = content.scrollTop;
-                                setTimeout(() => { isRestoringScroll.current = false; }, 50);
                               }
                             }, 100);
                             }).catch(err => {
-                            if (!axios.isCancel(err)) {
+                              if (!axios.isCancel(err)) {
                                 setLoadingMore(false);
                                 loadingMoreRef.current = false;
-                            }
+                              }
                             });
                         }
                     }
-                }
                 }
             }}
             />
@@ -584,10 +583,45 @@ export default function Explorer(props) {
             <ActionButton
             className="btn btn-secondary"
             onClick={() => {
-                const content = document.querySelector('.content');
-                content?.scrollTo({ top: content.scrollHeight, behavior: 'smooth' });
-                const timeline = document.querySelector('.timeline');
-                timeline?.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' });
+                if (fullTimelineData && fullTimelineData.length > 0) {
+                    const lastItem = fullTimelineData[fullTimelineData.length - 1];
+                    const targetOffset = sortOrder === 'asc' ? lastItem.offsetAsc : lastItem.offsetDesc;
+                    const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+                    const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
+                    if (loadFilesAbortController.current) loadFilesAbortController.current.abort();
+                    loadFilesAbortController.current = new AbortController();
+                    setLoadingMore(true);
+                    loadingMoreRef.current = true;
+                    axios.get(`${API}/files?category=${filterCategory}&offset=${targetOffset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`, {
+                      signal: loadFilesAbortController.current.signal
+                    }).then(res => {
+                      setFiles(res.data);
+                      setOffset(targetOffset + res.data.length);
+                      setStartOffset(targetOffset);
+                      setHasMore(res.data.length === limit);
+                      setLoadingMore(false);
+                      loadingMoreRef.current = false;
+                      setTimeout(() => {
+                        const content = document.querySelector('.content');
+                        if (content) {
+                          isRestoringScroll.current = true;
+                          content.scrollTop = content.scrollHeight;
+                          lastScrollTopRef.current = content.scrollTop;
+                          setTimeout(() => { isRestoringScroll.current = false; }, 50);
+                        }
+                      }, 100);
+                    }).catch(err => {
+                      if (!axios.isCancel(err)) {
+                        setLoadingMore(false);
+                        loadingMoreRef.current = false;
+                      }
+                    });
+                } else {
+                    const content = document.querySelector('.content');
+                    content?.scrollTo({ top: content.scrollHeight, behavior: 'smooth' });
+                    const timeline = document.querySelector('.timeline');
+                    timeline?.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' });
+                }
             }}
             style={{ margin: '8px auto', padding: '4px 12px', width: '90px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', background: 'rgba(30, 41, 59, 0.9)', border: '1px solid #334155', color: '#94a3b8', position: 'sticky', top: '8px', zIndex: 10, borderRadius: '16px', fontSize: '12px', boxShadow: '0 -4px 6px -1px rgba(0,0,0,0.2)' }}
             title="Jump to Bottom"

@@ -277,6 +277,63 @@ def test_search_patterns():
         assert len(compact.split()) < 120 # Ultra-compact for small context windows
         print("  -> Passed")
 
+        print("Test 33: category:family and rel:spouse relationships search")
+        from backend.app.utils.paths import get_relationships_db_path
+        from backend.app.relationships_database import init_relationships_database
+        
+        rel_db_path = get_relationships_db_path()
+        init_relationships_database(rel_db_path)
+        with sqlite3.connect(str(rel_db_path)) as rconn:
+            rconn.execute("DELETE FROM persons")
+            rconn.execute("DELETE FROM person_social")
+            rconn.execute("DELETE FROM person_connections")
+            
+            # Person 1: John Doe (Parent / Dad)
+            rconn.execute("INSERT INTO persons (id, name, is_me) VALUES (1, 'John Doe', 0)")
+            rconn.execute("INSERT INTO person_social (person_id, category, subcategory, relation_label) VALUES (1, 'Family', 'Parent', 'Dad')")
+            
+            # Person 2: Jane Smith (Spouse / Wife)
+            rconn.execute("INSERT INTO persons (id, name, is_me) VALUES (2, 'Jane Smith', 0)")
+            rconn.execute("INSERT INTO person_social (person_id, category, subcategory, relation_label) VALUES (2, 'Family', 'Spouse', 'Wife')")
+            
+            # Person 3: Me (Primary User)
+            rconn.execute("INSERT INTO persons (id, name, is_me) VALUES (3, 'Me', 1)")
+            rconn.execute("INSERT INTO person_connections (person_id, related_person_id, relation_type) VALUES (3, 2, 'spouse')")
+            rconn.commit()
+
+        # Test category:family (matches John Doe in File 1 and Jane Smith in File 2)
+        res = _build_search_query("category:family", session).all()
+        res_ids = sorted([r.id for r in res])
+        assert res_ids == [1, 2], f"Expected files [1, 2], got {res_ids}"
+
+        # Test rel:spouse (matches Jane Smith in File 2)
+        res = _build_search_query("rel:spouse", session).all()
+        assert len(res) == 1 and res[0].id == 2, f"Expected file 2 (Jane Smith), got {[r.id for r in res]}"
+
+        # Test rel:wife (synonym matches Jane Smith in File 2)
+        res = _build_search_query("rel:wife", session).all()
+        assert len(res) == 1 and res[0].id == 2, f"Expected file 2 (Jane Smith), got {[r.id for r in res]}"
+
+        # Test combined category:family rel:spouse
+        res = _build_search_query("category:family rel:spouse", session).all()
+        assert len(res) == 1 and res[0].id == 2, f"Expected file 2 (Jane Smith), got {[r.id for r in res]}"
+
+        # Test rel:dad (synonym matches John Doe in File 1)
+        res = _build_search_query("rel:dad", session).all()
+        assert len(res) == 1 and res[0].id == 1, f"Expected file 1 (John Doe), got {[r.id for r in res]}"
+
+        # Test category:photo (matches standard file category photo for files 1 and 2)
+        res = _build_search_query("category:photo", session).all()
+        res_ids = sorted([r.id for r in res])
+        assert res_ids == [1, 2], f"Expected files [1, 2], got {res_ids}"
+
+        # Test suggestions for rel: and category:
+        sugg = search_suggestions("rel:wi")
+        assert sugg["type"] == "tag" and any("rel:wife" in s for s in sugg["suggestions"]), f"Unexpected suggestions: {sugg}"
+        sugg = search_suggestions("category:fam")
+        assert sugg["type"] == "tag" and any("category:family" in s for s in sugg["suggestions"]), f"Unexpected suggestions: {sugg}"
+        print("  -> Passed")
+
     print("\nALL SEARCH PATTERN TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":

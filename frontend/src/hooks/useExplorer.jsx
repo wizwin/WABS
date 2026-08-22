@@ -2,6 +2,12 @@ import { useState, useRef, useMemo, useEffect } from 'react';
 import axios from 'axios';
 import { API, parseFileDate, dateFormatter } from '../States';
 
+function sendLog(msg) {
+  try {
+    axios.post(`${API}/log/frontend`, { message: msg }).catch(() => {});
+  } catch(e) {}
+}
+
 export function useExplorer({
   settings, page, setPage, query, setQuery, showToastMessage, sharedState, indexer, actionInProgress, dataOpProgress, setActionInProgress,
   viewType, setViewType
@@ -519,11 +525,16 @@ export function useExplorer({
         oldVirtualFolderId === newVirtualFolderId && 
         (oldSortBy !== newSortBy || oldSortOrder !== newSortOrder);
 
+      // If a file is selected to locate, the cache is only valid if that target file is actually in the cached files
+      const targetPath = checkedFiles.size === 1 ? Array.from(checkedFiles)[0] : selected?.path;
+      const hasTargetFileInCache = !targetPath || (ctx && ctx.files && ctx.files.some(f => f.path === targetPath || f.path.replace(/\\/g, '/') === targetPath.replace(/\\/g, '/')));
+
       // Check if the cached parameters match our current view parameters (ignoring sorting, as we restore it below)
       const isCacheValid = ctx && 
         ctx.filterCategory === filterCategory &&
         ctx.activeFolderPath === activeFolderPath &&
         ctx.virtualFolderId === virtualFolderId &&
+        hasTargetFileInCache &&
         !isExplicitSortChange;
 
       // Tree-view files are folder-specific. Cached files may belong to a different
@@ -537,6 +548,20 @@ export function useExplorer({
         setOffset(ctx.offset);
         setStartOffset(ctx.startOffset);
         setHasMore(ctx.hasMore);
+
+        const container = document.querySelector('.content');
+        if (container) {
+          isRestoringScroll.current = true;
+          // Restore user's last known position, capping safely so it never sits right at the bottom edge
+          let targetTop = typeof ctx.scrollTop === 'number' ? ctx.scrollTop : 0;
+          if (container.scrollHeight > container.clientHeight) {
+            const maxSafeTop = Math.max(0, container.scrollHeight - container.clientHeight - 600);
+            targetTop = Math.min(targetTop, maxSafeTop);
+          }
+          container.scrollTop = targetTop;
+          lastScrollTopRef.current = targetTop;
+          setTimeout(() => { isRestoringScroll.current = false; }, 100);
+        }
 
         // Restore the category-specific sorting parameters if they differ from the global state
         if (ctx.sortBy !== sortBy) setSortBy(ctx.sortBy);
@@ -559,24 +584,77 @@ export function useExplorer({
         prevActiveFolderPath.current = newActiveFolderPath;
         prevVirtualFolderId.current = newVirtualFolderId;
       } else {
-        // Cache is stale/invalid or we are switching to Explorer Tree: reset states and force reload
-        setFiles([]);
-        setOffset(0);
-        setStartOffset(0);
-        setHasMore(true);
-        if (viewContexts.current[newCacheKey]) {
-          viewContexts.current[newCacheKey].scrollTop = 0;
+        const targetPath = checkedFiles.size === 1 ? Array.from(checkedFiles)[0] : selected?.path;
+        const targetFile = targetPath
+          ? (globalFileCache.current.get(targetPath) || globalFileCache.current.get(targetPath.replace(/\\/g, '/')) || (selected?.path === targetPath ? selected : null))
+          : null;
+
+        if (targetFile && newPage === 'explorer') {
+          const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+          const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
+
+          let targetFolder = null;
+          if (newView === 'tree') {
+            const norm = targetFile.path.replace(/\\/g, '/');
+            const lSlash = norm.lastIndexOf('/');
+            if (lSlash !== -1) targetFolder = norm.substring(0, lSlash);
+          }
+
+          const folderParam = (newView === 'tree' && targetFolder) ? encodeURIComponent(targetFolder) : (newView === 'tree' ? 'root' : undefined);
+          let offsetUrl = `${API}/files/${targetFile.id}/offset?category=${filterCategory}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+          if (folderParam) offsetUrl += `&folder=${folderParam}`;
+
+          axios.get(offsetUrl).then(offsetRes => {
+            const offsetVal = offsetRes.data.offset || 0;
+            const targetStartOffset = Math.max(0, Math.floor(offsetVal / limit) * limit);
+            let fetchUrl = `${API}/files?category=${filterCategory}&offset=${targetStartOffset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+            if (folderParam) fetchUrl += `&folder=${folderParam}`;
+            return axios.get(fetchUrl).then(r => ({ data: r.data, targetStartOffset }));
+          }).then(({ data, targetStartOffset }) => {
+            setFiles(data);
+            setStartOffset(targetStartOffset);
+            setOffset(targetStartOffset + data.length);
+            setHasMore(data.length === limit);
+            setPendingLocatePath(targetFile.path);
+          }).catch(() => {
+            loadFiles(0, false, filterCategory, sortBy, sortOrder, newPage, virtualFolderId, newView, activeFolderPath);
+          });
+
+          prevPage.current = newPage;
+          prevViewType.current = newView;
+          prevFilterCategory.current = newCat;
+          prevSortBy.current = newSortBy;
+          prevSortOrder.current = newSortOrder;
+          prevActiveFolderPath.current = newActiveFolderPath;
+          prevVirtualFolderId.current = newVirtualFolderId;
+        } else {
+          // Cache is stale/invalid or first visit: reset states and load fresh from offset 0
+          setFiles([]);
+          setOffset(0);
+          setStartOffset(0);
+          setHasMore(true);
+          if (viewContexts.current[newCacheKey]) {
+            viewContexts.current[newCacheKey].scrollTop = 0;
+          }
+
+          const container = document.querySelector('.content');
+          if (container) {
+            isRestoringScroll.current = true;
+            container.scrollTop = 0;
+            lastScrollTopRef.current = 0;
+            setTimeout(() => { isRestoringScroll.current = false; }, 50);
+          }
+
+          prevPage.current = newPage;
+          prevViewType.current = newView;
+          prevFilterCategory.current = newCat;
+          prevSortBy.current = newSortBy;
+          prevSortOrder.current = newSortOrder;
+          prevActiveFolderPath.current = newActiveFolderPath;
+          prevVirtualFolderId.current = newVirtualFolderId;
+
+          loadFiles(0, false, filterCategory, sortBy, sortOrder, newPage, virtualFolderId, newView, activeFolderPath);
         }
-
-        prevPage.current = newPage;
-        prevViewType.current = newView;
-        prevFilterCategory.current = newCat;
-        prevSortBy.current = newSortBy;
-        prevSortOrder.current = newSortOrder;
-        prevActiveFolderPath.current = newActiveFolderPath;
-        prevVirtualFolderId.current = newVirtualFolderId;
-
-        loadFiles(0, false, filterCategory, sortBy, sortOrder, newPage, virtualFolderId, newView, activeFolderPath);
       }
     } else {
       prevPage.current = newPage;
@@ -589,24 +667,19 @@ export function useExplorer({
     }
   }, [viewType, virtualFolderViewType, page, filterCategory, sortBy, sortOrder, activeFolderPath, virtualFolderId]);
 
-  // Robust Content Pane Scroll Restorer:
-  // Fires when files/directories update and render in the DOM to ensure stable height.
+  // Only restore scroll when navigating back between top-level pages
   useEffect(() => {
     const container = document.querySelector('.content');
     if (container && !pendingLocatePath) {
       const activeView = page === 'virtual_folder' ? virtualFolderViewType : viewType;
       const cacheKey = `${page}_${activeView}_${filterCategory}`;
       const ctx = viewContexts.current[cacheKey];
-      if (ctx && typeof ctx.scrollTop === 'number') {
-        isRestoringScroll.current = true;
+      if (ctx && typeof ctx.scrollTop === 'number' && ctx.scrollTop > 0 && container.scrollTop === 0) {
         container.scrollTop = ctx.scrollTop;
         lastScrollTopRef.current = ctx.scrollTop;
-        setTimeout(() => {
-          isRestoringScroll.current = false;
-        }, 50);
       }
     }
-  }, [page, viewType, virtualFolderViewType, filterCategory, activeFolderPath, virtualFolderId]);
+  }, [page]);
 
   useEffect(() => {
     // Clear all explorer_tree caches when folder path changes
@@ -647,7 +720,14 @@ export function useExplorer({
   const syncDateTimeoutRef = useRef(null);
 
   useEffect(() => {
-    if (Array.isArray(files)) files.forEach(f => globalFileCache.current.set(f.path, f));
+    if (Array.isArray(files)) {
+      files.forEach(f => {
+        if (!f || !f.path) return;
+        globalFileCache.current.set(f.path, f);
+        globalFileCache.current.set(f.path.replace(/\\/g, '/'), f);
+        globalFileCache.current.set(f.path.replace(/\\/g, '/').toLowerCase(), f);
+      });
+    }
 
     if (pendingLocatePath && files.length > 0) {
       const targetPath = pendingLocatePath;
@@ -759,6 +839,10 @@ export function useExplorer({
           const additions = r.data.filter(f => !existing.has(f.path));
           return [...prev, ...additions];
         });
+        const container = document.querySelector('.content');
+        if (container) {
+          lastScrollTopRef.current = container.scrollTop;
+        }
       } else {
         setFiles(r.data);
         setStartOffset(nextOffset);
@@ -790,32 +874,14 @@ export function useExplorer({
     }
   
     searchTimeout.current = setTimeout(async () => {
-      const folderIdToUse = forceFolderId !== undefined ? forceFolderId : virtualFolderId;
-      if(!value){
-        setSelected(null);
-        setCheckedFiles(new Set());
-        if (folderIdToUse) {
-          setPage('virtual_folder');
-          await loadFiles(0, false, cat, sBy, sOrd, 'virtual_folder', folderIdToUse);
-        } else {
-          setPage('explorer');
-          await loadFiles(0, false, cat, sBy, sOrd, 'explorer');
-        }
-        return;
-      }
-  
-      if (searchAbortController.current) {
-        searchAbortController.current.abort();
-      }
-      searchAbortController.current = new AbortController();
-  
-      const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
-      const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
-      setLoadingMore(true);
-      isLoadingRef.current = true;
-      setSelected(null);
-      setCheckedFiles(new Set());
-      try {
+      const trimmed = value.trim();
+      const folderIdToUse = forceFolderId !== undefined ? forceFolderId : (page === 'virtual_folder' ? virtualFolderId : null);
+      if(trimmed) {
+        isLoadingRef.current = true;
+        if (searchAbortController.current) searchAbortController.current.abort();
+        searchAbortController.current = new AbortController();
+        const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
+        const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
         let url = `${API}/search?query=${encodeURIComponent(value)}&category=${cat}&offset=0&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
         if (folderIdToUse) {
           url += `&virtual_folder_id=${folderIdToUse}`;
@@ -830,14 +896,17 @@ export function useExplorer({
         setHasMore(r.data.length === limit);
         setPage('search');
         setLoadingMore(false);
-      } catch (err) {
-        if (!axios.isCancel(err)) {
-          setLoadingMore(false);
-          console.warn('Search failed', err);
-          setHasMore(false);
-        }
-      } finally {
         isLoadingRef.current = false;
+      } else {
+        setSelected(null);
+        setCheckedFiles(new Set());
+        if (folderIdToUse) {
+          setPage('virtual_folder');
+          await loadFiles(0, false, cat, sBy, sOrd, 'virtual_folder', folderIdToUse);
+        } else {
+          setPage('explorer');
+          await loadFiles(0, false, cat, sBy, sOrd, 'explorer');
+        }
       }
     }, 600);
   }
@@ -892,26 +961,31 @@ export function useExplorer({
   }
 
   async function loadMore() {
-    if(loadingMore || loadingMoreRef.current || !hasMore || files.length === 0 || isLoadingRef.current) return;
+    if(loadingMore || loadingMoreRef.current || !hasMore) {
+      return;
+    }
+    // isLoadingRef blocks fresh loads (e.g. initial load / filter change) but must not block appends
+    if(isLoadingRef.current && page !== 'explorer' && page !== 'virtual_folder') {
+      return;
+    }
   
     setLoadingMore(true);
     loadingMoreRef.current = true;
+    const content = document.querySelector('.content');
+    if (content) {
+      lastScrollTopRef.current = content.scrollTop;
+    }
     const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
     const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
-    if(page === 'explorer' || page === 'virtual_folder'){
-      await loadFiles(offset, true, filterCategory, sortBy, sortOrder, page, virtualFolderId, viewType, activeFolderPath);
-    } else if(page === 'search'){
-      if (searchAbortController.current) searchAbortController.current.abort();
-      searchAbortController.current = new AbortController();
-  
-      try {
+    try {
+      if(page === 'explorer' || page === 'virtual_folder'){
+        await loadFiles(offset, true, filterCategory, sortBy, sortOrder, page, virtualFolderId, viewType, activeFolderPath);
+      } else if(page === 'search'){
+        if (searchAbortController.current) searchAbortController.current.abort();
+        searchAbortController.current = new AbortController();
         let url = `${API}/search?query=${encodeURIComponent(query)}&category=${filterCategory}&offset=${offset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
-        if (virtualFolderId) {
-          url += `&virtual_folder_id=${virtualFolderId}`;
-        }
-        const r = await axios.get(url, {
-          signal: searchAbortController.current.signal
-        });
+        if (virtualFolderId) url += `&virtual_folder_id=${virtualFolderId}`;
+        const r = await axios.get(url, { signal: searchAbortController.current.signal });
         setFiles(prev => {
           const existing = new Set(prev.map(f => f.path));
           const additions = r.data.filter(f => !existing.has(f.path));
@@ -924,16 +998,9 @@ export function useExplorer({
         });
         setOffset(offset + r.data.length);
         setHasMore(r.data.length === limit);
-      } catch (err) {
-        if (!axios.isCancel(err)) {
-          console.warn('Load more search failed', err);
-          setHasMore(false);
-        }
-      }
-    } else if(page === 'person_files') {
-      const currentPerson = sharedState.current?.people?.currentPerson;
-      if (currentPerson) {
-        try {
+      } else if(page === 'person_files') {
+        const currentPerson = sharedState.current?.people?.currentPerson;
+        if (currentPerson) {
           const r = await axios.get(`${API}/people/${currentPerson.id}/photos?offset=${offset}&limit=${limit}`);
           sharedState.current.people.setPersonFiles(prev => {
             const existing = new Set(prev.map(f => f.path));
@@ -942,18 +1009,23 @@ export function useExplorer({
           });
           setOffset(offset + r.data.length);
           setHasMore(r.data.length === limit);
-        } catch (err) {
-          console.warn('Load more person photos failed', err);
-          setHasMore(false);
         }
       }
+    } catch (err) {
+      if (!axios.isCancel(err)) {
+        console.warn('Load more failed', err);
+        setHasMore(false);
+      }
+    } finally {
+      setLoadingMore(false);
+      loadingMoreRef.current = false;
     }
-    setLoadingMore(false);
-    loadingMoreRef.current = false;
   }
 
   async function loadPrevious() {
-    if(loadingPrevious || loadingPreviousRef.current || startOffset <= 0 || isLoadingRef.current) return;
+    if(loadingPrevious || loadingPreviousRef.current || startOffset <= 0 || isLoadingRef.current) {
+      return;
+    }
   
     setLoadingPrevious(true);
     loadingPreviousRef.current = true;
@@ -1027,11 +1099,13 @@ export function useExplorer({
         }, 50);
       }
     } catch (err) {
-      if (!axios.isCancel(err)) console.warn('Load previous failed', err);
+      if (!axios.isCancel(err)) {
+        console.warn('Load previous failed', err);
+      }
+    } finally {
+      setLoadingPrevious(false);
+      loadingPreviousRef.current = false;
     }
-    
-    setLoadingPrevious(false);
-    loadingPreviousRef.current = false;
   }
 
   const syncActiveDate = (containerElement) => {
@@ -1057,17 +1131,31 @@ export function useExplorer({
     }, 50);
   };
 
+  const loadMoreTimeoutRef = useRef(null);
+
   function handleScroll(e) {
     if (isRestoringScroll.current) return;
     const {scrollTop, scrollHeight, clientHeight} = e.currentTarget;
-
+    const prevScrollTop = lastScrollTopRef.current;
     lastScrollTopRef.current = scrollTop;
 
-    if (scrollHeight - scrollTop - clientHeight < 400) {
-      loadMore();
+    const delta = scrollTop - prevScrollTop;
+    const bottomDist = scrollHeight - scrollTop - clientHeight;
+
+    // Trigger loadMore proactively when user is scrolling downward and enters the lower 1500px zone
+    if (delta > 0 && bottomDist < 1500) {
+      if (!loadingMoreRef.current && !loadingMore && hasMore) {
+        if (loadMoreTimeoutRef.current) clearTimeout(loadMoreTimeoutRef.current);
+        loadMoreTimeoutRef.current = setTimeout(() => {
+          loadMore();
+        }, 30);
+      }
     }
-    if (scrollTop < 400 && startOffset > 0) {
-      loadPrevious();
+    // Trigger loadPrevious proactively before reaching top
+    if (delta < 0 && scrollTop < 1500 && startOffset > 0) {
+      if (!loadingPreviousRef.current && !loadingPrevious) {
+        loadPrevious();
+      }
     }
     syncActiveDate(e.currentTarget);
 
@@ -1498,14 +1586,24 @@ export function useExplorer({
   }
 
   async function locateSelectedFile(type) {
-    if (checkedFiles.size !== 1) return;
-    const path = Array.from(checkedFiles)[0];
-    let file = globalFileCache.current.get(path);
+    if (checkedFiles.size !== 1 && !selected) return;
+    const path = checkedFiles.size === 1 ? Array.from(checkedFiles)[0] : selected?.path;
+    if (!path) return;
+    let file = globalFileCache.current.get(path) || 
+               globalFileCache.current.get(path.replace(/\\/g, '/')) || 
+               globalFileCache.current.get(path.replace(/\\/g, '/').toLowerCase()) || 
+               (selected?.path === path ? selected : null) ||
+               (Array.isArray(files) ? files.find(f => f.path === path || f.path.replace(/\\/g, '/') === path.replace(/\\/g, '/')) : null);
     if (!file) return;
 
     setFilterCategory('all');
     setSelected(file);
     setCheckedFiles(new Set([file.path]));
+    setQuery('');
+    setSearchCache([]);
+    invalidateViewCache();
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    if (searchAbortController.current) searchAbortController.current.abort();
 
     const normalized = file.path.replace(/\\/g, '/');
     const lastSlash = normalized.lastIndexOf('/');
@@ -1532,7 +1630,7 @@ export function useExplorer({
         const folderParam = parentFolder ? encodeURIComponent(parentFolder) : 'root';
         const url = `${API}/files?category=all&offset=${targetStartOffset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}&folder=${folderParam}`;
         const r = await axios.get(url);
-        viewContexts.current.explorer_tree = {
+        viewContexts.current.explorer_tree_all = {
           files: r.data,
           startOffset: targetStartOffset,
           offset: targetStartOffset + r.data.length,
@@ -1550,10 +1648,16 @@ export function useExplorer({
         setOffset(targetStartOffset + r.data.length);
         setStartOffset(targetStartOffset);
         setHasMore(r.data.length === limit);
+
+        prevPage.current = 'explorer';
+        prevViewType.current = 'tree';
+        prevFilterCategory.current = 'all';
+        prevActiveFolderPath.current = parentFolder;
+
         suppressNextAutoLoad.current = true;
         setTimeout(() => {
           suppressNextAutoLoad.current = false;
-        }, 100);
+        }, 300);
       } catch (err) {
         console.warn("Failed to pre-load tree files", err);
       }
@@ -1574,7 +1678,7 @@ export function useExplorer({
       try {
         const url = `${API}/files?category=all&offset=${targetStartOffset}&limit=${limit}&sort_by=${sortBy}&sort_order=${sortOrder}`;
         const r = await axios.get(url);
-        viewContexts.current.explorer_flat = {
+        viewContexts.current.explorer_flat_all = {
           files: r.data,
           startOffset: targetStartOffset,
           offset: targetStartOffset + r.data.length,
@@ -1592,16 +1696,23 @@ export function useExplorer({
         setOffset(targetStartOffset + r.data.length);
         setStartOffset(targetStartOffset);
         setHasMore(r.data.length === limit);
+
+        prevPage.current = 'explorer';
+        prevViewType.current = 'flat';
+        prevFilterCategory.current = 'all';
+        prevActiveFolderPath.current = null;
+
         suppressNextAutoLoad.current = true;
         setTimeout(() => {
           suppressNextAutoLoad.current = false;
-        }, 100);
+        }, 300);
       } catch (err) {
         console.warn("Failed to pre-load flat files", err);
       }
 
       setPage('explorer');
       setViewType('flat');
+      setActiveFolderPath(null);
     } else if (type === 'virtual_folder') {
       try {
         const res = await axios.get(`${API}/files/${file.id}/virtual-folders`);
@@ -1760,6 +1871,8 @@ export function useExplorer({
         const d2 = parseFileDate(b);
         aVal = d1 ? d1.getTime() : 0;
         bVal = d2 ? d2.getTime() : 0;
+        if (aVal === 0 && bVal !== 0) return 1;
+        if (bVal === 0 && aVal !== 0) return -1;
       } else if(sortBy === 'size'){
         const parseSize = (s) => {
           if (!s) return 0;

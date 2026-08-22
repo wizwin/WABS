@@ -50,6 +50,8 @@ def _build_item(r, cache_flag=""):
         "thumbnail": f"/preview/{r.id}?v={v}{cache_flag}"
     }
 
+from backend.app.utils.log_utils import log_operation
+
 @router.get("/files")
 def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", sort_order:str="desc", folder:str=None):
     cfg = load_config()
@@ -101,26 +103,26 @@ def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", so
                     
             if category != "duplicates":
                 if sort_by == "date":
-                    order_expr = "coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))"
+                    order_expr = "coalesce(nullif(replace(substr(json_extract(metadata_json, '$.date'), 1, 19), ':', '-'), ''), nullif(modified, ''))"
                     if sort_order == "asc":
-                        q = q.order_by(text(f"{order_expr} ASC"), FileIndex.id)
+                        q = q.order_by(text(f"CASE WHEN {order_expr} IS NULL OR {order_expr} = '' THEN 1 ELSE 0 END, {order_expr} ASC"), FileIndex.id.asc())
                     else:
-                        q = q.order_by(text(f"{order_expr} DESC"), FileIndex.id)
+                        q = q.order_by(text(f"CASE WHEN {order_expr} IS NULL OR {order_expr} = '' THEN 1 ELSE 0 END, {order_expr} DESC"), FileIndex.id.desc())
                 elif sort_by == "size":
                     if sort_order == "asc":
-                        q = q.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id)
+                        q = q.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id.asc())
                     else:
-                        q = q.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id)
+                        q = q.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id.desc())
                 elif sort_by == "filename":
                     if sort_order == "asc":
-                        q = q.order_by(FileIndex.filename.asc(), FileIndex.id)
+                        q = q.order_by(FileIndex.filename.asc(), FileIndex.id.asc())
                     else:
-                        q = q.order_by(FileIndex.filename.desc(), FileIndex.id)
+                        q = q.order_by(FileIndex.filename.desc(), FileIndex.id.desc())
                 elif sort_by == "extension":
                     if sort_order == "asc":
-                        q = q.order_by(FileIndex.extension.asc(), FileIndex.id)
+                        q = q.order_by(FileIndex.extension.asc(), FileIndex.id.asc())
                     else:
-                        q = q.order_by(FileIndex.extension.desc(), FileIndex.id)
+                        q = q.order_by(FileIndex.extension.desc(), FileIndex.id.desc())
 
             yield "["
             first = True
@@ -132,7 +134,11 @@ def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", so
                 yield json.dumps(_build_item(r, cache_flag))
             yield "]"
             
-    return StreamingResponse(generate(), media_type="application/json")
+    return StreamingResponse(
+        generate(),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"}
+    )
 
 @router.get("/files/{file_id}/offset")
 def get_file_offset(
@@ -193,26 +199,26 @@ def get_file_offset(
 
         if category != "duplicates":
             if sort_by == "date":
-                order_expr = "coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))"
+                order_expr = "coalesce(nullif(replace(substr(json_extract(metadata_json, '$.date'), 1, 19), ':', '-'), ''), nullif(modified, ''))"
                 if sort_order == "asc":
-                    q = q.order_by(text(f"{order_expr} ASC"), FileIndex.id)
+                    q = q.order_by(text(f"CASE WHEN {order_expr} IS NULL OR {order_expr} = '' THEN 1 ELSE 0 END, {order_expr} ASC"), FileIndex.id.asc())
                 else:
-                    q = q.order_by(text(f"{order_expr} DESC"), FileIndex.id)
+                    q = q.order_by(text(f"CASE WHEN {order_expr} IS NULL OR {order_expr} = '' THEN 1 ELSE 0 END, {order_expr} DESC"), FileIndex.id.desc())
             elif sort_by == "size":
                 if sort_order == "asc":
-                    q = q.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id)
+                    q = q.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id.asc())
                 else:
-                    q = q.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id)
+                    q = q.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id.desc())
             elif sort_by == "filename":
                 if sort_order == "asc":
-                    q = q.order_by(FileIndex.filename.asc(), FileIndex.id)
+                    q = q.order_by(FileIndex.filename.asc(), FileIndex.id.asc())
                 else:
-                    q = q.order_by(FileIndex.filename.desc(), FileIndex.id)
+                    q = q.order_by(FileIndex.filename.desc(), FileIndex.id.desc())
             elif sort_by == "extension":
                 if sort_order == "asc":
-                    q = q.order_by(FileIndex.extension.asc(), FileIndex.id)
+                    q = q.order_by(FileIndex.extension.asc(), FileIndex.id.asc())
                 else:
-                    q = q.order_by(FileIndex.extension.desc(), FileIndex.id)
+                    q = q.order_by(FileIndex.extension.desc(), FileIndex.id.desc())
 
         ids = [r[0] for r in q.all()]
         try:

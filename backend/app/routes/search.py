@@ -128,7 +128,11 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50, sort_by
                 yield json.dumps(_build_item(r, cache_flag))
             yield "]"
 
-    return StreamingResponse(generate(), media_type="application/json")
+    return StreamingResponse(
+        generate(),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"}
+    )
 
 @router.get("/search/suggestions")
 def search_suggestions(q: str = "", limit: int = 5):
@@ -218,9 +222,11 @@ def search_suggestions(q: str = "", limit: int = 5):
         p_len = len("rel:") if lower_clean.startswith("rel:") else (len("relation:") if lower_clean.startswith("relation:") else len("kinship:"))
         sub_term = lower_clean[p_len:].strip('"\'')
         rel_presets = [
-            "spouse", "parent", "child", "sibling", "grandparent", "aunt", "uncle",
-            "cousin", "in-law", "close friend", "colleague", "classmate", "neighbor",
-            "family", "friends", "others"
+            "spouse", "wife", "husband", "partner", "parent", "father", "mother", "dad", "mom",
+            "child", "son", "daughter", "kid", "kids", "children", "sibling", "brother", "sister",
+            "grandparent", "grandfather", "grandmother", "grandpa", "grandma", "grandchild", "grandson", "granddaughter",
+            "aunt", "uncle", "cousin", "niece", "nephew", "in-law", "close friend", "colleague", "coworker",
+            "classmate", "neighbor", "family", "friends", "others"
         ]
         matching = [r for r in rel_presets if sub_term in r]
         if matching:
@@ -230,7 +236,7 @@ def search_suggestions(q: str = "", limit: int = 5):
 
     if lower_clean.startswith("category:"):
         sub_term = lower_clean[len("category:"):].strip('"\'')
-        cat_presets = ["family", "friends", "others"]
+        cat_presets = ["family", "friends", "others", "photo", "video", "audio", "document", "code", "compressed", "installer", "database", "ebook", "font"]
         matching = [c for c in cat_presets if sub_term in c]
         if matching:
             suggs = [f'{prefix}category:{m}' for m in matching[:limit]]

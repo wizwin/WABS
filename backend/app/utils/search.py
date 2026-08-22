@@ -246,11 +246,103 @@ def _build_person_filter(val):
     conds = []
     for p in parts:
         p_clean = p.strip('"\'')
-        conds.append(or_(
-            func.lower(func.coalesce(FileIndex.tags, '')).contains(f"person:{p_clean}"),
-            func.lower(func.coalesce(FileIndex.tags, '')).contains(p_clean)
-        ))
+        conds.append(
+            func.lower(func.coalesce(FileIndex.tags, '')).contains(f"person:{p_clean}")
+        )
     return or_(*conds) if len(conds) > 1 else conds[0]
+
+RELATION_SYNONYMS = {
+    # Category: Family
+    "family": ["family", "spouse", "parent", "child", "sibling", "grandparent", "grandchild", "great-grandparent", "aunt", "uncle", "cousin", "in-law", "relative"],
+    "relatives": ["family", "spouse", "parent", "child", "sibling", "grandparent", "grandchild", "great-grandparent", "aunt", "uncle", "cousin", "in-law", "relative"],
+    "relative": ["family", "spouse", "parent", "child", "sibling", "grandparent", "grandchild", "great-grandparent", "aunt", "uncle", "cousin", "in-law", "relative"],
+    
+    # Category: Friends
+    "friends": ["friends", "friend", "close friend", "colleague", "classmate", "acquaintance", "other friend"],
+    "friend": ["friends", "friend", "close friend", "colleague", "classmate", "acquaintance", "other friend"],
+    
+    # Category: Others
+    "others": ["others", "other", "neighbor", "service contact", "unknown"],
+    "other": ["others", "other", "neighbor", "service contact", "unknown"],
+    
+    # Spouse / Partner
+    "spouse": ["spouse", "wife", "husband", "partner", "fiancé", "fiancée"],
+    "wife": ["spouse", "wife", "partner", "fiancée"],
+    "husband": ["spouse", "husband", "partner", "fiancé"],
+    "partner": ["spouse", "partner", "wife", "husband"],
+    "fiance": ["spouse", "partner", "fiancé", "fiancée"],
+    "fiancee": ["spouse", "partner", "fiancée", "fiancé"],
+    
+    # Parents
+    "parent": ["parent", "father", "mother", "dad", "mom", "stepfather", "stepmother"],
+    "parents": ["parent", "father", "mother", "dad", "mom", "stepfather", "stepmother"],
+    "father": ["parent", "father", "dad", "stepfather"],
+    "dad": ["parent", "father", "dad", "stepfather"],
+    "mother": ["parent", "mother", "mom", "stepmother"],
+    "mom": ["parent", "mother", "mom", "stepmother"],
+    "stepfather": ["parent", "stepfather", "father", "dad"],
+    "stepmother": ["parent", "stepmother", "mother", "mom"],
+    
+    # Children
+    "child": ["child", "son", "daughter", "kid", "kids", "children", "stepson", "stepdaughter"],
+    "children": ["child", "son", "daughter", "kid", "kids", "children", "stepson", "stepdaughter"],
+    "kid": ["child", "son", "daughter", "kid", "kids", "children", "stepson", "stepdaughter"],
+    "kids": ["child", "son", "daughter", "kid", "kids", "children", "stepson", "stepdaughter"],
+    "son": ["child", "son", "stepson"],
+    "daughter": ["child", "daughter", "stepdaughter"],
+    "stepson": ["child", "son", "stepson"],
+    "stepdaughter": ["child", "daughter", "stepdaughter"],
+    
+    # Siblings
+    "sibling": ["sibling", "brother", "sister", "elder brother", "younger brother", "elder sister", "younger sister"],
+    "siblings": ["sibling", "brother", "sister"],
+    "brother": ["sibling", "brother", "elder brother", "younger brother"],
+    "sister": ["sibling", "sister", "elder sister", "younger sister"],
+    
+    # Grandparents
+    "grandparent": ["grandparent", "grandfather", "grandmother", "grandpa", "grandma", "maternal grandmother", "maternal grandfather", "paternal grandmother", "paternal grandfather"],
+    "grandparents": ["grandparent", "grandfather", "grandmother", "grandpa", "grandma"],
+    "grandfather": ["grandparent", "grandfather", "grandpa"],
+    "grandpa": ["grandparent", "grandfather", "grandpa"],
+    "grandmother": ["grandparent", "grandmother", "grandma"],
+    "grandma": ["grandparent", "grandmother", "grandma"],
+    
+    # Grandchildren
+    "grandchild": ["grandchild", "grandson", "granddaughter"],
+    "grandchildren": ["grandchild", "grandson", "granddaughter"],
+    "grandson": ["grandchild", "grandson"],
+    "granddaughter": ["grandchild", "granddaughter"],
+    
+    # Aunts & Uncles
+    "aunt": ["aunt", "aunt / uncle", "great-aunt", "maternal aunt", "paternal aunt"],
+    "uncle": ["uncle", "aunt / uncle", "great-uncle", "maternal uncle", "paternal uncle"],
+    "aunt / uncle": ["aunt", "uncle", "aunt / uncle"],
+    
+    # Cousins
+    "cousin": ["cousin", "cousin (1st)", "cousin (2nd / distant)", "cousin (once removed)", "1st cousin", "2nd cousin"],
+    "cousins": ["cousin", "cousin (1st)", "cousin (2nd / distant)", "cousin (once removed)", "1st cousin", "2nd cousin"],
+    
+    # Nieces & Nephews
+    "niece": ["niece", "niece / nephew"],
+    "nephew": ["nephew", "niece / nephew"],
+    "niece / nephew": ["niece", "nephew", "niece / nephew"],
+    
+    # In-laws
+    "inlaw": ["in-law", "inlaw", "father-in-law", "mother-in-law", "brother-in-law", "sister-in-law", "spouse's family", "son-in-law", "daughter-in-law"],
+    "in-law": ["in-law", "inlaw", "father-in-law", "mother-in-law", "brother-in-law", "sister-in-law", "spouse's family", "son-in-law", "daughter-in-law"],
+    "in-laws": ["in-law", "inlaw", "father-in-law", "mother-in-law", "brother-in-law", "sister-in-law", "spouse's family", "son-in-law", "daughter-in-law"],
+    
+    # Friends & Professional
+    "close friend": ["close friend", "best friend", "friend"],
+    "colleague": ["colleague", "coworker", "work", "teammate"],
+    "coworker": ["colleague", "coworker", "work", "teammate"],
+    "work": ["colleague", "coworker", "work"],
+    "classmate": ["classmate", "school", "college", "alumni"],
+    "school": ["classmate", "school", "college"],
+    "acquaintance": ["acquaintance"],
+    "neighbor": ["neighbor"],
+    "service": ["service contact", "service"],
+}
 
 def _get_people_by_relation_or_category(term: str) -> list:
     """
@@ -258,36 +350,79 @@ def _get_people_by_relation_or_category(term: str) -> list:
     """
     import sqlite3
     from backend.app.utils.paths import get_relationships_db_path
+    from backend.app.config import load_config
+    
     rel_db = get_relationships_db_path()
     if not rel_db.exists():
         return []
     
     term_clean = term.strip().lower()
+    search_terms = RELATION_SYNONYMS.get(term_clean, [term_clean])
+    if term_clean not in search_terms:
+        search_terms = list(search_terms) + [term_clean]
+        
+    cfg = load_config()
+    me_name = (cfg.get("me_name") or "").strip().lower()
+    
     matched_names = set()
     try:
         with sqlite3.connect(str(rel_db), timeout=5) as conn:
             c = conn.cursor()
-            c.execute("""
-                SELECT p.name
-                FROM persons p
-                JOIN person_social s ON p.id = s.person_id
-                WHERE lower(s.category) = ? 
-                   OR lower(s.subcategory) LIKE ?
-                   OR lower(s.relation_label) LIKE ?
-            """, (term_clean, f"%{term_clean}%", f"%{term_clean}%"))
-            for row in c.fetchall():
-                if row[0]:
-                    matched_names.add(row[0])
+            
+            me_id = None
+            c.execute("SELECT id FROM persons WHERE is_me = 1 LIMIT 1")
+            me_row = c.fetchone()
+            if me_row:
+                me_id = me_row[0]
+            elif me_name:
+                c.execute("SELECT id FROM persons WHERE lower(name) = ? LIMIT 1", (me_name,))
+                me_row2 = c.fetchone()
+                if me_row2:
+                    me_id = me_row2[0]
+                    
+            for st in search_terms:
+                # 1. Match category (Family, Friends, Others), subcategory, or custom label
+                c.execute("""
+                    SELECT p.name
+                    FROM persons p
+                    JOIN person_social s ON p.id = s.person_id
+                    WHERE lower(s.category) = ? 
+                       OR lower(s.category) LIKE ?
+                       OR lower(s.subcategory) = ?
+                       OR lower(s.subcategory) LIKE ?
+                       OR lower(s.relation_label) = ?
+                       OR lower(s.relation_label) LIKE ?
+                """, (st, f"%{st}%", st, f"%{st}%", st, f"%{st}%"))
+                for row in c.fetchall():
+                    if row[0]:
+                        if st not in ("me", "myself") and me_name and row[0].strip().lower() == me_name:
+                            continue
+                        matched_names.add(row[0])
 
-            c.execute("""
-                SELECT p2.name
-                FROM person_connections c
-                JOIN persons p2 ON c.related_person_id = p2.id
-                WHERE lower(c.relation_type) LIKE ?
-            """, (f"%{term_clean}%",))
-            for row in c.fetchall():
-                if row[0]:
-                    matched_names.add(row[0])
+                # 2. Match person_connections (directed links from "Me" or relative connections)
+                if me_id:
+                    c.execute("""
+                        SELECT p2.name
+                        FROM person_connections conn
+                        JOIN persons p2 ON conn.related_person_id = p2.id
+                        WHERE conn.person_id = ?
+                          AND (lower(conn.relation_type) = ? OR lower(conn.relation_type) LIKE ?)
+                    """, (me_id, st, f"%{st}%"))
+                    for row in c.fetchall():
+                        if row[0]:
+                            matched_names.add(row[0])
+                else:
+                    c.execute("""
+                        SELECT p2.name
+                        FROM person_connections conn
+                        JOIN persons p2 ON conn.related_person_id = p2.id
+                        WHERE lower(conn.relation_type) = ? OR lower(conn.relation_type) LIKE ?
+                    """, (st, f"%{st}%"))
+                    for row in c.fetchall():
+                        if row[0]:
+                            if me_name and row[0].strip().lower() == me_name:
+                                continue
+                            matched_names.add(row[0])
     except Exception as e:
         print(f"[SEARCH] Error looking up relations: {e}")
     return list(matched_names)
@@ -300,22 +435,20 @@ def _build_relation_filter(val):
     for p in parts:
         p_clean = p.strip('"\'')
         names = _get_people_by_relation_or_category(p_clean)
-        if not names:
-            all_conds.append(or_(
+        conds_for_part = []
+        if names:
+            for name in names:
+                name_clean = name.strip()
+                conds_for_part.append(
+                    func.lower(func.coalesce(FileIndex.tags, '')).contains(f"person:{name_clean.lower()}")
+                )
+        else:
+            conds_for_part.append(or_(
                 func.lower(func.coalesce(FileIndex.tags, '')).contains(f"rel:{p_clean}"),
                 func.lower(func.coalesce(FileIndex.tags, '')).contains(f"category:{p_clean}"),
-                func.lower(func.coalesce(FileIndex.tags, '')).contains(f"person:{p_clean}"),
-                func.lower(func.coalesce(FileIndex.tags, '')).contains(p_clean)
+                func.lower(func.coalesce(FileIndex.tags, '')).contains(f"person:{p_clean}")
             ))
-        else:
-            person_conds = [
-                or_(
-                    func.lower(func.coalesce(FileIndex.tags, '')).contains(f"person:{name.lower()}"),
-                    func.lower(func.coalesce(FileIndex.tags, '')).contains(name.lower())
-                )
-                for name in names
-            ]
-            all_conds.append(or_(*person_conds) if len(person_conds) > 1 else person_conds[0])
+        all_conds.append(or_(*conds_for_part) if len(conds_for_part) > 1 else conds_for_part[0])
     return or_(*all_conds) if len(all_conds) > 1 else all_conds[0]
 
 def _build_metadata_field_filter(field_name: str, val: str):
@@ -517,7 +650,14 @@ def _build_search_query(query, s, q_base=None):
                 elif prefix == "length:": filter_cond = _build_duration_filter(val)
                 elif prefix == "object:": filter_cond = _build_object_filter(val)
                 elif prefix == "person:": filter_cond = _build_person_filter(val)
-                elif prefix in ("rel:", "relation:", "kinship:", "category:"): filter_cond = _build_relation_filter(val)
+                elif prefix in ("rel:", "relation:", "kinship:"):
+                    filter_cond = _build_relation_filter(val)
+                elif prefix == "category:":
+                    val_clean = val.strip().lower().strip('"\'')
+                    if val_clean in STANDARD_CATEGORIES or any(val_clean.startswith(c) for c in STANDARD_CATEGORIES) or val_clean.startswith("."):
+                        filter_cond = _build_type_filter(val)
+                    else:
+                        filter_cond = _build_relation_filter(val)
                 elif prefix == "tag:": filter_cond = _build_tag_filter(val)
                 elif prefix == "name:": filter_cond = text_filter(FileIndex.filename, val.lower())
                 elif prefix == "camera:": filter_cond = _build_metadata_field_filter("camera", val)

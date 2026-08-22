@@ -577,48 +577,46 @@ useEffect(() => {
 }, [isResizing]);
 
 useEffect(() => {
-  const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
-  if (showFull) {
-    axios.get(`${API}/timeline?category=${explorer.filterCategory}`).then(r => {
-      const groups = new Map();
-      r.data.forEach(item => {
-        if (!item.date) return;
-        const d = new Date(item.date);
-        if (!isNaN(d.getTime())) {
-          const key = dateFormatter.format(d);
-          if (!groups.has(key)) {
-            groups.set(key, { 
-              key, 
-              yearMonth: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`,
-              timestamp: d.getTime(),
-              count: 0
-            });
-          }
-          groups.get(key).count += (item.count || 0);
+  // Always fetch timeline index in background for accurate jump offsets and bidirectional navigation
+  axios.get(`${API}/timeline?category=${explorer.filterCategory}`).then(r => {
+    const groups = new Map();
+    r.data.forEach(item => {
+      if (!item.date) return;
+      const d = new Date(item.date);
+      if (!isNaN(d.getTime())) {
+        const key = dateFormatter.format(d);
+        if (!groups.has(key)) {
+          groups.set(key, { 
+            key, 
+            yearMonth: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`,
+            timestamp: d.getTime(),
+            count: 0
+          });
         }
-      });
-      const sorted = Array.from(groups.values()).sort((a, b) => b.timestamp - a.timestamp);
-      
-      let currentOffsetDesc = 0;
-      for (let i = 0; i < sorted.length; i++) {
-        sorted[i].offsetDesc = currentOffsetDesc;
-        currentOffsetDesc += sorted[i].count;
+        groups.get(key).count += (item.count || 0);
       }
-      
-      let currentOffsetAsc = 0;
-      for (let i = sorted.length - 1; i >= 0; i--) {
-        sorted[i].offsetAsc = currentOffsetAsc;
-        currentOffsetAsc += sorted[i].count;
-      }
+    });
+    const sorted = Array.from(groups.values()).sort((a, b) => b.timestamp - a.timestamp);
+    
+    let currentOffsetDesc = 0;
+    for (let i = 0; i < sorted.length; i++) {
+      sorted[i].offsetDesc = currentOffsetDesc;
+      currentOffsetDesc += sorted[i].count;
+    }
+    
+    let currentOffsetAsc = 0;
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      sorted[i].offsetAsc = currentOffsetAsc;
+      currentOffsetAsc += sorted[i].count;
+    }
 
-      setFullTimelineData(sorted);
-    }).catch(e => console.warn('Failed to load full timeline', e));
-  }
-}, [settings.show_full_timeline, settings.ui_preferences?.show_full_timeline, explorer.filterCategory, indexer.running, timelineUpdateTick]);
+    setFullTimelineData(sorted);
+  }).catch(e => console.warn('Failed to load full timeline', e));
+}, [explorer.filterCategory, indexer.running, timelineUpdateTick]);
 
 const timelineItems = useMemo(() => {
   const showFull = settings.show_full_timeline || settings.ui_preferences?.show_full_timeline;
-  if (showFull && fullTimelineData.length > 0) {
+  if (showFull && fullTimelineData && fullTimelineData.length > 0) {
     let items = [...fullTimelineData];
     if (explorer.sortBy === 'date' && explorer.sortOrder === 'asc') items.reverse();
     return items.map(t => t.key);

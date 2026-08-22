@@ -3,7 +3,7 @@ import { FileCard } from './FileCard';
 
 export function DateGroup({ dateKey, filesGroup, viewMode, checkedFiles, toggleCheck, handleItemClick, openContainingFolder, setSelected, openFile, renderThumb, filterCategory, indexer, checkFileReadOnly, getImplicitSelection, pendingLocatePath }) {
   return (
-    <div id={`date-group-${dateKey}`} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 200px' }}>
+    <div id={`date-group-${dateKey}`}>
       <h2 className="date-header" data-date={dateKey}>{dateKey}</h2>
       <div className={viewMode === 'grid' ? 'grid' : 'list'}>
           {(() => {

@@ -28,8 +28,15 @@ import backend.app.shared_state as shared_state
 from backend.app.utils.validators import check_no_scanners_running, lock_data_operation
 from backend.app.state import STATE
 from backend.app.routes.tags import export_tags_internal, import_tags_internal
+from backend.app.utils.log_utils import log_operation
 
 router = APIRouter()
+
+@router.post("/log/frontend")
+def log_frontend_message(body: dict = Body(...)):
+    msg = body.get("message", "")
+    log_operation(f"[FRONTEND] {msg}", user_logs_enabled=True)
+    return {"status": "ok"}
 
 @router.get("/stats")
 def stats():
@@ -137,9 +144,9 @@ def stats():
 @router.get("/timeline")
 def timeline(category: str = "all"):
     with SessionLocal() as s:
-        exif_date = func.json_extract(FileIndex.metadata_json, '$.date')
-        exif_date_norm = func.replace(func.substr(exif_date, 1, 10), ':', '-')
-        mod_date = func.substr(FileIndex.modified, 1, 10)
+        exif_date = func.nullif(func.json_extract(FileIndex.metadata_json, '$.date'), '')
+        exif_date_norm = func.nullif(func.replace(func.substr(exif_date, 1, 10), ':', '-'), '')
+        mod_date = func.nullif(func.substr(FileIndex.modified, 1, 10), '')
         best_date_str = func.coalesce(exif_date_norm, mod_date)
         best_date = func.date(best_date_str)
         
