@@ -50,9 +50,8 @@ export function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, on
         onMouseDown={() => setIsActive(true)}
         onMouseUp={() => setIsActive(false)}
         style={{
-          transition: animationsEnabled ? 'all 0.3s ease' : 'none',
-          opacity: animationsEnabled ? (isMounted ? 1 : 0) : 1,
-          transform: animationsEnabled ? (isActive ? 'scale(0.97)' : isHovered ? 'translateY(-2px)' : isMounted ? 'none' : 'translateY(10px)') : 'none',
+          transition: animationsEnabled ? 'transform 0.2s ease, box-shadow 0.2s ease' : 'none',
+          transform: animationsEnabled ? (isActive ? 'scale(0.97)' : isHovered ? 'translateY(-2px)' : 'none') : 'none',
           boxShadow: animationsEnabled && isActive ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none',
           background: '#111827',
           border: '1px solid #24324a',
@@ -109,9 +108,8 @@ export function FileCard({ item, viewMode, isChecked, onToggleCheck, onClick, on
       onMouseDown={() => setIsActive(true)}
       onMouseUp={() => setIsActive(false)}
       style={{
-        transition: animationsEnabled ? 'all 0.3s ease' : 'none',
-        opacity: animationsEnabled ? (isMounted ? 1 : 0) : 1,
-        transform: animationsEnabled ? (isActive ? 'scale(0.97)' : isHovered ? 'translateY(-2px)' : isMounted ? 'none' : 'translateY(10px)') : 'none',
+        transition: animationsEnabled ? 'transform 0.2s ease, box-shadow 0.2s ease' : 'none',
+        transform: animationsEnabled ? (isActive ? 'scale(0.97)' : isHovered ? 'translateY(-2px)' : 'none') : 'none',
         boxShadow: isProcessing ? '0 0 0 2px #3b82f6, 0 0 15px rgba(59, 130, 246, 0.4)' : isImplicit ? '0 0 0 1px #14b8a6' : animationsEnabled && isActive ? '0 5px 10px -3px rgba(0,0,0,0.2)' : animationsEnabled && isHovered ? '0 10px 15px -3px rgba(0,0,0,0.3)' : 'none',
         backgroundColor: isProcessing ? '#1e3a8a' : isImplicit ? 'rgba(20, 184, 166, 0.08)' : isAltGroup ? '#1e293b' : undefined,
         border: isProcessing ? '1px solid #3b82f6' : isImplicit ? '1px solid #14b8a6' : undefined

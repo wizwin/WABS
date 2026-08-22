@@ -405,3 +405,74 @@ A dedicated 5-stage test suite validates the security architecture:
   - **Windows**: BitLocker Drive Encryption / VeraCrypt volume
   - **Linux**: LUKS (Linux Unified Key Setup) / `dm-crypt`
   - **macOS**: FileVault full-disk encryption
+
+---
+
+### 13. AI-Enabled Search Translation & Universal Query Engine (`system.py`, `search.py`)
+
+WABS integrates a zero-dependency, local/cloud LLM translation pipeline that translates conversational natural language search intent into structured WABS search syntax across all media and file formats.
+
+```
+                      ┌────────────────────────┐
+                      │ User Natural Search    │
+                      └───────────┬────────────┘
+                                  │
+                       [ Model Detection ]
+                                  │
+         ┌────────────────────────┴────────────────────────┐
+         ▼                                                 ▼
+┌───────────────────────────────┐         ┌───────────────────────────────┐
+│ Tiny / Edge LLMs (1B–3B)      │         │ Large Frontier LLMs (70B+)    │
+│ (Llama 3.2 1B/3B, Qwen 1.5B/3B,│        │ (GPT-4o, Claude 3.5, Gemini)  │
+│  Phi-3 mini, Gemma 2B, Ollama)│         │                               │
+├───────────────────────────────┤         ├───────────────────────────────┤
+│ • Compact Tier Prompt (~140 tok)│       │ • Extended Tier Prompt (~450) │
+│ • High-density syntax mapping │         │ • Comprehensive multi-domain  │
+│ • Max generation tokens = 100 │         │ • Max generation tokens = 200 │
+└───────────────┬───────────────┘         └───────────────┬───────────────┘
+                │                                         │
+                │                               Context Overflow (400 / 413)?
+                │                                  │ (Auto-Fallback)
+                │                                  ▼
+                │                          [ Re-attempt with ]
+                │                          [  Compact Prompt ]
+                │                                  │
+                └────────────────┬─────────────────┘
+                                 │
+                                 ▼
+              ┌─────────────────────────────────────┐
+              │ Output Sanitizer Pipeline           │
+              │ • Markdown block & fence stripping  │
+              │ • Prefix removal (Query:, Result:)  │
+              │ • JSON envelope unwrapping          │
+              │ • Conversational preamble filtering │
+              └──────────────────┬──────────────────┘
+                                 │
+                                 ▼
+                     [ Clean WABS Query ]
+```
+
+#### 13.1 Dynamic Prompt Tiering & Model Awareness (`_is_tiny_model`)
+To ensure optimal performance without attention degradation or context overflow on resource-constrained models, WABS implements dynamic prompt tiering:
+* **Model Detection (`_is_tiny_model`)**: Detects compact and edge models based on identifier patterns (`1b`, `1.5b`, `2b`, `3b`, `0.5b`, `mini`, `tiny`, `small`, `phi-`, `smollm`, `mobile`, `qwen:1.5b`, `llama3.2:1b`, `gemma:2b`).
+* **Compact Prompt Tier (~140 tokens)**: Designed specifically for small local models (such as those running under Ollama or LM Studio on low-spec hardware). Provides an ultra-dense syntax mapping and core few-shot examples with a strict 100-token generation cap.
+* **Extended Prompt Tier (~450 tokens)**: Designed for large parameter frontier models (GPT-4o, Claude 3.5, Gemini, Llama 70B), offering exhaustive multi-domain few-shot examples across all file categories.
+
+#### 13.2 Resilient Context Overflow Fallback
+If a configured local endpoint encounters a token budget overflow or returns `HTTP 400`/`413`/`422` Context Length Exceeded on the extended prompt, the backend automatically catches the exception, switches to the **Compact Prompt Tier**, and re-executes the query transparently with zero user intervention.
+
+#### 13.3 Multi-Stage Output Sanitization (`_sanitize_ai_search_query`)
+Small LLMs often produce unwanted formatting artifacts. The sanitizer pipeline guarantees deterministic query generation:
+1. **JSON Envelope Unwrapping**: Automatically parses responses wrapped in JSON containers (e.g. `{"query": "..."}`).
+2. **Markdown Fence Stripping**: Extracts inner text from ```` ```wabs ````, ```` ```sql ````, or generic ```` ``` ```` code blocks.
+3. **Prefix Removal**: Removes conversational prefixes (`Query:`, `Search Query:`, `Result:`, `Output:`, `Here is the query:`).
+4. **Conversational Line Filtering**: Identifies and extracts the line containing valid WABS syntax operators, discarding conversational preambles and explanatory postambles.
+5. **Quote Normalization**: Strips surrounding single and double quotes while preserving internal phrase quotes (e.g., `"John Doe"`).
+
+#### 13.4 Search Query Engine & Dispatcher (`search.py`)
+The search engine tokenizes search strings into positive (`+`), negative (`-`), and optional terms:
+* **Aspect Ratio Filter (`aspect:landscape|portrait|square`)**: Compares image and video `width` and `height` dimensions parsed from EXIF/metadata.
+* **Resolution Engine (`resolution:`)**: Translates standard presets (`4k`, `2k`, `1080p`, `720p`, `sd`) into dimension thresholds, supporting relational math (`>=1080p`, `<4k`).
+* **Multi-Value Comma Lists**: Allows comma-separated disjunctions across all primary token types (`person:Alice,Bob`, `rel:parent,child`, `object:pizza,sushi`, `type:audio,video`, `genre:rock,jazz`).
+* **Kinship & Relationship Joins**: Transparently queries `relationships.db` to map social classifications (`rel:spouse`, `category:family`) to tagged person identities.
+* **FTS5 Full-Text Integration**: Interleaves structural metadata filters with SQLite FTS5 index searches across both `files_fts` and OCR/distilled document keywords (`file_text_fts`).

@@ -44,7 +44,6 @@ export function Sidebar({
           <ActionButton className="" style={{ color: page === 'explorer' ? '#38bdf8' : undefined }} onClick={() => {
             let cat = explorer.filterCategory;
             if (cat === 'duplicates') {
-              cat = 'all';
               explorer.setFilterCategory('all');
               setQuery('');
               explorer.setSearchCache([]);
@@ -55,7 +54,6 @@ export function Sidebar({
             explorer.setCheckedFiles(new Set());
             explorer.setVirtualFolderId(null);
             explorer.setCurrentVirtualFolder(null);
-            explorer.loadFiles(0, false, cat, explorer.sortBy, explorer.sortOrder, 'explorer', null);
           }}>
             <FolderIcon fontSize="small" /> Explorer
           </ActionButton>

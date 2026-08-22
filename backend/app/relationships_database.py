@@ -80,9 +80,12 @@ def init_relationships_database(rel_db_path: Path = None):
     conn.commit()
     conn.close()
 
-def add_person_connection(person_id: int, related_person_id: int, relation_type: str, rel_db_path: Path = None) -> bool:
+def add_person_connection(person_id: int, related_person_id: int, relation_type: str, auto_inherit: bool = True, rel_db_path: Path = None) -> bool:
     """
     Adds a connection between two persons (and the reciprocal relation).
+    When auto_inherit is True, automatically infers:
+    - Sibling-sibling links between children of the same parent
+    - Co-parent child links between spouses
     """
     if person_id == related_person_id:
         return False
@@ -104,6 +107,84 @@ def add_person_connection(person_id: int, related_person_id: int, relation_type:
             INSERT OR REPLACE INTO person_connections (person_id, related_person_id, relation_type, created_at)
             VALUES (?, ?, ?, datetime('now'))
         """, (related_person_id, person_id, reciprocal_type))
+
+        if auto_inherit:
+            # 1. If linking Parent -> Child or Child -> Parent
+            if rel_type == "parent":
+                parent_id, child_id = person_id, related_person_id
+            elif rel_type == "child":
+                parent_id, child_id = related_person_id, person_id
+            else:
+                parent_id, child_id = None, None
+
+            if parent_id and child_id:
+                # Link other children of this parent as siblings to this child
+                cursor.execute("""
+                    SELECT related_person_id FROM person_connections 
+                    WHERE person_id = ? AND relation_type = 'child' AND related_person_id != ?
+                """, (parent_id, child_id))
+                other_children = [r[0] for r in cursor.fetchall()]
+                for sib_id in other_children:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                        VALUES (?, ?, 'sibling', datetime('now'))
+                    """, (child_id, sib_id))
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                        VALUES (?, ?, 'sibling', datetime('now'))
+                    """, (sib_id, child_id))
+
+                # Link spouse of this parent as co-parent to this child
+                cursor.execute("""
+                    SELECT related_person_id FROM person_connections
+                    WHERE person_id = ? AND relation_type = 'spouse'
+                """, (parent_id,))
+                spouses = [r[0] for r in cursor.fetchall()]
+                for sp_id in spouses:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                        VALUES (?, ?, 'parent', datetime('now'))
+                    """, (sp_id, child_id))
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                        VALUES (?, ?, 'child', datetime('now'))
+                    """, (child_id, sp_id))
+
+            # 2. If linking Spouse -> Spouse
+            elif rel_type == "spouse":
+                sp1, sp2 = person_id, related_person_id
+                # Children of sp1 -> link as children of sp2
+                cursor.execute("""
+                    SELECT related_person_id FROM person_connections
+                    WHERE person_id = ? AND relation_type = 'child'
+                """, (sp1,))
+                for ch_row in cursor.fetchall():
+                    ch_id = ch_row[0]
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                        VALUES (?, ?, 'parent', datetime('now'))
+                    """, (sp2, ch_id))
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                        VALUES (?, ?, 'child', datetime('now'))
+                    """, (ch_id, sp2))
+
+                # Children of sp2 -> link as children of sp1
+                cursor.execute("""
+                    SELECT related_person_id FROM person_connections
+                    WHERE person_id = ? AND relation_type = 'child'
+                """, (sp2,))
+                for ch_row in cursor.fetchall():
+                    ch_id = ch_row[0]
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                        VALUES (?, ?, 'parent', datetime('now'))
+                    """, (sp1, ch_id))
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                        VALUES (?, ?, 'child', datetime('now'))
+                    """, (ch_id, sp1))
+
         conn.commit()
     return True
 

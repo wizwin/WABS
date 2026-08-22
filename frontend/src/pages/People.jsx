@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import FaceIcon from '@mui/icons-material/Face';
 import CloseIcon from '@mui/icons-material/Close';
 import PlayCircleIcon from '@mui/icons-material/PlayCircle';
@@ -30,8 +30,11 @@ export default function People(props) {
     clusterAllUnknowns, reclassifyAllUnknowns, purgeThreshold, setPurgeThreshold, purgeSmallUnknowns,
     unknownPeoplePage, sortedUnknownPeopleForUI,
     showRelationshipTree, setShowRelationshipTree,
-    activeCategoryFilter, categoryCounts, relationshipTreeData, mePerson
+    activeCategoryFilter, categoryCounts, relationshipTreeData, mePerson,
+    savePersonCategory, addPersonConnection
   } = props;
+
+  const [quickRelPerson, setQuickRelPerson] = useState(null);
 
   const isClusterSelectedActive = dataOpProgress?.id === 'clusterSelected';
   const isReclassifySelectedActive = dataOpProgress?.id === 'reclassifySelected';
@@ -202,6 +205,11 @@ export default function People(props) {
                 treeData={relationshipTreeData}
                 openPersonPhotos={openPersonPhotos}
                 getPersonThumbUrl={getPersonThumbUrl}
+                namedPeopleDropdown={sortedNamedPeopleDropdown}
+                addPersonConnection={addPersonConnection}
+                doSearch={props.doSearch}
+                setQuery={props.setQuery}
+                setPage={props.setPage}
               />
             )}
 
@@ -403,27 +411,66 @@ export default function People(props) {
                     </div>
 
                     {/* Category & Relation Badge */}
-                    {p.category && (
-                      <div style={{ marginTop: '-4px' }}>
-                        <span style={{
-                          fontSize: '11px',
-                          padding: '2px 8px',
-                          borderRadius: '10px',
-                          background: p.category === 'Family' ? 'rgba(59, 130, 246, 0.2)' :
-                                      p.category === 'Friends' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(167, 139, 250, 0.2)',
-                          color: p.category === 'Family' ? '#93c5fd' :
-                                 p.category === 'Friends' ? '#86efac' : '#c4b5fd',
-                          border: `1px solid ${p.category === 'Family' ? 'rgba(59, 130, 246, 0.4)' : p.category === 'Friends' ? 'rgba(34, 197, 94, 0.4)' : 'rgba(167, 139, 250, 0.4)'}`,
-                          fontWeight: '500',
-                          display: 'inline-block',
-                          maxWidth: '100%',
-                          whiteSpace: 'nowrap',
-                          textOverflow: 'ellipsis',
-                          overflow: 'hidden'
-                        }}>
-                          {p.subcategory || p.category}
-                          {p.relation_label ? ` • ${p.relation_label}` : ''}
-                        </span>
+                    {!isMePerson && (
+                      <div style={{ marginTop: '-4px', display: 'flex', alignItems: 'center' }}>
+                        {p.category ? (
+                          <span
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setQuickRelPerson(p);
+                            }}
+                            style={{
+                              fontSize: '11px',
+                              padding: '2px 8px',
+                              borderRadius: '10px',
+                              background: p.category === 'Family' ? 'rgba(59, 130, 246, 0.2)' :
+                                          p.category === 'Friends' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(167, 139, 250, 0.2)',
+                              color: p.category === 'Family' ? '#93c5fd' :
+                                     p.category === 'Friends' ? '#86efac' : '#c4b5fd',
+                              border: `1px solid ${p.category === 'Family' ? 'rgba(59, 130, 246, 0.4)' : p.category === 'Friends' ? 'rgba(34, 197, 94, 0.4)' : 'rgba(167, 139, 250, 0.4)'}`,
+                              fontWeight: '500',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              maxWidth: '100%',
+                              whiteSpace: 'nowrap',
+                              textOverflow: 'ellipsis',
+                              overflow: 'hidden',
+                              cursor: 'pointer',
+                              transition: 'opacity 0.15s'
+                            }}
+                            title="Click to quickly change relationship"
+                          >
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {p.subcategory || p.category}{p.relation_label ? ` • ${p.relation_label}` : ''}
+                            </span>
+                            <span style={{ fontSize: '9px', opacity: 0.7 }}>▾</span>
+                          </span>
+                        ) : (
+                          <span
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setQuickRelPerson(p);
+                            }}
+                            style={{
+                              fontSize: '11px',
+                              padding: '2px 8px',
+                              borderRadius: '10px',
+                              background: 'rgba(51, 65, 85, 0.3)',
+                              color: '#94a3b8',
+                              border: '1px dashed #475569',
+                              fontWeight: '500',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '3px',
+                              cursor: 'pointer',
+                              transition: 'all 0.15s'
+                            }}
+                            title="Click to quickly set relationship"
+                          >
+                            + Set Relation
+                          </span>
+                        )}
                       </div>
                     )}
 
@@ -634,6 +681,192 @@ export default function People(props) {
         )}
         </div>
         }
+
+        {/* Quick Relationship Modal */}
+        {quickRelPerson && (
+          <div
+            onClick={() => setQuickRelPerson(null)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0, 0, 0, 0.75)',
+              zIndex: 1000,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '20px'
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                background: '#0f172a',
+                border: '1px solid #334155',
+                borderRadius: '16px',
+                padding: '20px',
+                width: '100%',
+                maxWidth: '460px',
+                boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.7)'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <div style={{ width: '38px', height: '38px', borderRadius: '50%', overflow: 'hidden', background: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <PersonThumb url={getPersonThumbUrl(quickRelPerson)} size={38} />
+                  </div>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '15px', color: '#f8fafc' }}>
+                      Set Relationship for {quickRelPerson.name}
+                    </h3>
+                    <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                      Current: {quickRelPerson.category ? `${quickRelPerson.category} (${quickRelPerson.subcategory || ''})` : 'Uncategorized'}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setQuickRelPerson(null)}
+                  style={{ background: 'transparent', border: 'none', color: '#94a3b8', fontSize: '18px', cursor: 'pointer' }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Preset Relationship Buttons */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {/* Family Presets */}
+                <div>
+                  <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#38bdf8', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    🏠 Family
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
+                    {[
+                      { sub: 'Spouse', label: '💍 Spouse' },
+                      { sub: 'Parent', label: '👨‍👩‍👦 Parent' },
+                      { sub: 'Child', label: '👶 Child' },
+                      { sub: 'Sibling', label: '👫 Sibling' },
+                      { sub: 'Grandparent', label: '👴 Grandparent' },
+                      { sub: 'Aunt / Uncle', label: '👵 Aunt/Uncle' },
+                      { sub: 'Cousin (1st)', label: '🧑‍🤝‍🧑 1st Cousin' },
+                      { sub: 'In-law', label: '🤝 In-law' },
+                      { sub: 'Other Family', label: '🏡 Other Fam' }
+                    ].map(({ sub, label }) => (
+                      <button
+                        key={sub}
+                        onClick={() => {
+                          savePersonCategory(quickRelPerson.id, 'Family', sub, '');
+                          setQuickRelPerson(null);
+                        }}
+                        style={{
+                          padding: '7px 8px',
+                          borderRadius: '8px',
+                          background: (quickRelPerson.category === 'Family' && quickRelPerson.subcategory === sub) ? '#2563eb' : '#1e293b',
+                          color: (quickRelPerson.category === 'Family' && quickRelPerson.subcategory === sub) ? '#ffffff' : '#e2e8f0',
+                          border: '1px solid #334155',
+                          fontSize: '12px',
+                          cursor: 'pointer',
+                          textAlign: 'left'
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Friends Presets */}
+                <div>
+                  <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#34d399', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    👥 Friends
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
+                    {[
+                      { sub: 'Close Friend', label: '⭐ Close Friend' },
+                      { sub: 'Colleague', label: '💼 Colleague' },
+                      { sub: 'Classmate', label: '🎓 Classmate' },
+                      { sub: 'Acquaintance', label: '🤝 Acquaintance' },
+                      { sub: 'Other Friend', label: '🟢 Other Friend' }
+                    ].map(({ sub, label }) => (
+                      <button
+                        key={sub}
+                        onClick={() => {
+                          savePersonCategory(quickRelPerson.id, 'Friends', sub, '');
+                          setQuickRelPerson(null);
+                        }}
+                        style={{
+                          padding: '7px 8px',
+                          borderRadius: '8px',
+                          background: (quickRelPerson.category === 'Friends' && quickRelPerson.subcategory === sub) ? '#059669' : '#1e293b',
+                          color: (quickRelPerson.category === 'Friends' && quickRelPerson.subcategory === sub) ? '#ffffff' : '#e2e8f0',
+                          border: '1px solid #334155',
+                          fontSize: '12px',
+                          cursor: 'pointer',
+                          textAlign: 'left'
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Others Presets */}
+                <div>
+                  <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#c084fc', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    🌐 Others
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
+                    {[
+                      { sub: 'Neighbor', label: '🏘️ Neighbor' },
+                      { sub: 'Service Contact', label: '🔧 Service' },
+                      { sub: 'Unknown', label: 'Other' }
+                    ].map(({ sub, label }) => (
+                      <button
+                        key={sub}
+                        onClick={() => {
+                          savePersonCategory(quickRelPerson.id, 'Others', sub, '');
+                          setQuickRelPerson(null);
+                        }}
+                        style={{
+                          padding: '7px 8px',
+                          borderRadius: '8px',
+                          background: (quickRelPerson.category === 'Others' && quickRelPerson.subcategory === sub) ? '#7c3aed' : '#1e293b',
+                          color: (quickRelPerson.category === 'Others' && quickRelPerson.subcategory === sub) ? '#ffffff' : '#e2e8f0',
+                          border: '1px solid #334155',
+                          fontSize: '12px',
+                          cursor: 'pointer',
+                          textAlign: 'left'
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Modal Footer / Clear Button */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '18px', paddingTop: '12px', borderTop: '1px solid #334155' }}>
+                {quickRelPerson.category ? (
+                  <button
+                    onClick={() => {
+                      savePersonCategory(quickRelPerson.id, null, null, '');
+                      setQuickRelPerson(null);
+                    }}
+                    style={{ background: 'transparent', border: '1px solid #ef4444', color: '#f87171', padding: '6px 12px', borderRadius: '8px', fontSize: '12px', cursor: 'pointer' }}
+                  >
+                    Clear / Uncategorize
+                  </button>
+                ) : <span />}
+                <button
+                  onClick={() => setQuickRelPerson(null)}
+                  style={{ background: '#334155', border: 'none', color: '#cbd5e1', padding: '6px 14px', borderRadius: '8px', fontSize: '12px', cursor: 'pointer' }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
     </>
   );
 }

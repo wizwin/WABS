@@ -7,6 +7,7 @@ STANDARD_CATEGORIES = [
 
 SEARCH_PREFIXES = [
     "date:", "tag:", "type:", "name:", "size:", "length:", "object:", "person:",
+    "rel:", "relation:", "kinship:", "category:", "aspect:",
     "camera:", "resolution:", "fps:", "artist:", "album:", "genre:", "meta:"
 ]
 

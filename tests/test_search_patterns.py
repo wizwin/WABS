@@ -27,7 +27,7 @@ def setup_test_data(session):
             modified="2021-06-15 10:00:00",
             extension=".jpg",
             tags="object:car,tag:family_trip,person:John Doe",
-            metadata_json=json.dumps({"date": "2021:06:15 10:00:00", "camera": "Sony A7III"})
+            metadata_json=json.dumps({"date": "2021:06:15 10:00:00", "camera": "Sony A7III", "width": 1920, "height": 1080, "resolution": "1920x1080"})
         ),
         FileIndex(
             id=2,
@@ -38,7 +38,7 @@ def setup_test_data(session):
             modified="2023-10-25 14:30:00",
             extension=".png",
             tags="object:beach,tag:blur,person:Jane Smith",
-            metadata_json=json.dumps({"date": "2023:10:25 14:30:00", "camera": "Canon R5"})
+            metadata_json=json.dumps({"date": "2023:10:25 14:30:00", "camera": "Canon R5", "width": 1080, "height": 1920, "resolution": "1080x1920"})
         ),
         FileIndex(
             id=3,
@@ -60,7 +60,7 @@ def setup_test_data(session):
             modified="2020-03-10 09:00:00",
             extension=".mp4",
             tags="object:car,tag:travel",
-            metadata_json=json.dumps({"duration": 1800, "resolution": "4K"}) # 30m = 1800s
+            metadata_json=json.dumps({"duration": 1800, "resolution": "4K", "width": 3840, "height": 2160}) # 30m = 1800s
         ),
         FileIndex(
             id=5,
@@ -192,14 +192,89 @@ def test_search_patterns():
         assert 4 not in res_ids and len(res_ids) == 4, f"Expected files without file 4, got {res_ids}"
         print("  -> Passed")
 
-        print("Test 21: search_suggestions tag:")
+        print("Test 21: aspect:landscape")
+        res = _build_search_query("aspect:landscape", session).all()
+        res_ids = sorted([r.id for r in res])
+        assert res_ids == [1, 4], f"Expected files [1, 4], got {res_ids}"
+        print("  -> Passed")
+
+        print("Test 22: aspect:portrait")
+        res = _build_search_query("aspect:portrait", session).all()
+        assert len(res) == 1 and res[0].id == 2, f"Expected file 2, got {[r.id for r in res]}"
+        print("  -> Passed")
+
+        print("Test 23: resolution:4k")
+        res = _build_search_query("resolution:4k", session).all()
+        assert len(res) == 1 and res[0].id == 4, f"Expected file 4, got {[r.id for r in res]}"
+        print("  -> Passed")
+
+        print("Test 24: resolution:>=1080p")
+        res = _build_search_query("resolution:>=1080p", session).all()
+        res_ids = sorted([r.id for r in res])
+        assert res_ids == [1, 2, 4], f"Expected files [1, 2, 4], got {res_ids}"
+        print("  -> Passed")
+
+        print("Test 25: comma-separated person:john,jane")
+        res = _build_search_query("person:john,jane", session).all()
+        res_ids = sorted([r.id for r in res])
+        assert res_ids == [1, 2], f"Expected files [1, 2], got {res_ids}"
+        print("  -> Passed")
+
+        print("Test 26: comma-separated type:audio,video")
+        res = _build_search_query("type:audio,video", session).all()
+        res_ids = sorted([r.id for r in res])
+        assert res_ids == [3, 4], f"Expected files [3, 4], got {res_ids}"
+        print("  -> Passed")
+
+        print("Test 27: search_suggestions tag:")
         sugg = search_suggestions("tag:fam")
         assert sugg["type"] == "tag" and any("family_trip" in s for s in sugg["suggestions"]), f"Unexpected suggestions: {sugg}"
         print("  -> Passed")
 
-        print("Test 22: search_suggestions type:")
+        print("Test 28: search_suggestions type:")
         sugg = search_suggestions("type:aud")
         assert sugg["type"] == "tag" and any("type:audio" in s for s in sugg["suggestions"]), f"Unexpected suggestions: {sugg}"
+        print("  -> Passed")
+
+        print("Test 29: search_suggestions aspect:")
+        sugg = search_suggestions("aspect:land")
+        assert sugg["type"] == "tag" and any("aspect:landscape" in s for s in sugg["suggestions"]), f"Unexpected suggestions: {sugg}"
+        print("  -> Passed")
+
+        print("Test 30: search_suggestions resolution:")
+        sugg = search_suggestions("resolution:4")
+        assert sugg["type"] == "tag" and any("resolution:4k" in s for s in sugg["suggestions"]), f"Unexpected suggestions: {sugg}"
+        print("  -> Passed")
+
+        print("Test 31: AI Query Sanitizer (Tiny LLM & Large LLM outputs)")
+        from backend.app.routes.system import _sanitize_ai_search_query
+        
+        # Test markdown code block
+        assert _sanitize_ai_search_query("```wabs\ntype:document tag:ocr Amazon date:2023\n```") == "type:document tag:ocr Amazon date:2023"
+        # Test Query: prefix
+        assert _sanitize_ai_search_query("Query: person:Alice object:pizza type:photo") == "person:Alice object:pizza type:photo"
+        # Test Search Query: prefix
+        assert _sanitize_ai_search_query("Search Query: type:video resolution:4k fps:>=60") == "type:video resolution:4k fps:>=60"
+        # Test JSON object from tiny model
+        assert _sanitize_ai_search_query('{"query": "rel:spouse object:dinner \\"New York\\""}') == 'rel:spouse object:dinner "New York"'
+        # Test conversational preamble and trailing text
+        assert _sanitize_ai_search_query("Here is the search query:\nperson:Alice person:Bob Tokyo\nThis query will find photos of Alice and Bob.") == "person:Alice person:Bob Tokyo"
+        # Test quoted string
+        assert _sanitize_ai_search_query('"*.pdf "deep learning" Python"') == '*.pdf "deep learning" Python'
+        # Test clean string from large model
+        assert _sanitize_ai_search_query("type:audio genre:jazz,rock artist:\"Miles Davis\" length:>5m") == 'type:audio genre:jazz,rock artist:"Miles Davis" length:>5m'
+        print("Test 32: Model Awareness & Dynamic Prompt Tiering")
+        from backend.app.routes.system import _is_tiny_model, _get_system_prompt
+        assert _is_tiny_model("llama3.2:1b") is True
+        assert _is_tiny_model("qwen2.5:1.5b") is True
+        assert _is_tiny_model("phi3:mini") is True
+        assert _is_tiny_model("gpt-4o") is False
+        assert _is_tiny_model("claude-3-5-sonnet") is False
+
+        compact = _get_system_prompt(is_tiny=True)
+        extended = _get_system_prompt(is_tiny=False)
+        assert len(compact) < len(extended)
+        assert len(compact.split()) < 120 # Ultra-compact for small context windows
         print("  -> Passed")
 
     print("\nALL SEARCH PATTERN TESTS PASSED SUCCESSFULLY!")

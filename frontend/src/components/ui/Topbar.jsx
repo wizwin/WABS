@@ -95,19 +95,24 @@ export function Topbar({
           )}
         </div>
         {showSearchHelp && (
-          <div className="floating-panel" style={{ position: 'absolute', top: 'calc(100% + 8px)', right: '0', background: '#1e293b', border: '1px solid #334155', padding: '16px', zIndex: 100, borderRadius: '12px', width: '320px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)', color: '#cbd5e1', fontSize: '13px' }}>
+          <div className="floating-panel" style={{ position: 'absolute', top: 'calc(100% + 8px)', right: '0', background: '#1e293b', border: '1px solid #334155', padding: '16px', zIndex: 100, borderRadius: '12px', width: '330px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)', color: '#cbd5e1', fontSize: '13px' }}>
             <h4 style={{ margin: '0 0 10px 0', color: '#f8fafc', fontSize: '14px' }}>Search Patterns Supported</h4>
             <ul style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <li><b>type:</b>audio <i>(or video, document)</i></li>
               <li><b>object:</b>car <i>(or beach, indoor)</i></li>
               <li><b>person:</b>"john doe"</li>
+              <li><b>rel:</b>spouse <i>(or sister, child, sibling)</i></li>
+              <li><b>category:</b>family <i>(or friends, others)</i></li>
               <li><b>tag:</b>family_trip <i>(or custom_tag)</i></li>
               <li><b>size:</b>&gt;100MB, &lt;5GB</li>
               <li><b>length:</b>&gt;5m, &lt;1h <i>(duration)</i></li>
               <li><b>date:</b>2020-2022, 2023-10-25</li>
               <li><b>*.mp3</b> or <b>*vacation*</b> (wildcards)</li>
             </ul>
-            <p style={{ margin: '12px 0 0 0', fontSize: '12px', color: '#94a3b8' }}>Combine with spaces (Match Any). Use <code style={{ color: '#38bdf8' }}>+</code> to require (Match All) or <code style={{ color: '#38bdf8' }}>-</code> to exclude: <br/><code style={{ background: '#0f172a', padding: '2px 4px', borderRadius: '4px', color: '#38bdf8' }}>object:car -tag:blur</code></p>
+            <p style={{ margin: '12px 0 0 0', fontSize: '12px', color: '#94a3b8', lineHeight: '1.4' }}>
+              Combine with spaces (Match Any). Use <code style={{ color: '#38bdf8' }}>+</code> to require (Match All) or <code style={{ color: '#38bdf8' }}>-</code> to exclude:<br/>
+              <code style={{ background: '#0f172a', padding: '2px 4px', borderRadius: '4px', color: '#38bdf8', display: 'inline-block', marginTop: '4px' }}>+person:"Alice" +person:"Bob"</code> (photos together)
+            </p>
           </div>
         )}
       </div>

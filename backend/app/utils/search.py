@@ -212,27 +212,232 @@ def _build_type_filter(val):
     return or_(*conds) if len(conds) > 1 else conds[0]
 
 def _build_tag_filter(val):
-    val_clean = val.strip().lower()
-    return or_(
-        func.lower(func.coalesce(FileIndex.tags, '')).contains(val_clean),
-        func.lower(func.coalesce(FileIndex.tags, '')).contains(f"object:{val_clean}"),
-        func.lower(func.coalesce(FileIndex.tags, '')).contains(f"tag:{val_clean}"),
-        func.lower(func.coalesce(FileIndex.tags, '')).contains(f"person:{val_clean}")
-    )
+    parts = [p.strip().lower() for p in re.split(r'[,]+', val) if p.strip()]
+    if not parts:
+        parts = [val.strip().lower()]
+    conds = []
+    for p in parts:
+        p_clean = p.strip('"\'')
+        conds.append(or_(
+            func.lower(func.coalesce(FileIndex.tags, '')).contains(p_clean),
+            func.lower(func.coalesce(FileIndex.tags, '')).contains(f"object:{p_clean}"),
+            func.lower(func.coalesce(FileIndex.tags, '')).contains(f"tag:{p_clean}"),
+            func.lower(func.coalesce(FileIndex.tags, '')).contains(f"person:{p_clean}")
+        ))
+    return or_(*conds) if len(conds) > 1 else conds[0]
 
 def _build_object_filter(val):
-    val_clean = val.strip().lower()
-    return or_(
-        func.lower(func.coalesce(FileIndex.tags, '')).contains(f"object:{val_clean}"),
-        func.lower(func.coalesce(FileIndex.tags, '')).contains(val_clean)
-    )
+    parts = [p.strip().lower() for p in re.split(r'[,]+', val) if p.strip()]
+    if not parts:
+        parts = [val.strip().lower()]
+    conds = []
+    for p in parts:
+        p_clean = p.strip('"\'')
+        conds.append(or_(
+            func.lower(func.coalesce(FileIndex.tags, '')).contains(f"object:{p_clean}"),
+            func.lower(func.coalesce(FileIndex.tags, '')).contains(p_clean)
+        ))
+    return or_(*conds) if len(conds) > 1 else conds[0]
 
 def _build_person_filter(val):
+    parts = [p.strip().lower() for p in re.split(r'[,]+', val) if p.strip()]
+    if not parts:
+        parts = [val.strip().lower()]
+    conds = []
+    for p in parts:
+        p_clean = p.strip('"\'')
+        conds.append(or_(
+            func.lower(func.coalesce(FileIndex.tags, '')).contains(f"person:{p_clean}"),
+            func.lower(func.coalesce(FileIndex.tags, '')).contains(p_clean)
+        ))
+    return or_(*conds) if len(conds) > 1 else conds[0]
+
+def _get_people_by_relation_or_category(term: str) -> list:
+    """
+    Returns person names matching a relationship subcategory, category, or label from relationships.db.
+    """
+    import sqlite3
+    from backend.app.utils.paths import get_relationships_db_path
+    rel_db = get_relationships_db_path()
+    if not rel_db.exists():
+        return []
+    
+    term_clean = term.strip().lower()
+    matched_names = set()
+    try:
+        with sqlite3.connect(str(rel_db), timeout=5) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT p.name
+                FROM persons p
+                JOIN person_social s ON p.id = s.person_id
+                WHERE lower(s.category) = ? 
+                   OR lower(s.subcategory) LIKE ?
+                   OR lower(s.relation_label) LIKE ?
+            """, (term_clean, f"%{term_clean}%", f"%{term_clean}%"))
+            for row in c.fetchall():
+                if row[0]:
+                    matched_names.add(row[0])
+
+            c.execute("""
+                SELECT p2.name
+                FROM person_connections c
+                JOIN persons p2 ON c.related_person_id = p2.id
+                WHERE lower(c.relation_type) LIKE ?
+            """, (f"%{term_clean}%",))
+            for row in c.fetchall():
+                if row[0]:
+                    matched_names.add(row[0])
+    except Exception as e:
+        print(f"[SEARCH] Error looking up relations: {e}")
+    return list(matched_names)
+
+def _build_relation_filter(val):
+    parts = [p.strip().lower() for p in re.split(r'[,]+', val) if p.strip()]
+    if not parts:
+        parts = [val.strip().lower()]
+    all_conds = []
+    for p in parts:
+        p_clean = p.strip('"\'')
+        names = _get_people_by_relation_or_category(p_clean)
+        if not names:
+            all_conds.append(or_(
+                func.lower(func.coalesce(FileIndex.tags, '')).contains(f"rel:{p_clean}"),
+                func.lower(func.coalesce(FileIndex.tags, '')).contains(f"category:{p_clean}"),
+                func.lower(func.coalesce(FileIndex.tags, '')).contains(f"person:{p_clean}"),
+                func.lower(func.coalesce(FileIndex.tags, '')).contains(p_clean)
+            ))
+        else:
+            person_conds = [
+                or_(
+                    func.lower(func.coalesce(FileIndex.tags, '')).contains(f"person:{name.lower()}"),
+                    func.lower(func.coalesce(FileIndex.tags, '')).contains(name.lower())
+                )
+                for name in names
+            ]
+            all_conds.append(or_(*person_conds) if len(person_conds) > 1 else person_conds[0])
+    return or_(*all_conds) if len(all_conds) > 1 else all_conds[0]
+
+def _build_metadata_field_filter(field_name: str, val: str):
+    parts = [p.strip().lower() for p in re.split(r'[,]+', val) if p.strip()]
+    if not parts:
+        parts = [val.strip().lower()]
+    conds = []
+    for p in parts:
+        p_clean = p.strip('"\'')
+        conds.append(func.lower(func.coalesce(func.json_extract(FileIndex.metadata_json, f'$.{field_name}'), '')).contains(p_clean))
+    return or_(*conds) if len(conds) > 1 else conds[0]
+
+def _build_aspect_filter(val: str):
     val_clean = val.strip().lower()
-    return or_(
-        func.lower(func.coalesce(FileIndex.tags, '')).contains(f"person:{val_clean}"),
-        func.lower(func.coalesce(FileIndex.tags, '')).contains(val_clean)
-    )
+    width_col = func.coalesce(func.cast(func.json_extract(FileIndex.metadata_json, '$.width'), Integer), 0)
+    height_col = func.coalesce(func.cast(func.json_extract(FileIndex.metadata_json, '$.height'), Integer), 0)
+    
+    aspects = [a.strip().lower() for a in re.split(r'[, ]+', val_clean) if a.strip()]
+    conds = []
+    for a in aspects:
+        a_clean = a.strip('"\'')
+        if a_clean in ("landscape", "horizontal", "wide"):
+            conds.append(and_(width_col > 0, height_col > 0, width_col > height_col))
+        elif a_clean in ("portrait", "vertical", "tall"):
+            conds.append(and_(width_col > 0, height_col > 0, height_col > width_col))
+        elif a_clean in ("square", "1:1"):
+            conds.append(and_(width_col > 0, height_col > 0, width_col == height_col))
+        else:
+            conds.append(func.lower(func.coalesce(FileIndex.metadata_json, '')).contains(a_clean))
+    if not conds:
+        return None
+    return or_(*conds) if len(conds) > 1 else conds[0]
+
+def _parse_resolution_dimension(val_str: str):
+    if not val_str:
+        return None, None
+    val_str = val_str.strip().lower()
+    if val_str in ("4k", "uhd", "2160p", "3840x2160"):
+        return 3840, 2160
+    elif val_str in ("2k", "1440p", "qhd", "2560x1440"):
+        return 2560, 1440
+    elif val_str in ("1080p", "fhd", "fullhd", "1920x1080"):
+        return 1920, 1080
+    elif val_str in ("720p", "hd", "1280x720"):
+        return 1280, 720
+    elif val_str in ("480p", "sd", "640x480"):
+        return 640, 480
+    m = re.match(r"^(\d+)\s*[xX*]\s*(\d+)$", val_str)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m_p = re.match(r"^(\d+)\s*p?$", val_str)
+    if m_p:
+        h = int(m_p.group(1))
+        w = int(h * 16 / 9)
+        return w, h
+    return None, None
+
+def _build_resolution_filter(val: str):
+    val_clean = val.strip().lower()
+    width_col = func.coalesce(func.cast(func.json_extract(FileIndex.metadata_json, '$.width'), Integer), 0)
+    height_col = func.coalesce(func.cast(func.json_extract(FileIndex.metadata_json, '$.height'), Integer), 0)
+    
+    parts = [p.strip() for p in re.split(r'[, ]+', val_clean) if p.strip()]
+    conds = []
+    for part in parts:
+        op = ""
+        for prefix in (">=", "<=", ">", "<", "==", "="):
+            if part.startswith(prefix):
+                op = prefix
+                part_val = part[len(prefix):]
+                break
+        else:
+            op = "="
+            part_val = part
+            
+        req_w, req_h = _parse_resolution_dimension(part_val)
+        if req_w is not None and req_h is not None:
+            target_min_dim = min(req_w, req_h)
+            target_max_dim = max(req_w, req_h)
+            dim_cond = None
+            if op == ">=":
+                dim_cond = and_(width_col > 0, height_col > 0, or_(
+                    and_(width_col >= target_max_dim, height_col >= target_min_dim),
+                    and_(height_col >= target_max_dim, width_col >= target_min_dim),
+                    width_col >= target_max_dim,
+                    height_col >= target_max_dim
+                ))
+            elif op == ">":
+                dim_cond = and_(width_col > 0, height_col > 0, or_(
+                    and_(width_col > target_max_dim, height_col > target_min_dim),
+                    and_(height_col > target_max_dim, width_col > target_min_dim),
+                    width_col > target_max_dim,
+                    height_col > target_max_dim
+                ))
+            elif op == "<=":
+                dim_cond = and_(width_col > 0, height_col > 0, or_(
+                    and_(width_col <= target_max_dim, height_col <= target_min_dim),
+                    and_(height_col <= target_max_dim, width_col <= target_min_dim)
+                ))
+            elif op == "<":
+                dim_cond = and_(width_col > 0, height_col > 0, or_(
+                    and_(width_col < target_max_dim, height_col < target_min_dim),
+                    and_(height_col < target_max_dim, width_col < target_min_dim)
+                ))
+            elif op in ("=", "=="):
+                dim_cond = or_(
+                    and_(width_col == req_w, height_col == req_h),
+                    and_(width_col == req_h, height_col == req_w),
+                    func.lower(func.coalesce(func.json_extract(FileIndex.metadata_json, '$.resolution'), '')).contains(part_val),
+                    func.lower(func.coalesce(FileIndex.metadata_json, '')).contains(part_val)
+                )
+            if dim_cond is not None:
+                conds.append(dim_cond)
+        else:
+            conds.append(or_(
+                func.lower(func.coalesce(func.json_extract(FileIndex.metadata_json, '$.resolution'), '')).contains(part.lower()),
+                func.lower(func.coalesce(FileIndex.metadata_json, '')).contains(part.lower())
+            ))
+            
+    if not conds:
+        return None
+    return or_(*conds) if len(conds) > 1 else conds[0]
 
 def _build_wildcard_filter(val):
     like_val = val.lower().replace("*", "%").replace("?", "_")
@@ -244,7 +449,7 @@ def _build_wildcard_filter(val):
 def _tokenize_search_query(query):
     tokens = []
     pattern = re.compile(
-        r'([+\-]?(?:date|tag|type|name|size|length|object|person|camera|resolution|fps|artist|album|genre|meta):(?:(?:"(?:\\.|[^"])*")|(?:[^\s"]+)))|'
+        r'([+\-]?(?:date|tag|type|name|size|length|object|person|rel|relation|kinship|category|camera|resolution|aspect|fps|artist|album|genre|meta):(?:(?:"(?:\\.|[^"])*")|(?:[^\s"]+)))|'
         r'([+\-]?"(?:\\.|[^"])*")|'
         r'([^\s]+)'
     )
@@ -288,7 +493,8 @@ def _build_search_query(query, s, q_base=None):
         
         prefix_matched = False
         for prefix in ("date:", "tag:", "type:", "name:", "size:", "length:", "object:", "person:",
-                       "camera:", "resolution:", "fps:", "artist:", "album:", "genre:", "meta:"):
+                       "rel:", "relation:", "kinship:", "category:",
+                       "camera:", "resolution:", "aspect:", "fps:", "artist:", "album:", "genre:", "meta:"):
             if lower_token.startswith(prefix):
                 prefix_matched = True
                 val = token[len(prefix):]
@@ -298,7 +504,7 @@ def _build_search_query(query, s, q_base=None):
                 # Lookahead for trailing comma or continuation (e.g. size:>100MB, <5GB or date:2020-2022, 2023-10-25)
                 while i < len(tokens):
                     next_tok = tokens[i]
-                    if val.endswith(",") or (prefix in ("size:", "length:") and re.match(r"^[><=]", next_tok)):
+                    if val.endswith(",") or (prefix in ("size:", "length:", "resolution:") and re.match(r"^[><=]", next_tok)):
                         val = val.rstrip(",") + " " + next_tok
                         i += 1
                     else:
@@ -311,13 +517,15 @@ def _build_search_query(query, s, q_base=None):
                 elif prefix == "length:": filter_cond = _build_duration_filter(val)
                 elif prefix == "object:": filter_cond = _build_object_filter(val)
                 elif prefix == "person:": filter_cond = _build_person_filter(val)
+                elif prefix in ("rel:", "relation:", "kinship:", "category:"): filter_cond = _build_relation_filter(val)
                 elif prefix == "tag:": filter_cond = _build_tag_filter(val)
                 elif prefix == "name:": filter_cond = text_filter(FileIndex.filename, val.lower())
-                elif prefix == "camera:": filter_cond = func.lower(func.coalesce(func.json_extract(FileIndex.metadata_json, '$.camera'), '')).contains(val.lower())
-                elif prefix == "resolution:": filter_cond = func.lower(func.coalesce(func.json_extract(FileIndex.metadata_json, '$.resolution'), '')).contains(val.lower())
-                elif prefix == "artist:": filter_cond = func.lower(func.coalesce(func.json_extract(FileIndex.metadata_json, '$.artist'), '')).contains(val.lower())
-                elif prefix == "album:": filter_cond = func.lower(func.coalesce(func.json_extract(FileIndex.metadata_json, '$.album'), '')).contains(val.lower())
-                elif prefix == "genre:": filter_cond = func.lower(func.coalesce(func.json_extract(FileIndex.metadata_json, '$.genre'), '')).contains(val.lower())
+                elif prefix == "camera:": filter_cond = _build_metadata_field_filter("camera", val)
+                elif prefix == "resolution:": filter_cond = _build_resolution_filter(val)
+                elif prefix == "aspect:": filter_cond = _build_aspect_filter(val)
+                elif prefix == "artist:": filter_cond = _build_metadata_field_filter("artist", val)
+                elif prefix == "album:": filter_cond = _build_metadata_field_filter("album", val)
+                elif prefix == "genre:": filter_cond = _build_metadata_field_filter("genre", val)
                 elif prefix == "fps:":
                     fps_col = func.json_extract(FileIndex.metadata_json, '$.fps')
                     op = ""

@@ -40,9 +40,51 @@ export const RELATION_ICON_MAP = {
   folder: FolderIcon
 };
 
-export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl }) {
+export const RELATIONSHIP_SUBCATEGORIES = {
+  Family: [
+    { value: 'Spouse', label: 'Spouse / Partner' },
+    { value: 'Parent', label: 'Parent (Father / Mother)' },
+    { value: 'Child', label: 'Child (Son / Daughter)' },
+    { value: 'Sibling', label: 'Sibling (Brother / Sister)' },
+    { value: 'In-law', label: 'In-law (Parents / Siblings / Extended In-laws)' },
+    { value: "Spouse's Family", label: "Spouse's Extended Family (Aunts / Uncles / Cousins)" },
+    { value: 'Grandparent', label: 'Grandparent (Maternal / Paternal)' },
+    { value: 'Grandchild', label: 'Grandchild (Grandson / Granddaughter)' },
+    { value: 'Great-Grandparent', label: 'Great-Grandparent / Ancestor' },
+    { value: 'Aunt / Uncle', label: "Aunt / Uncle (Parents' Siblings)" },
+    { value: 'Great-Aunt / Uncle', label: "Great-Aunt / Great-Uncle (Grandparents' Siblings)" },
+    { value: 'Cousin (1st)', label: "Cousin (1st - Parents' Siblings' Children)" },
+    { value: 'Cousin (Once Removed)', label: "Cousin (Once Removed - Parents' / Grandparents' Cousins)" },
+    { value: 'Cousin (2nd / Distant)', label: 'Cousin (2nd / 3rd / Distant)' },
+    { value: 'Niece / Nephew', label: "Niece / Nephew (Siblings' Children)" },
+    { value: 'Other Family', label: 'Other Family / Relative' }
+  ],
+  Friends: [
+    { value: 'Close Friend', label: 'Close Friend' },
+    { value: 'Colleague', label: 'Colleague / Work' },
+    { value: 'Classmate', label: 'Classmate / School' },
+    { value: 'Acquaintance', label: 'Acquaintance' },
+    { value: 'Other Friend', label: 'Other Friend' }
+  ],
+  Others: [
+    { value: 'Neighbor', label: 'Neighbor' },
+    { value: 'Service Contact', label: 'Service Contact' },
+    { value: 'Unknown', label: 'Other' }
+  ]
+};
+
+export const DEFAULT_SUBCATEGORIES = {
+  Family: 'Spouse',
+  Friends: 'Close Friend',
+  Others: 'Neighbor'
+};
+
+export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl, namedPeopleDropdown, addPersonConnection, doSearch, setQuery, setPage }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [connectSourceNode, setConnectSourceNode] = useState(null);
+  const [newConnType, setNewConnType] = useState('spouse');
+  const [newConnTargetId, setNewConnTargetId] = useState('');
   const [expanded, setExpanded] = useState({
     root_me: true,
     cat_family: true,
@@ -314,69 +356,128 @@ export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl
             <IconComp fontSize="small" style={{ color: node.color || '#38bdf8', flexShrink: 0 }} />
           )}
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, overflow: 'hidden', flexWrap: 'nowrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, overflow: 'hidden', flex: 1 }}>
             <span style={{ color: node.isMe ? '#93c5fd' : '#f8fafc', fontSize: '13.5px', fontWeight: (node.isMe || hasChildren) ? '600' : '400', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
               {node.name}
             </span>
             {node.isMe && (
-              <span style={{ fontSize: '11px', background: '#3b82f6', color: '#0f172a', padding: '1px 6px', borderRadius: '8px', fontWeight: 'bold' }}>
+              <span style={{ fontSize: '11px', background: '#3b82f6', color: '#0f172a', padding: '1px 6px', borderRadius: '8px', fontWeight: 'bold', flexShrink: 0 }}>
                 You
               </span>
             )}
             {node.label && (
-              <span style={{ color: '#94a3b8', fontSize: '12px', fontStyle: 'italic', whiteSpace: 'nowrap' }}>
+              <span style={{ color: '#94a3b8', fontSize: '12px', fontStyle: 'italic', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
                 • {node.label}
               </span>
             )}
-            {node.connections && node.connections.length > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: '6px', flexWrap: 'nowrap' }}>
-                {node.connections.map(c => {
-                  let badgeColor = '#ec4899';
-                  let icon = '💍';
-                  let label = 'Spouse';
-                  if (c.relation_type === 'parent') { badgeColor = '#38bdf8'; icon = '👨‍👩‍👦'; label = 'Parent'; }
-                  else if (c.relation_type === 'child') { badgeColor = '#f59e0b'; icon = '👶'; label = 'Child'; }
-                  else if (c.relation_type === 'sibling') { badgeColor = '#818cf8'; icon = '👫'; label = 'Sibling'; }
-                  else if (c.relation_type === 'partner') { badgeColor = '#ec4899'; icon = '❤️'; label = 'Partner'; }
-
-                  return (
-                    <span
-                      key={`${c.related_person_id || c.related_name}_${c.relation_type}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openPersonPhotos({ id: c.related_ai_person_id || c.related_person_id, name: c.related_name });
-                      }}
-                      style={{
-                        fontSize: '11px',
-                        background: 'rgba(30, 41, 59, 0.9)',
-                        color: badgeColor,
-                        border: `1px solid ${badgeColor}55`,
-                        borderRadius: '10px',
-                        padding: '1px 7px',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '3px',
-                        cursor: 'pointer',
-                        whiteSpace: 'nowrap'
-                      }}
-                      title={`Open photos of ${label}: ${c.related_name}`}
-                    >
-                      <span>{icon}</span> {c.related_name}
-                    </span>
-                  );
-                })}
-              </div>
-            )}
           </div>
 
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+            {node.isPerson && addPersonConnection && !node.isMe && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConnectSourceNode(node);
+                  setNewConnType('spouse');
+                  setNewConnTargetId('');
+                }}
+                style={{
+                  background: 'rgba(30, 41, 59, 0.7)',
+                  border: '1px solid #334155',
+                  borderRadius: '6px',
+                  color: '#38bdf8',
+                  padding: '2px 7px',
+                  fontSize: '11px',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '3px'
+                }}
+                title={`Quick-link family relationship for ${node.name}`}
+              >
+                + Link
+              </button>
+            )}
             {node.count !== undefined && (
-              <span style={{ color: '#64748b', fontSize: '12px', paddingLeft: '4px', whiteSpace: 'nowrap' }}>
+              <span style={{ color: '#64748b', fontSize: '12px', paddingLeft: '2px', whiteSpace: 'nowrap' }}>
                 {node.count} {node.count === 1 ? 'photo' : 'photos'}
               </span>
             )}
           </div>
         </div>
+
+        {/* Dedicated Connection Badges Row - Clean wrapping, no truncation */}
+        {node.connections && node.connections.length > 0 && (
+          <div style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '4px',
+            marginLeft: `${depth * 16 + 56}px`,
+            marginTop: '2px',
+            marginBottom: '4px',
+            paddingRight: '8px'
+          }}>
+            {node.connections.map(c => {
+              let badgeColor = '#ec4899';
+              let icon = '💍';
+              let label = 'Spouse';
+              if (c.relation_type === 'parent') { badgeColor = '#38bdf8'; icon = '👨‍👩‍👦'; label = 'Parent'; }
+              else if (c.relation_type === 'child') { badgeColor = '#f59e0b'; icon = '👶'; label = 'Child'; }
+              else if (c.relation_type === 'sibling') { badgeColor = '#818cf8'; icon = '👫'; label = 'Sibling'; }
+              else if (c.relation_type === 'partner') { badgeColor = '#ec4899'; icon = '❤️'; label = 'Partner'; }
+
+              return (
+                <span
+                  key={`${c.related_person_id || c.related_name}_${c.relation_type}`}
+                  style={{
+                    fontSize: '11px',
+                    background: 'rgba(30, 41, 59, 0.9)',
+                    color: badgeColor,
+                    border: `1px solid ${badgeColor}55`,
+                    borderRadius: '10px',
+                    padding: '1px 6px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  <span
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openPersonPhotos({ id: c.related_ai_person_id || c.related_person_id, name: c.related_name });
+                    }}
+                    style={{ cursor: 'pointer' }}
+                    title={`Open photos of ${label}: ${c.related_name}`}
+                  >
+                    <span>{icon}</span> {c.related_name}
+                  </span>
+                  {doSearch && (
+                    <span
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const q = `+person:"${node.name}" +person:"${c.related_name}"`;
+                        if (setQuery) setQuery(q);
+                        doSearch(q, 'all');
+                        if (setPage) setPage('search');
+                      }}
+                      style={{
+                        cursor: 'pointer',
+                        opacity: 0.75,
+                        fontSize: '10px',
+                        padding: '0 2px'
+                      }}
+                      title={`Search photos of ${node.name} & ${c.related_name} together`}
+                    >
+                      👥
+                    </span>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+        )}
 
         {hasChildren && isExpanded && (
           <div style={{ borderLeft: '1px solid #334155', marginLeft: `${depth * 16 + 17}px` }}>
@@ -761,6 +862,153 @@ export function RelationshipTree({ treeData, openPersonPhotos, getPersonThumbUrl
               </div>
             );
           })}
+        </div>
+      )}
+      {/* Direct Tree Quick Link Modal */}
+      {connectSourceNode && (
+        <div
+          onClick={() => setConnectSourceNode(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.75)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px'
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#0f172a',
+              border: '1px solid #334155',
+              borderRadius: '16px',
+              padding: '20px',
+              width: '100%',
+              maxWidth: '420px',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.7)'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{ width: '36px', height: '36px', borderRadius: '50%', overflow: 'hidden', background: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <PersonThumb url={getPersonThumbUrl ? getPersonThumbUrl(connectSourceNode) : ''} size={36} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '15px', color: '#f8fafc' }}>
+                    Link Family Member
+                  </h3>
+                  <div style={{ fontSize: '12px', color: '#38bdf8', fontWeight: '500' }}>
+                    {connectSourceNode.name}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setConnectSourceNode(null)}
+                style={{ background: 'transparent', border: 'none', color: '#94a3b8', fontSize: '18px', cursor: 'pointer' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <label style={{ fontSize: '12.5px', color: '#cbd5e1', display: 'block', marginBottom: '6px', fontWeight: '500' }}>
+                  Relationship Type:
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px' }}>
+                  {[
+                    { type: 'spouse', label: '💍 Spouse / Partner' },
+                    { type: 'parent', label: '👨‍👩‍👦 Parent of' },
+                    { type: 'child', label: '👶 Child of' },
+                    { type: 'sibling', label: '👫 Sibling of' }
+                  ].map(({ type, label }) => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => setNewConnType(type)}
+                      style={{
+                        padding: '8px 10px',
+                        borderRadius: '8px',
+                        background: newConnType === type ? '#2563eb' : '#1e293b',
+                        color: newConnType === type ? '#ffffff' : '#cbd5e1',
+                        border: newConnType === type ? '1px solid #3b82f6' : '1px solid #334155',
+                        fontSize: '12.5px',
+                        fontWeight: '500',
+                        cursor: 'pointer',
+                        textAlign: 'left'
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12.5px', color: '#cbd5e1', display: 'block', marginBottom: '6px', fontWeight: '500' }}>
+                  Select Person to Connect:
+                </label>
+                <select
+                  value={newConnTargetId}
+                  onChange={(e) => setNewConnTargetId(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    background: '#1e293b',
+                    color: '#f8fafc',
+                    border: '1px solid #334155',
+                    fontSize: '13px',
+                    outline: 'none'
+                  }}
+                >
+                  <option value="">— Select a Person —</option>
+                  {(namedPeopleDropdown || [])
+                    .filter(p => p.id !== connectSourceNode.id)
+                    .map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} {p.category ? `(${p.subcategory || p.category})` : ''}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px', paddingTop: '12px', borderTop: '1px solid #334155' }}>
+                <button
+                  type="button"
+                  onClick={() => setConnectSourceNode(null)}
+                  style={{ background: '#334155', border: 'none', color: '#cbd5e1', padding: '6px 14px', borderRadius: '8px', fontSize: '12.5px', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!newConnTargetId}
+                  onClick={() => {
+                    if (newConnTargetId && addPersonConnection) {
+                      addPersonConnection(connectSourceNode.id, parseInt(newConnTargetId, 10), newConnType);
+                      setConnectSourceNode(null);
+                    }
+                  }}
+                  style={{
+                    background: newConnTargetId ? '#2563eb' : '#1e293b',
+                    color: newConnTargetId ? '#ffffff' : '#64748b',
+                    border: 'none',
+                    padding: '6px 16px',
+                    borderRadius: '8px',
+                    fontSize: '12.5px',
+                    fontWeight: '600',
+                    cursor: newConnTargetId ? 'pointer' : 'not-allowed'
+                  }}
+                >
+                  Connect
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

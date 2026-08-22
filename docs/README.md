@@ -6,11 +6,12 @@
 WABS is a modern, 100% offline archival management system designed to help you organize, search, and browse your digital backups. It provides a lightning-fast Explorer-style interface to manage hundreds of thousands of files across different drives.
 
 ## Features
-* **Lightning-Fast Search:** Find files instantly by name, path, tags, or metadata using advanced operators (e.g., `size:>1GB`, `date:2020-2022`).
+* **Lightning-Fast Search:** Find files instantly by name, path, tags, or metadata using advanced operators (e.g., `size:>1GB`, `date:2020-2022`, `aspect:landscape`, `resolution:4k`, `person:Alice,Bob`, `rel:spouse,child`).
+* **AI-Enabled Natural Language Search Assistant:** Convert conversational search requests (e.g., *"4K slow-motion drone videos from summer 2023"*, *"Amazon invoices scanned with OCR in 2023"*, *"Alice and Bob eating pizza in Paris"*) into structured search queries. Works seamlessly with local edge/tiny LLMs (1B–3B parameter models) and frontier cloud LLMs with zero context overflows.
 * **Smart Searches:** Save your most-used and complex search queries as one-click shortcuts.
 * **Explorer-Style Browsing:** Navigate your archives with familiar grid and list views.
 * **Rich Previews:** Auto-generates thumbnails for photos, videos, PDFs, Word documents, and code.
-* **Smart Categorization:** Automatically groups files into categories like Photos, Videos, Code, etc.
+* **Smart Categorization:** Automatically groups files into categories like Photos, Videos, Documents, Audio, Code, Compressed archives, Installers, and Databases.
 * **Offline Face Recognition:** Scans photos using local AI to find and group people automatically.
 * **People Categorization, Inter-Person Graph & Relationship Tree:** Organize named profiles into Family, Friends, and Other categories with custom relationship labels. Connect inter-person family relationships (spouses, parents, children, siblings) and view an interactive, multi-column relationship tree anchored to your profile ("Me"). Export full trees or subtrees directly to standard **GEDCOM 5.5.1 (`.ged`)** for tools like Gramps, Ancestry, and FamilySearch, or export clean printable PDF views.
 * **Object & Scene Tagging:** Classifies objects and scenes in photos completely offline, allowing you to easily search by content.
@@ -310,28 +311,45 @@ To help you manage your archive at a glance, WABS uses specific icons, badges, a
 ### Smart Searches & AI Search Assistant
 
 #### Smart Searches
-You can save any complex search query (e.g., `type:video length:>1h size:>2GB`) as a **Smart Search** shortcut. Once saved, these shortcuts appear in the search panel so you can rerun them with a single click.
+You can save any complex search query (e.g., `type:video length:>1h size:>2GB`, `aspect:landscape resolution:4k`) as a **Smart Search** shortcut. Once saved, these shortcuts appear in the search panel so you can rerun them with a single click.
 
 #### AI Search Assistant (Natural Language Search)
-If you aren't sure how to write a search query using search operators, WABS can translate natural language requests (e.g., *"photos of dogs taken on a Nikon camera in 2023"*) into valid search syntax:
+If you aren't sure how to write a search query using search operators, WABS can translate natural language requests into valid search syntax across all media and file formats:
 1. Ensure your local or cloud LLM provider (Ollama, LM Studio, or OpenAI) is configured in **Settings**.
 2. Go to the **Search** page, find the **AI Search Assistant** section, and enter your request in plain English.
 3. Click **Generate** — WABS will call your AI model to translate the request and automatically save it as a new **Smart Search** shortcut (e.g., `object:dog camera:nikon date:2023`).
+
+**Supported Natural Language Domains:**
+* **Photos & People:** *"Photos of Alice and Bob eating pizza in Paris"* $\rightarrow$ `person:Alice person:Bob object:pizza Paris type:photo`
+* **Family & Relationships:** *"Photos of my spouse and kids in Hawaii from 2023"* $\rightarrow$ `rel:spouse rel:child Hawaii date:2023 type:photo`
+* **Documents & OCR:** *"Amazon invoices or receipts scanned with OCR in 2023"* $\rightarrow$ `type:document tag:ocr Amazon invoice date:2023`
+* **Developer Code:** *"Python scripts with FastAPI and SQLAlchemy"* $\rightarrow$ `type:code *.py FastAPI SQLAlchemy`
+* **Audio & Music:** *"Jazz or Rock songs longer than 5 minutes by Miles Davis"* $\rightarrow$ `type:audio genre:jazz,rock artist:"Miles Davis" length:>5m`
+* **Videos & Drone Footage:** *"Slow motion 4K drone videos from summer 2023"* $\rightarrow$ `type:video resolution:4k fps:>=60 drone date:2023-06-2023-08`
+* **Archives & Installers:** *"ZIP or RAR backup archives over 2GB from 2023"* $\rightarrow$ `type:compressed backup size:>2gb date:2023`
+
+> [!TIP]
+> **Tiny & Local LLM Compatibility**: WABS implements **Dynamic Prompt Tiering and Output Sanitization**. When using small local models (1B–3B parameter models like Qwen 2.5 1.5B/3B, Llama 3.2 1B/3B, Phi-3 mini), WABS automatically selects a compact prompt tier (~140 tokens) with resilient context overflow fallbacks to guarantee high accuracy without exceeding local context limits.
+
 ---
 
 ### Advanced Search Operators
-WABS supports powerful search operators to help you precisely filter your archive. You can combine multiple operators with spaces (e.g., `type:video length:>1h`).
-* **`name:`** Exact filename match (e.g., `name:vacation.mp4`)
-* **`type:`** Filter by category or extension (e.g., `type:audio`, `type:pdf`)
-* **`size:`** Filter by file size using relational operators (e.g., `size:>1GB`, `size:<500MB`)
+WABS supports powerful search operators to help you precisely filter your archive. You can combine multiple operators with spaces (e.g., `type:video length:>1h aspect:landscape`).
+* **`name:`** Exact or partial filename match (e.g., `name:vacation.mp4`, `name:backup*`)
+* **`type:`** Filter by category (`photo`, `video`, `audio`, `document`, `code`, `compressed`, `installer`, `database`, `ebook`, `font`) or file extensions (e.g., `type:audio`, `type:pdf`, `type:audio,video`)
+* **`size:`** Filter by file size using relational operators and ranges (e.g., `size:>1GB`, `size:<500MB`, `size:100mb-5gb`)
 * **`length:`** Filter video/audio by duration (e.g., `length:>5m`, `length:<1h`, `length:300`)
-* **`date:`** Filter by modification date or range (e.g., `date:2020-2022`, `date:2023-10-25`)
-* **`object:`** Search for AI-detected objects or scenes (e.g., `object:car`, `object:beach`)
-* **`person:`** Search for specific people identified by the Face Scanner (e.g., `person:"john doe"`)
-* **`tag:`** Search for your custom manual tags (e.g., `tag:family_trip`)
-* **Specific Metadata:** Filter natively by extracted attributes using `camera:`, `resolution:`, `fps:` (supports relational operators, e.g., `fps:>=60`), `artist:`, `album:`, and `genre:`.
+* **`date:`** Filter by modification date, month, or range (e.g., `date:2020-2022`, `date:2023-10-25`, `date:2023-06-2023-08`)
+* **`object:`** Search for AI-detected objects or scenes (e.g., `object:car`, `object:beach`, `object:pizza,salad`)
+* **`person:`** Search for specific people identified by Face Scanner (e.g., `person:"john doe"`, `person:Alice,Bob`)
+* **`rel:` & `category:`** Filter by relationship kinship or social category relative to "Me" (e.g., `rel:spouse`, `rel:parent,child`, `category:family`)
+* **`aspect:`** Filter photos and videos by aspect ratio / orientation (`aspect:landscape`, `aspect:portrait`, `aspect:square`)
+* **`resolution:`** Filter by resolution presets or relational math (e.g., `resolution:4k`, `resolution:1080p`, `resolution:>=1080p`)
+* **`fps:`** Filter video by frame rate (e.g., `fps:60`, `fps:>=60`)
+* **`tag:`** Search for custom tags or OCR flags (e.g., `tag:family_trip`, `tag:ocr`)
+* **`artist:`, `album:`, `genre:`, `camera:`** Filter audio and media metadata fields (e.g., `artist:"Miles Davis"`, `genre:jazz,rock`, `camera:canon`)
 * **`meta:`** Catch-all to search any arbitrary JSON metadata extracted during indexing (e.g., `meta:CompanyName:Microsoft` or `meta:gps.latitude:45.0`).
-* **Wildcards:** Use `*` for partial matches (e.g., `*vacation*`, `*.mp3`)
+* **Wildcards & Boolean:** Use `*` for partial matches (e.g., `*vacation*`, `*.mp3`), `+` to require terms (`+person:Alice`), `-` to exclude (`-tag:temp`). Multi-word phrases should be enclosed in quotes (`"John Doe"`, `"New York"`).
 
 ### Configuring Local AI (Free & Offline)
 WABS supports using local LLMs (like LM Studio or Ollama) to automatically categorize unknown files securely on your own machine.

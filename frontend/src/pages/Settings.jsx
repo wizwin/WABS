@@ -915,7 +915,7 @@ export default function Settings(props) {
                         <input 
                             className="setting" 
                             style={{ margin: 0, flex: 1 }} 
-                            placeholder="e.g., Find John's photos at the beach from 2022"
+                            placeholder="e.g., Photos of Alice and Bob eating pizza in Paris with family from 2023"
                             value={aiSearchPrompt}
                             onChange={e => setAiSearchPrompt(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter') generateSearchWithAI(); }}

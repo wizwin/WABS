@@ -136,7 +136,6 @@ export default function VirtualFolders(props) {
     setCurrentVirtualFolder(folder);
     setPage('virtual_folder');
     setFilterCategory('all');
-    loadFiles(0, false, 'all', sortBy, sortOrder, 'virtual_folder', folder.id);
   };
 
   const handleConfirm = () => {

@@ -1830,7 +1830,7 @@ def create_person_connection(person_id: int, body: dict = Body(...)):
     if rel_id_1 == rel_id_2:
         raise HTTPException(status_code=400, detail="Cannot create a connection with oneself")
 
-    add_person_connection(rel_id_1, rel_id_2, relation_type, rel_db_path)
+    add_person_connection(rel_id_1, rel_id_2, relation_type, auto_inherit=True, rel_db_path=rel_db_path)
     connections = get_person_connections(rel_id_1, rel_db_path)
     for c in connections:
         if c.get("related_ai_person_id"):

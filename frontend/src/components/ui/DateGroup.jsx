@@ -2,39 +2,10 @@ import React, { useState, useEffect, useRef, Fragment } from 'react';
 import { FileCard } from './FileCard';
 
 export function DateGroup({ dateKey, filesGroup, viewMode, checkedFiles, toggleCheck, handleItemClick, openContainingFolder, setSelected, openFile, renderThumb, filterCategory, indexer, checkFileReadOnly, getImplicitSelection, pendingLocatePath }) {
-  const [isVisible, setIsVisible] = useState(false);
-  const [minHeight, setMinHeight] = useState('100px');
-  const groupRef = useRef(null);
-
-  useEffect(() => {
-    const observer = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) {
-        setIsVisible(true);
-      } else {
-        if (groupRef.current) {
-          const rect = groupRef.current.getBoundingClientRect();
-          if (rect.height > 50) {
-            setMinHeight(`${rect.height}px`);
-          }
-        }
-        setIsVisible(false);
-      }
-    }, { rootMargin: '2000px' });
-
-    if (groupRef.current) observer.observe(groupRef.current);
-    return () => observer.disconnect();
-  }, []);
-
-  const hasPendingFile = pendingLocatePath && filesGroup.some(item => {
-    return item.path.replace(/\\/g, '/').toLowerCase() === pendingLocatePath.replace(/\\/g, '/').toLowerCase();
-  });
-  const isActuallyVisible = isVisible || hasPendingFile || !!pendingLocatePath;
-
   return (
-    <div id={`date-group-${dateKey}`} ref={groupRef} style={{ minHeight }}>
+    <div id={`date-group-${dateKey}`} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 200px' }}>
       <h2 className="date-header" data-date={dateKey}>{dateKey}</h2>
-      {isActuallyVisible && (
-        <div className={viewMode === 'grid' ? 'grid' : 'list'}>
+      <div className={viewMode === 'grid' ? 'grid' : 'list'}>
           {(() => {
             let isAlternateGroup = false;
             return filesGroup.map((item, index) => {
@@ -69,7 +40,6 @@ export function DateGroup({ dateKey, filesGroup, viewMode, checkedFiles, toggleC
             });
           })()}
         </div>
-      )}
     </div>
   );
 }

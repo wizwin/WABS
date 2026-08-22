@@ -48,6 +48,7 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA temp_store=MEMORY")
     cursor.close()
 
 SessionLocal = sessionmaker(bind=engine)
@@ -103,6 +104,49 @@ with engine.connect() as conn:
 with engine.begin() as conn:
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_files_category ON files(category)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_files_size ON files(size)"))
+    try:
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_files_date ON files (
+                coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))
+            )
+        """))
+    except Exception as e:
+        print(f"Warning: Could not create index idx_files_date: {e}")
+
+    try:
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_files_size_cast ON files (
+                CAST(size AS INTEGER)
+            )
+        """))
+    except Exception as e:
+        print(f"Warning: Could not create index idx_files_size_cast: {e}")
+
+    try:
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_files_category_date ON files (
+                category,
+                coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))
+            )
+        """))
+    except Exception as e:
+        print(f"Warning: Could not create index idx_files_category_date: {e}")
+
+    try:
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_files_category_size ON files (
+                category,
+                CAST(size AS INTEGER)
+            )
+        """))
+    except Exception as e:
+        print(f"Warning: Could not create index idx_files_category_size: {e}")
+
+    try:
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_files_category_filename ON files (category, filename)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_files_category_extension ON files (category, extension)"))
+    except Exception as e:
+        print(f"Warning: Could not create index category_filename/extension: {e}")
     conn.execute(text("""
         CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
             filename, tags, 

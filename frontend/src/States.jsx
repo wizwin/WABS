@@ -75,7 +75,7 @@ axios.interceptors.response.use(
 
 export const SettingsContext = createContext({ animationsEnabled: true, theme: 'dark' });
 
-export const dateFormatter = new Intl.DateTimeFormat('default', { month: 'short', year: 'numeric' });
+export const dateFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', year: 'numeric' });
 export const fileDateCache = new WeakMap();
 export const placeholderCache = new Map();
 export const sizeCache = new Map();
@@ -120,7 +120,8 @@ export function parseFileDate(file) {
     dateStr = dateStr.replace(/\s+/, 'T');
   }
   const d = new Date(dateStr);
-  const res = isNaN(d.getTime()) ? null : d;
+  const isValid = !isNaN(d.getTime()) && d.getFullYear() >= 1900 && d.getFullYear() <= 2100;
+  const res = isValid ? d : null;
   fileDateCache.set(file, res);
   return res;
 }

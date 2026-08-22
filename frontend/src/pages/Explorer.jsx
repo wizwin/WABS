@@ -81,6 +81,7 @@ export default function Explorer(props) {
     renderThumb, checkFileReadOnly, hasMore, loadingMore, showDetails, detailsWidth,
     selected, getPersonThumbUrl, currentPerson, personPreviewPhotos, renderMetadata,
     setLoadingMore, handleScroll, dataOpProgress, showToastMessage, getImplicitSelection,
+    loadMore, loadPrevious,
     
     // Virtual Folder props
     virtualFolderId, currentVirtualFolder, virtualFolders, createVirtualFolder,
@@ -520,7 +521,16 @@ export default function Explorer(props) {
                             setHasMore(res.data.length === limit);
                             setLoadingMore(false);
                             loadingMoreRef.current = false;
-                            setTimeout(() => document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'auto', block: 'start' }), 100);
+                            setTimeout(() => {
+                              const el = document.getElementById(`date-group-${dateKey}`);
+                              if (el) {
+                                isRestoringScroll.current = true;
+                                el.scrollIntoView({ behavior: 'auto', block: 'start' });
+                                const content = document.querySelector('.content');
+                                if (content) lastScrollTopRef.current = content.scrollTop;
+                                setTimeout(() => { isRestoringScroll.current = false; }, 50);
+                              }
+                            }, 100);
                             }).catch(err => {
                             if (!axios.isCancel(err)) {
                                 setLoadingMore(false);
@@ -547,7 +557,16 @@ export default function Explorer(props) {
                             setHasMore(res.data.length === limit);
                             setLoadingMore(false);
                             loadingMoreRef.current = false;
-                            setTimeout(() => document.getElementById(`date-group-${dateKey}`)?.scrollIntoView({ behavior: 'auto', block: 'start' }), 100);
+                            setTimeout(() => {
+                              const el = document.getElementById(`date-group-${dateKey}`);
+                              if (el) {
+                                isRestoringScroll.current = true;
+                                el.scrollIntoView({ behavior: 'auto', block: 'start' });
+                                const content = document.querySelector('.content');
+                                if (content) lastScrollTopRef.current = content.scrollTop;
+                                setTimeout(() => { isRestoringScroll.current = false; }, 50);
+                              }
+                            }, 100);
                             }).catch(err => {
                             if (!axios.isCancel(err)) {
                                 setLoadingMore(false);
@@ -742,8 +761,6 @@ export default function Explorer(props) {
         <label style={{marginLeft:'10px'}}>Sort by:</label>
         <select value={sortBy} onChange={(e)=>{
             setSortBy(e.target.value);
-            if(page === 'explorer' || page === 'virtual_folder') loadFiles(0, false, filterCategory, e.target.value, sortOrder);
-            else if(page === 'search') doSearch(query, filterCategory, e.target.value, sortOrder);
         }}>
             <option value='date'>Date</option>
             <option value='size'>Size</option>
@@ -751,10 +768,7 @@ export default function Explorer(props) {
             <option value='extension'>Extension</option>
         </select>
         <ActionButton className="" style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center' }} onClick={()=>{
-            const newOrder = sortOrder === 'asc' ? 'desc' : 'asc';
-            setSortOrder(newOrder);
-            if(page === 'explorer' || page === 'virtual_folder') loadFiles(0, false, filterCategory, sortBy, newOrder);
-            else if(page === 'search') doSearch(query, filterCategory, sortBy, newOrder);
+            setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
         }}>
             {sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />}
         </ActionButton>
@@ -1277,8 +1291,12 @@ export default function Explorer(props) {
         })()}
 
         {startOffset > 0 && (
-        <div style={{ textAlign: 'center', paddingTop: '150px', paddingBottom: '20px', color: '#94a3b8', display: 'flex', justifyContent: 'center', alignItems: 'flex-end', height: '200px', boxSizing: 'border-box' }}>
-            <div style={{ width: '250px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+        <div style={{ textAlign: 'center', padding: '12px 0 16px 0', color: '#94a3b8', display: 'flex', justifyContent: 'center', alignItems: 'center', height: '24px', boxSizing: 'content-box' }}>
+            <div 
+              style={{ width: '250px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', cursor: loadingPrevious ? 'default' : 'pointer', userSelect: 'none' }}
+              onClick={() => { if (!loadingPrevious) loadPrevious(); }}
+              title={loadingPrevious ? 'Loading...' : 'Click or scroll up to load previous'}
+            >
             {loadingPrevious ? <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Loading previous files...</> : 'Scroll up to load previous files...'}
             </div>
         </div>
@@ -1308,7 +1326,11 @@ export default function Explorer(props) {
         }
         {hasMore && !showSelectedOnly && (
         <div style={{ textAlign: 'center', padding: '20px 0 40px 0', color: '#94a3b8', display: 'flex', justifyContent: 'center', alignItems: 'center', height: '24px', boxSizing: 'content-box' }}>
-            <div style={{ width: '250px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+            <div 
+              style={{ width: '250px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', cursor: loadingMore ? 'default' : 'pointer', userSelect: 'none' }}
+              onClick={() => { if (!loadingMore) loadMore(); }}
+              title={loadingMore ? 'Loading...' : 'Click or scroll down to load more'}
+            >
             {loadingMore ? <><HourglassEmptyIcon fontSize="small" style={{ animation: 'spin 2s linear infinite' }} /> Loading more files...</> : 'Scroll down to load more files...'}
             </div>
         </div>

@@ -214,6 +214,29 @@ def search_suggestions(q: str = "", limit: int = 5):
             return {"type": "tag", "suggestions": suggs, "last_word": last_word}
         return {"type": "none", "suggestions": [], "last_word": last_word}
         
+    if lower_clean.startswith("rel:") or lower_clean.startswith("relation:") or lower_clean.startswith("kinship:"):
+        p_len = len("rel:") if lower_clean.startswith("rel:") else (len("relation:") if lower_clean.startswith("relation:") else len("kinship:"))
+        sub_term = lower_clean[p_len:].strip('"\'')
+        rel_presets = [
+            "spouse", "parent", "child", "sibling", "grandparent", "aunt", "uncle",
+            "cousin", "in-law", "close friend", "colleague", "classmate", "neighbor",
+            "family", "friends", "others"
+        ]
+        matching = [r for r in rel_presets if sub_term in r]
+        if matching:
+            suggs = [f'{prefix}rel:{m}' if " " not in m else f'{prefix}rel:"{m}"' for m in matching[:limit]]
+            return {"type": "tag", "suggestions": suggs, "last_word": last_word}
+        return {"type": "none", "suggestions": [], "last_word": last_word}
+
+    if lower_clean.startswith("category:"):
+        sub_term = lower_clean[len("category:"):].strip('"\'')
+        cat_presets = ["family", "friends", "others"]
+        matching = [c for c in cat_presets if sub_term in c]
+        if matching:
+            suggs = [f'{prefix}category:{m}' for m in matching[:limit]]
+            return {"type": "tag", "suggestions": suggs, "last_word": last_word}
+        return {"type": "none", "suggestions": [], "last_word": last_word}
+
     if lower_clean.startswith("tag:"):
         sub_term = lower_clean[len("tag:"):]
         with SessionLocal() as s:
@@ -233,6 +256,24 @@ def search_suggestions(q: str = "", limit: int = 5):
                 return {"type": "tag", "suggestions": suggs, "last_word": last_word}
         return {"type": "none", "suggestions": [], "last_word": last_word}
         
+    if lower_clean.startswith("aspect:"):
+        sub_term = lower_clean[len("aspect:"):].strip('"\'')
+        aspect_presets = ["landscape", "portrait", "square"]
+        matching = [a for a in aspect_presets if sub_term in a]
+        if matching:
+            suggs = [f"{prefix}aspect:{m}" for m in matching[:limit]]
+            return {"type": "tag", "suggestions": suggs, "last_word": last_word}
+        return {"type": "none", "suggestions": [], "last_word": last_word}
+
+    if lower_clean.startswith("resolution:"):
+        sub_term = lower_clean[len("resolution:"):].strip('"\'')
+        res_presets = ["4k", "1080p", "720p", ">=1080p", ">=4k"]
+        matching = [r for r in res_presets if sub_term in r]
+        if matching:
+            suggs = [f"{prefix}resolution:{m}" for m in matching[:limit]]
+            return {"type": "tag", "suggestions": suggs, "last_word": last_word}
+        return {"type": "none", "suggestions": [], "last_word": last_word}
+
     if lower_clean.startswith("type:"):
         sub_term = lower_clean[len("type:"):]
         matching = [c for c in STANDARD_CATEGORIES if c.startswith(sub_term)]

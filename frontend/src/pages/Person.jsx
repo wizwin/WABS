@@ -15,6 +15,7 @@ import { DateGroup } from '../components/ui/DateGroup';
 import { PersonThumb } from '../components/ui/PersonThumb';
 import { SelectionBar } from '../components/ui/SelectionBar';
 import AddToFolderModal from '../components/ui/AddToFolderModal';
+import { RELATIONSHIP_SUBCATEGORIES, DEFAULT_SUBCATEGORIES } from '../components/ui/RelationshipTree';
 import { API, formatSize } from '../States';
 
 function HoverableImage({ item, renderThumb, style, onClick, title, className }) {
@@ -281,10 +282,12 @@ export default function Person(props) {
                 onChange={(e) => {
                   const newCat = e.target.value;
                   setLocalCategory(newCat);
-                  if (newCat === 'Family' && !localSubcategory) setLocalSubcategory('Spouse');
-                  else if (newCat === 'Friends' && !localSubcategory) setLocalSubcategory('Close Friend');
-                  else if (newCat === 'Others' && !localSubcategory) setLocalSubcategory('Neighbor');
-                  else if (!newCat) {
+                  if (newCat && RELATIONSHIP_SUBCATEGORIES[newCat]) {
+                    const validOptions = RELATIONSHIP_SUBCATEGORIES[newCat];
+                    if (!validOptions.some(opt => opt.value === localSubcategory)) {
+                      setLocalSubcategory(DEFAULT_SUBCATEGORIES[newCat] || validOptions[0]?.value || '');
+                    }
+                  } else if (!newCat) {
                     setLocalSubcategory('');
                     setLocalRelationLabel('');
                   }
@@ -299,7 +302,7 @@ export default function Person(props) {
               </select>
             </div>
 
-            {localCategory && (
+            {localCategory && RELATIONSHIP_SUBCATEGORIES[localCategory] && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span style={{ fontSize: '13px', color: '#94a3b8' }}>Type:</span>
                 <select
@@ -308,42 +311,11 @@ export default function Person(props) {
                   disabled={isTaskActive}
                   style={{ padding: '4px 8px', borderRadius: '6px', background: '#1e293b', color: '#f8fafc', border: '1px solid #334155', outline: 'none', fontSize: '13px' }}
                 >
-                  {localCategory === 'Family' && (
-                    <>
-                      <option value="Spouse">Spouse / Partner</option>
-                      <option value="Parent">Parent (Father / Mother)</option>
-                      <option value="Child">Child (Son / Daughter)</option>
-                      <option value="Sibling">Sibling (Brother / Sister)</option>
-                      <option value="In-law">In-law (Parents / Siblings / Extended In-laws)</option>
-                      <option value="Spouse's Family">Spouse's Extended Family (Aunts / Uncles / Cousins)</option>
-                      <option value="Grandparent">Grandparent (Maternal / Paternal)</option>
-                      <option value="Grandchild">Grandchild (Grandson / Granddaughter)</option>
-                      <option value="Great-Grandparent">Great-Grandparent / Ancestor</option>
-                      <option value="Aunt / Uncle">Aunt / Uncle (Parents' Siblings)</option>
-                      <option value="Great-Aunt / Uncle">Great-Aunt / Great-Uncle (Grandparents' Siblings)</option>
-                      <option value="Cousin (1st)">Cousin (1st - Parents' Siblings' Children)</option>
-                      <option value="Cousin (Once Removed)">Cousin (Once Removed - Parents' / Grandparents' Cousins)</option>
-                      <option value="Cousin (2nd / Distant)">Cousin (2nd / 3rd / Distant)</option>
-                      <option value="Niece / Nephew">Niece / Nephew (Siblings' Children)</option>
-                      <option value="Other Family">Other Family / Relative</option>
-                    </>
-                  )}
-                  {localCategory === 'Friends' && (
-                    <>
-                      <option value="Close Friend">Close Friend</option>
-                      <option value="Colleague">Colleague / Work</option>
-                      <option value="Classmate">Classmate / School</option>
-                      <option value="Acquaintance">Acquaintance</option>
-                      <option value="Other Friend">Other Friend</option>
-                    </>
-                  )}
-                  {localCategory === 'Others' && (
-                    <>
-                      <option value="Neighbor">Neighbor</option>
-                      <option value="Service Contact">Service Contact</option>
-                      <option value="Unknown">Other</option>
-                    </>
-                  )}
+                  {RELATIONSHIP_SUBCATEGORIES[localCategory].map(opt => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
                 </select>
               </div>
             )}
@@ -462,8 +434,14 @@ export default function Person(props) {
                     <>
                       <option value="Maternal Uncle (Mother's Brother)" />
                       <option value="Maternal Aunt (Mother's Sister)" />
+                      <option value="Maternal Aunt by Marriage (Mother's Brother's Wife)" />
+                      <option value="Maternal Uncle by Marriage (Mother's Sister's Husband)" />
                       <option value="Paternal Uncle (Father's Brother)" />
                       <option value="Paternal Aunt (Father's Sister)" />
+                      <option value="Paternal Aunt by Marriage (Father's Brother's Wife)" />
+                      <option value="Paternal Uncle by Marriage (Father's Sister's Husband)" />
+                      <option value="Aunt by Marriage" />
+                      <option value="Uncle by Marriage" />
                       <option value="Uncle" />
                       <option value="Aunt" />
                     </>
@@ -616,8 +594,18 @@ export default function Person(props) {
 
         {/* Connected Family & Relationships Bar (Inter-Person Network) */}
         {currentPerson && !currentPerson.name?.startsWith('Unknown Person') && (
-          <div style={{ padding: '8px 18px', background: '#0b1329', borderBottom: '1px solid #1e293b', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '12.5px', color: '#94a3b8', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+          <div style={{
+            padding: '8px 18px',
+            background: '#0b1329',
+            borderBottom: '1px solid #1e293b',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            flexWrap: 'wrap',
+            maxHeight: '110px',
+            overflowY: 'auto'
+          }}>
+            <span style={{ fontSize: '12.5px', color: '#94a3b8', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
               Family Links:
             </span>
             {personConnections && personConnections.length > 0 ? (
@@ -660,6 +648,33 @@ export default function Person(props) {
                       <span style={{ fontSize: '11px', color: badgeColor, textTransform: 'capitalize', fontWeight: '600' }}>
                         ({label})
                       </span>
+                      {props.doSearch && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const q = `+person:"${currentPerson.name}" +person:"${c.related_name}"`;
+                            if (props.setQuery) props.setQuery(q);
+                            props.doSearch(q, 'all');
+                            if (setPage) setPage('search');
+                          }}
+                          style={{
+                            background: 'rgba(59, 130, 246, 0.25)',
+                            border: '1px solid rgba(59, 130, 246, 0.5)',
+                            borderRadius: '6px',
+                            color: '#93c5fd',
+                            cursor: 'pointer',
+                            padding: '1px 5px',
+                            fontSize: '10.5px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '2px',
+                            marginLeft: '2px'
+                          }}
+                          title={`Search photos of ${currentPerson.name} & ${c.related_name} together`}
+                        >
+                          👥 Together
+                        </button>
+                      )}
                       <button
                         onClick={(e) => {
                           e.stopPropagation();

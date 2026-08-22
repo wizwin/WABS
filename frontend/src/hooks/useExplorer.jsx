@@ -26,6 +26,7 @@ export function useExplorer({
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
   const lastCheckedPath = useRef(null);
   const suppressNextAutoLoad = useRef(false);
+  const isRestoringScroll = useRef(false);
   const [activeDate, setActiveDate] = useState('');
 
   const viewContexts = useRef({
@@ -59,15 +60,8 @@ export function useExplorer({
     }
   });
   const invalidateViewCache = () => {
-    viewContexts.current = {
-      explorer_flat: null,
-      explorer_tree: null,
-      virtual_folder_flat: null,
-      virtual_folder_tree: null
-    };
+    viewContexts.current = {};
   };
-  const prevViewType = useRef(viewType);
-  const prevPage = useRef(page);
   const folderTreeScrollTopRef = useRef(0);
   const timelineScrollTopRef = useRef(0);
 
@@ -144,6 +138,17 @@ export function useExplorer({
   const [currentVirtualFolder, setCurrentVirtualFolder] = useState(null);
   const [virtualFolders, setVirtualFolders] = useState([]);
   const [virtualFolderViewType, setVirtualFolderViewType] = useState('tree');
+  const prevViewType = useRef(page === 'virtual_folder' ? virtualFolderViewType : viewType);
+  const prevPage = useRef(page);
+  const prevFilterCategory = useRef(filterCategory);
+  const prevSortBy = useRef(sortBy);
+  const prevSortOrder = useRef(sortOrder);
+  const prevActiveFolderPath = useRef(activeFolderPath);
+  const prevVirtualFolderId = useRef(virtualFolderId);
+  const isLoadingRef = useRef(false);
+  const lastLoadTimeRef = useRef(0);
+  const cooldownRetryRef = useRef(null);
+  const lastScrollTopRef = useRef(0);
   // Lazy file counts: keyed by folder id. Populated on-demand via fetchFolderCount.
   const [virtualFolderCounts, setVirtualFolderCounts] = useState({});
   const [loadingAllCounts, setLoadingAllCounts] = useState(false);
@@ -190,7 +195,7 @@ export function useExplorer({
     setVirtualFolderId(folder.id);
     setCurrentVirtualFolder(folder);
     setFilterCategory('all');
-    loadFiles(0, false, 'all', sortBy, sortOrder, 'virtual_folder', folder.id);
+    setPage('virtual_folder');
   };
 
   // Virtual Folder Navigation states
@@ -222,9 +227,7 @@ export function useExplorer({
       setVirtHistoryIdx(prevIdx);
       setVirtualFolderId(prevFolderId);
       setCurrentVirtualFolder(prevFolder || null);
-      if (prevFolderId) {
-        loadFiles(0, false, filterCategory, sortBy, sortOrder, 'virtual_folder', prevFolderId);
-      } else {
+      if (!prevFolderId) {
         setPage('virtual_folders');
       }
     }
@@ -239,9 +242,7 @@ export function useExplorer({
       setVirtHistoryIdx(nextIdx);
       setVirtualFolderId(nextFolderId);
       setCurrentVirtualFolder(nextFolder || null);
-      if (nextFolderId) {
-        loadFiles(0, false, filterCategory, sortBy, sortOrder, 'virtual_folder', nextFolderId);
-      } else {
+      if (!nextFolderId) {
         setPage('virtual_folders');
       }
     }
@@ -253,9 +254,7 @@ export function useExplorer({
       const parent = parentId ? (virtualFolders || []).find(f => f.id === parentId) : null;
       setVirtualFolderId(parentId);
       setCurrentVirtualFolder(parent);
-      if (parentId) {
-        loadFiles(0, false, filterCategory, sortBy, sortOrder, 'virtual_folder', parentId);
-      } else {
+      if (!parentId) {
         setPage('virtual_folders');
       }
     }
@@ -445,26 +444,45 @@ export function useExplorer({
     }
   }, [page, viewType]);
 
-  useEffect(() => {
-    if (page === 'explorer') {
-      if (suppressNextAutoLoad.current) {
-        return;
-      }
-      loadFiles(0, false, filterCategory, sortBy, sortOrder, page, virtualFolderId, viewType, activeFolderPath);
-    }
-  }, [activeFolderPath, page]);
-
+  // Robust Content Pane Cache Manager:
+  // Saves and restores view contexts (loaded files list, pagination offset, startOffset, and scroll position)
+  // across page transitions, view toggles, category filter changes, sorting options, and active folder paths.
   useEffect(() => {
     const oldPage = prevPage.current;
     const newPage = page;
     const oldView = prevViewType.current;
     const newView = page === 'virtual_folder' ? virtualFolderViewType : viewType;
+    const oldCat = prevFilterCategory.current;
+    const newCat = filterCategory;
+    const oldSortBy = prevSortBy.current;
+    const newSortBy = sortBy;
+    const oldSortOrder = prevSortOrder.current;
+    const newSortOrder = sortOrder;
+    const oldActiveFolderPath = prevActiveFolderPath.current;
+    const newActiveFolderPath = activeFolderPath;
+    const oldVirtualFolderId = prevVirtualFolderId.current;
+    const newVirtualFolderId = virtualFolderId;
 
-    if (oldPage === newPage && oldView === newView) return;
+    if (
+      oldPage === newPage &&
+      oldView === newView &&
+      oldCat === newCat &&
+      oldSortBy === newSortBy &&
+      oldSortOrder === newSortOrder &&
+      oldActiveFolderPath === newActiveFolderPath &&
+      oldVirtualFolderId === newVirtualFolderId
+    ) {
+      return;
+    }
 
     if (suppressNextAutoLoad.current) {
       prevPage.current = newPage;
       prevViewType.current = newView;
+      prevFilterCategory.current = newCat;
+      prevSortBy.current = newSortBy;
+      prevSortOrder.current = newSortOrder;
+      prevActiveFolderPath.current = newActiveFolderPath;
+      prevVirtualFolderId.current = newVirtualFolderId;
       return;
     }
 
@@ -472,33 +490,41 @@ export function useExplorer({
     const isNewPreserved = newPage === 'explorer' || newPage === 'virtual_folder';
 
     if (isOldPreserved) {
-      const oldCacheKey = `${oldPage}_${oldView}`;
+      const oldCacheKey = `${oldPage}_${oldView}_${oldCat}`;
       viewContexts.current[oldCacheKey] = {
         ...viewContexts.current[oldCacheKey],
         files: files,
         offset: offset,
         startOffset: startOffset,
         hasMore: hasMore,
-        // Store parameters to validate cache status on next restore
-        filterCategory: filterCategory,
-        sortBy: sortBy,
-        sortOrder: sortOrder,
-        activeFolderPath: activeFolderPath,
-        virtualFolderId: virtualFolderId
+        filterCategory: oldCat,
+        sortBy: oldSortBy,
+        sortOrder: oldSortOrder,
+        activeFolderPath: oldActiveFolderPath,
+        virtualFolderId: oldVirtualFolderId
       };
     }
 
     if (isNewPreserved) {
-      const newCacheKey = `${newPage}_${newView}`;
+      const newCacheKey = `${newPage}_${newView}_${newCat}`;
       const ctx = viewContexts.current[newCacheKey];
 
-      // Check if the cached parameters match our current view parameters
+      // If only sorting changed within the exact same view and category, it is an explicit sort click.
+      // In this case, we MUST invalidate the cache to force a reload from page 0.
+      const isExplicitSortChange = 
+        oldCat === newCat && 
+        oldPage === newPage && 
+        oldView === newView && 
+        oldActiveFolderPath === newActiveFolderPath && 
+        oldVirtualFolderId === newVirtualFolderId && 
+        (oldSortBy !== newSortBy || oldSortOrder !== newSortOrder);
+
+      // Check if the cached parameters match our current view parameters (ignoring sorting, as we restore it below)
       const isCacheValid = ctx && 
         ctx.filterCategory === filterCategory &&
-        ctx.sortBy === sortBy &&
-        ctx.sortOrder === sortOrder &&
         ctx.activeFolderPath === activeFolderPath &&
-        ctx.virtualFolderId === virtualFolderId;
+        ctx.virtualFolderId === virtualFolderId &&
+        !isExplicitSortChange;
 
       // Tree-view files are folder-specific. Cached files may belong to a different
       // folder than the one currently active, and the cached startOffset may be
@@ -512,25 +538,56 @@ export function useExplorer({
         setStartOffset(ctx.startOffset);
         setHasMore(ctx.hasMore);
 
+        // Restore the category-specific sorting parameters if they differ from the global state
+        if (ctx.sortBy !== sortBy) setSortBy(ctx.sortBy);
+        if (ctx.sortOrder !== sortOrder) setSortOrder(ctx.sortOrder);
+
         prevPage.current = newPage;
         prevViewType.current = newView;
+        prevFilterCategory.current = newCat;
+        prevSortBy.current = ctx.sortBy;
+        prevSortOrder.current = ctx.sortOrder;
+        prevActiveFolderPath.current = newActiveFolderPath;
+        prevVirtualFolderId.current = newVirtualFolderId;
+      } else if (isExplicitSortChange) {
+        // Explicit sort order/field change: preserve loaded files in memory and update prev refs
+        prevPage.current = newPage;
+        prevViewType.current = newView;
+        prevFilterCategory.current = newCat;
+        prevSortBy.current = newSortBy;
+        prevSortOrder.current = newSortOrder;
+        prevActiveFolderPath.current = newActiveFolderPath;
+        prevVirtualFolderId.current = newVirtualFolderId;
       } else {
         // Cache is stale/invalid or we are switching to Explorer Tree: reset states and force reload
         setFiles([]);
         setOffset(0);
         setStartOffset(0);
         setHasMore(true);
+        if (viewContexts.current[newCacheKey]) {
+          viewContexts.current[newCacheKey].scrollTop = 0;
+        }
 
         prevPage.current = newPage;
         prevViewType.current = newView;
+        prevFilterCategory.current = newCat;
+        prevSortBy.current = newSortBy;
+        prevSortOrder.current = newSortOrder;
+        prevActiveFolderPath.current = newActiveFolderPath;
+        prevVirtualFolderId.current = newVirtualFolderId;
 
         loadFiles(0, false, filterCategory, sortBy, sortOrder, newPage, virtualFolderId, newView, activeFolderPath);
       }
     } else {
       prevPage.current = newPage;
       prevViewType.current = newView;
+      prevFilterCategory.current = newCat;
+      prevSortBy.current = newSortBy;
+      prevSortOrder.current = newSortOrder;
+      prevActiveFolderPath.current = newActiveFolderPath;
+      prevVirtualFolderId.current = newVirtualFolderId;
     }
-  }, [viewType, virtualFolderViewType, page]);
+  }, [viewType, virtualFolderViewType, page, filterCategory, sortBy, sortOrder, activeFolderPath, virtualFolderId]);
 
   // Robust Content Pane Scroll Restorer:
   // Fires when files/directories update and render in the DOM to ensure stable height.
@@ -538,39 +595,47 @@ export function useExplorer({
     const container = document.querySelector('.content');
     if (container && !pendingLocatePath) {
       const activeView = page === 'virtual_folder' ? virtualFolderViewType : viewType;
-      const cacheKey = `${page}_${activeView}`;
+      const cacheKey = `${page}_${activeView}_${filterCategory}`;
       const ctx = viewContexts.current[cacheKey];
-      if (ctx && ctx.scrollTop) {
+      if (ctx && typeof ctx.scrollTop === 'number') {
+        isRestoringScroll.current = true;
         container.scrollTop = ctx.scrollTop;
+        lastScrollTopRef.current = ctx.scrollTop;
+        setTimeout(() => {
+          isRestoringScroll.current = false;
+        }, 50);
       }
     }
-  }, [files, directories, page, viewType, virtualFolderViewType]);
+  }, [page, viewType, virtualFolderViewType, filterCategory, activeFolderPath, virtualFolderId]);
 
   useEffect(() => {
-    viewContexts.current.explorer_tree = {
-      files: [],
-      offset: 0,
-      startOffset: 0,
-      hasMore: true,
-      scrollTop: 0
-    };
+    // Clear all explorer_tree caches when folder path changes
+    Object.keys(viewContexts.current).forEach(key => {
+      if (key.startsWith('explorer_tree')) {
+        viewContexts.current[key] = {
+          files: [],
+          offset: 0,
+          startOffset: 0,
+          hasMore: true,
+          scrollTop: 0
+        };
+      }
+    });
   }, [activeFolderPath]);
 
   useEffect(() => {
-    viewContexts.current.virtual_folder_tree = {
-      files: [],
-      offset: 0,
-      startOffset: 0,
-      hasMore: true,
-      scrollTop: 0
-    };
-    viewContexts.current.virtual_folder_flat = {
-      files: [],
-      offset: 0,
-      startOffset: 0,
-      hasMore: true,
-      scrollTop: 0
-    };
+    // Clear all virtual_folder caches when virtual folder ID changes
+    Object.keys(viewContexts.current).forEach(key => {
+      if (key.startsWith('virtual_folder')) {
+        viewContexts.current[key] = {
+          files: [],
+          offset: 0,
+          startOffset: 0,
+          hasMore: true,
+          scrollTop: 0
+        };
+      }
+    });
   }, [virtualFolderId]);
 
   const [pendingLocatePath, setPendingLocatePath] = useState(null);
@@ -660,12 +725,14 @@ export function useExplorer({
     return Array.from(checkedFiles).some(checkFileReadOnly);
   }, [checkedFiles, settings]);
 
-  // Loads files in chunks from the backend with AbortController query cancellation support.
   async function loadFiles(nextOffset = 0, append = false, cat = filterCategory, sBy = sortBy, sOrd = sortOrder, customPage = page, customFolderId = virtualFolderId, customViewType = undefined, customActiveFolder = activeFolderPath) {
-    if (loadFilesAbortController.current) {
+    isLoadingRef.current = true;
+    if (!append && loadFilesAbortController.current) {
       loadFilesAbortController.current.abort();
+      loadFilesAbortController.current = new AbortController();
+    } else if (!loadFilesAbortController.current) {
+      loadFilesAbortController.current = new AbortController();
     }
-    loadFilesAbortController.current = new AbortController();
     const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
     const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
 
@@ -695,9 +762,10 @@ export function useExplorer({
       } else {
         setFiles(r.data);
         setStartOffset(nextOffset);
+        lastScrollTopRef.current = 0;
       }
       setOffset(nextOffset + r.data.length);
-      setHasMore(r.data.length === limit);
+      setHasMore(r.data.length > 0 && r.data.length === limit);
       if(!append){
         setSearchCache([]);
       }
@@ -707,6 +775,7 @@ export function useExplorer({
         setHasMore(false);
       }
     } finally {
+      isLoadingRef.current = false;
       setLoadingMore(false);
       loadingMoreRef.current = false;
     }
@@ -743,6 +812,7 @@ export function useExplorer({
       const chunkSize = settings.lazy_load_chunk_size ?? settings?.ui_preferences?.lazy_load_chunk_size ?? 50;
       const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
       setLoadingMore(true);
+      isLoadingRef.current = true;
       setSelected(null);
       setCheckedFiles(new Set());
       try {
@@ -766,6 +836,8 @@ export function useExplorer({
           console.warn('Search failed', err);
           setHasMore(false);
         }
+      } finally {
+        isLoadingRef.current = false;
       }
     }, 600);
   }
@@ -783,6 +855,7 @@ export function useExplorer({
       searchAbortController.current = new AbortController();
   
       setLoadingMore(true);
+      isLoadingRef.current = true;
       try {
         let url = `${API}/search?query=${encodeURIComponent(query)}&category=${cat}&offset=0&limit=${limit}&sort_by=${sBy}&sort_order=${sOrd}`;
         if (folderIdToUse) {
@@ -803,6 +876,8 @@ export function useExplorer({
           console.warn('Search failed', err);
           setHasMore(false);
         }
+      } finally {
+        isLoadingRef.current = false;
       }
       setPage('search');
     } else {
@@ -817,7 +892,7 @@ export function useExplorer({
   }
 
   async function loadMore() {
-    if(loadingMore || loadingMoreRef.current || !hasMore) return;
+    if(loadingMore || loadingMoreRef.current || !hasMore || files.length === 0 || isLoadingRef.current) return;
   
     setLoadingMore(true);
     loadingMoreRef.current = true;
@@ -878,7 +953,7 @@ export function useExplorer({
   }
 
   async function loadPrevious() {
-    if(loadingPrevious || loadingPreviousRef.current || startOffset <= 0) return;
+    if(loadingPrevious || loadingPreviousRef.current || startOffset <= 0 || isLoadingRef.current) return;
   
     setLoadingPrevious(true);
     loadingPreviousRef.current = true;
@@ -941,7 +1016,13 @@ export function useExplorer({
         setStartOffset(nextStartOffset);
         setTimeout(() => {
           if (contentEl) {
-            contentEl.scrollTop = oldScrollTop + (contentEl.scrollHeight - oldScrollHeight);
+            isRestoringScroll.current = true;
+            const newScrollTop = oldScrollTop + (contentEl.scrollHeight - oldScrollHeight);
+            contentEl.scrollTop = newScrollTop;
+            lastScrollTopRef.current = newScrollTop;
+            setTimeout(() => {
+              isRestoringScroll.current = false;
+            }, 50);
           }
         }, 50);
       }
@@ -977,13 +1058,22 @@ export function useExplorer({
   };
 
   function handleScroll(e) {
+    if (isRestoringScroll.current) return;
     const {scrollTop, scrollHeight, clientHeight} = e.currentTarget;
-    if(scrollHeight - scrollTop - clientHeight < 120) loadMore();
-    if(scrollTop < 120 && startOffset > 0) loadPrevious();
+
+    lastScrollTopRef.current = scrollTop;
+
+    if (scrollHeight - scrollTop - clientHeight < 400) {
+      loadMore();
+    }
+    if (scrollTop < 400 && startOffset > 0) {
+      loadPrevious();
+    }
     syncActiveDate(e.currentTarget);
 
     if (page === 'explorer' || page === 'virtual_folder') {
-      const cacheKey = `${page}_${viewType}`;
+      const activeView = page === 'virtual_folder' ? virtualFolderViewType : viewType;
+      const cacheKey = `${page}_${activeView}_${filterCategory}`;
       if (viewContexts.current[cacheKey]) {
         viewContexts.current[cacheKey].scrollTop = scrollTop;
       }
@@ -1599,9 +1689,6 @@ export function useExplorer({
       setPage('virtual_folder');
       setVirtualFolderId(vfId);
       setCurrentVirtualFolder(folder);
-      
-      const activeViewType = virtualFolderViewType;
-      loadFiles(0, false, filterCategory, sortBy, sortOrder, 'virtual_folder', vfId, activeViewType);
     } else {
       setFilterCategory(val);
       
@@ -1610,19 +1697,13 @@ export function useExplorer({
         setSortOrder('desc');
       }
 
-      const activeSortBy = val === 'duplicates' ? 'size' : sortBy;
-      const activeSortOrder = val === 'duplicates' ? 'desc' : sortOrder;
-
       if (page === 'virtual_folder' && virtualFolderId) {
-        // Keep in the current virtual folder
-        const activeViewType = virtualFolderViewType;
-        loadFiles(0, false, val, activeSortBy, activeSortOrder, 'virtual_folder', virtualFolderId, activeViewType);
+        // Keep in current virtual folder, page/virtualFolderId remains same
       } else {
         // Go to explorer/search
         setVirtualFolderId(null);
         setCurrentVirtualFolder(null);
         setPage('explorer');
-        loadFiles(0, false, val, activeSortBy, activeSortOrder, 'explorer', null);
       }
     }
   };
@@ -1637,7 +1718,6 @@ export function useExplorer({
       setSortBy('size');
       setSortOrder('desc');
     }
-    loadFiles(0, false, category, category === 'duplicates' ? 'size' : sortBy, category === 'duplicates' ? 'desc' : sortOrder, 'explorer', null);
   };
 
 
