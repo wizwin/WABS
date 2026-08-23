@@ -896,7 +896,7 @@ export default function Explorer(props) {
 
             {page === 'search' && (
             <div style={{ padding: '10px 18px', background: '#0f172a', borderBottom: '1px solid #1f2937', display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-                <h3 style={{ marginTop: '8px', marginBottom: '16px', fontSize: '14px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px', flexShrink: 0 }}>Smart Searches</h3>
+                <h3 style={{ marginTop: '4px', marginBottom: '12px', fontSize: '13px', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px', flexShrink: 0 }}>Smart Searches</h3>
                 <style>
                 {`
                     .smart-search-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -905,10 +905,14 @@ export default function Explorer(props) {
                     .smart-search-scrollbar::-webkit-scrollbar-thumb:hover { background: #64748b; }
                 `}
                 </style>
-                        <div className="smart-search-scrollbar" style={{display:'flex', gap:'10px', padding: '4px 4px 8px 4px', overflowX: 'auto', scrollbarWidth: 'thin', scrollbarColor: '#475569 transparent', width: '100%', boxSizing: 'border-box'}}>
+                <div className="smart-search-scrollbar" style={{display:'flex', gap:'10px', padding: '4px 4px 8px 4px', overflowX: 'auto', scrollbarWidth: 'thin', scrollbarColor: '#475569 transparent', width: '100%', boxSizing: 'border-box'}}>
                 {(settings.smart_searches || []).map(search => (
-                    <ActionButton key={search.id} className="btn btn-secondary" style={{ padding: '6px 12px', background: '#1e293b', color: '#38bdf8', borderColor: '#3b82f6', fontSize: '13px', flexShrink: 0, whiteSpace: 'nowrap' }} onClick={() => doSearch(search.query)}>
-                    {search.name}
+                    <ActionButton key={search.id} className="btn btn-secondary" style={{ padding: '6px 12px', background: '#1e293b', color: '#38bdf8', borderColor: '#3b82f6', fontSize: '13px', flexShrink: 0, whiteSpace: 'nowrap' }} onClick={() => {
+                        if (props.setFilterCategory) props.setFilterCategory('all');
+                        props.doSearch(search.query, 'all');
+                        if (setPage) setPage('search');
+                    }}>
+                    ★ {search.name}
                     </ActionButton>
                 ))}
                 {(!settings.smart_searches || settings.smart_searches.length === 0) && (

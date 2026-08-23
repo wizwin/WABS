@@ -918,6 +918,7 @@ export function useExplorer({
     const limit = settings.disable_lazy_loading || settings?.ui_preferences?.disable_lazy_loading ? 100000 : chunkSize;
     const folderIdToUse = forceFolderId !== undefined ? forceFolderId : virtualFolderId;
     if(query){
+      setPage('search');
       if (searchAbortController.current) {
         searchAbortController.current.abort();
       }
@@ -948,14 +949,13 @@ export function useExplorer({
       } finally {
         isLoadingRef.current = false;
       }
-      setPage('search');
     } else {
       if (folderIdToUse) {
         setPage('virtual_folder');
         await loadFiles(0, false, cat, sBy, sOrd, 'virtual_folder', folderIdToUse);
       } else {
-        setPage('explorer');
-        await loadFiles(0, false, cat, sBy, sOrd, 'explorer');
+        setPage('search');
+        await loadFiles(0, false, cat, sBy, sOrd, 'search');
       }
     }
   }

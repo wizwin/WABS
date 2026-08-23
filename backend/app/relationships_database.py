@@ -77,6 +77,25 @@ def init_relationships_database(rel_db_path: Path = None):
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_pc_person ON person_connections(person_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_pc_related ON person_connections(related_person_id)')
     
+    # Safe cleanup: remove any corrupt self-connections
+    cursor.execute("DELETE FROM person_connections WHERE person_id = related_person_id")
+    
+    # Safe cleanup: if contradictory links exist (e.g. both 'parent' and 'child' between same pair), clean them
+    try:
+        cursor.execute("""
+            DELETE FROM person_connections 
+            WHERE id IN (
+                SELECT pc1.id FROM person_connections pc1
+                JOIN person_connections pc2 
+                  ON pc1.person_id = pc2.person_id 
+                 AND pc1.related_person_id = pc2.related_person_id 
+                 AND pc1.relation_type = 'parent' 
+                 AND pc2.relation_type = 'child'
+            )
+        """)
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -99,6 +118,14 @@ def add_person_connection(person_id: int, related_person_id: int, relation_type:
     with sqlite3.connect(str(rel_db_path), timeout=10) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
+
+        # Remove any prior conflicting connections between these two individuals
+        cursor.execute("""
+            DELETE FROM person_connections 
+            WHERE (person_id = ? AND related_person_id = ?) 
+               OR (person_id = ? AND related_person_id = ?)
+        """, (person_id, related_person_id, related_person_id, person_id))
+
         cursor.execute("""
             INSERT OR REPLACE INTO person_connections (person_id, related_person_id, relation_type, created_at)
             VALUES (?, ?, ?, datetime('now'))
@@ -110,14 +137,17 @@ def add_person_connection(person_id: int, related_person_id: int, relation_type:
 
         if auto_inherit:
             # 1. If linking Parent -> Child or Child -> Parent
+            # When person_id links related_person_id with:
+            # - 'parent': related_person_id is the parent of person_id
+            # - 'child': person_id is the parent of related_person_id
             if rel_type == "parent":
-                parent_id, child_id = person_id, related_person_id
-            elif rel_type == "child":
                 parent_id, child_id = related_person_id, person_id
+            elif rel_type == "child":
+                parent_id, child_id = person_id, related_person_id
             else:
                 parent_id, child_id = None, None
 
-            if parent_id and child_id:
+            if parent_id and child_id and parent_id != child_id:
                 # Link other children of this parent as siblings to this child
                 cursor.execute("""
                     SELECT related_person_id FROM person_connections 
@@ -125,6 +155,14 @@ def add_person_connection(person_id: int, related_person_id: int, relation_type:
                 """, (parent_id, child_id))
                 other_children = [r[0] for r in cursor.fetchall()]
                 for sib_id in other_children:
+                    if sib_id == child_id:
+                        continue
+                    # Remove contradictory parent/child links if any exist before adding sibling
+                    cursor.execute("""
+                        DELETE FROM person_connections 
+                        WHERE ((person_id = ? AND related_person_id = ?) OR (person_id = ? AND related_person_id = ?))
+                          AND relation_type IN ('parent', 'child')
+                    """, (child_id, sib_id, sib_id, child_id))
                     cursor.execute("""
                         INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
                         VALUES (?, ?, 'sibling', datetime('now'))
@@ -141,49 +179,74 @@ def add_person_connection(person_id: int, related_person_id: int, relation_type:
                 """, (parent_id,))
                 spouses = [r[0] for r in cursor.fetchall()]
                 for sp_id in spouses:
+                    if sp_id == child_id:
+                        continue
+                    # Remove contradictory links
                     cursor.execute("""
-                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
-                        VALUES (?, ?, 'parent', datetime('now'))
-                    """, (sp_id, child_id))
+                        DELETE FROM person_connections 
+                        WHERE (person_id = ? AND related_person_id = ? AND relation_type = 'parent')
+                           OR (person_id = ? AND related_person_id = ? AND relation_type = 'child')
+                    """, (sp_id, child_id, child_id, sp_id))
                     cursor.execute("""
                         INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
                         VALUES (?, ?, 'child', datetime('now'))
+                    """, (sp_id, child_id))
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                        VALUES (?, ?, 'parent', datetime('now'))
                     """, (child_id, sp_id))
 
             # 2. If linking Spouse -> Spouse
             elif rel_type == "spouse":
                 sp1, sp2 = person_id, related_person_id
-                # Children of sp1 -> link as children of sp2
-                cursor.execute("""
-                    SELECT related_person_id FROM person_connections
-                    WHERE person_id = ? AND relation_type = 'child'
-                """, (sp1,))
-                for ch_row in cursor.fetchall():
-                    ch_id = ch_row[0]
+                if sp1 != sp2:
+                    # Children of sp1 -> link as children of sp2
                     cursor.execute("""
-                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
-                        VALUES (?, ?, 'parent', datetime('now'))
-                    """, (sp2, ch_id))
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
-                        VALUES (?, ?, 'child', datetime('now'))
-                    """, (ch_id, sp2))
+                        SELECT related_person_id FROM person_connections
+                        WHERE person_id = ? AND relation_type = 'child'
+                    """, (sp1,))
+                    for ch_row in cursor.fetchall():
+                        ch_id = ch_row[0]
+                        if ch_id == sp2:
+                            continue
+                        # Remove any contradictory inverted links (e.g. sp2 having ch_id as parent)
+                        cursor.execute("""
+                            DELETE FROM person_connections 
+                            WHERE (person_id = ? AND related_person_id = ? AND relation_type = 'parent')
+                               OR (person_id = ? AND related_person_id = ? AND relation_type = 'child')
+                        """, (sp2, ch_id, ch_id, sp2))
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                            VALUES (?, ?, 'child', datetime('now'))
+                        """, (sp2, ch_id))
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                            VALUES (?, ?, 'parent', datetime('now'))
+                        """, (ch_id, sp2))
 
-                # Children of sp2 -> link as children of sp1
-                cursor.execute("""
-                    SELECT related_person_id FROM person_connections
-                    WHERE person_id = ? AND relation_type = 'child'
-                """, (sp2,))
-                for ch_row in cursor.fetchall():
-                    ch_id = ch_row[0]
+                    # Children of sp2 -> link as children of sp1
                     cursor.execute("""
-                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
-                        VALUES (?, ?, 'parent', datetime('now'))
-                    """, (sp1, ch_id))
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
-                        VALUES (?, ?, 'child', datetime('now'))
-                    """, (ch_id, sp1))
+                        SELECT related_person_id FROM person_connections
+                        WHERE person_id = ? AND relation_type = 'child'
+                    """, (sp2,))
+                    for ch_row in cursor.fetchall():
+                        ch_id = ch_row[0]
+                        if ch_id == sp1:
+                            continue
+                        # Remove any contradictory inverted links
+                        cursor.execute("""
+                            DELETE FROM person_connections 
+                            WHERE (person_id = ? AND related_person_id = ? AND relation_type = 'parent')
+                               OR (person_id = ? AND related_person_id = ? AND relation_type = 'child')
+                        """, (sp1, ch_id, ch_id, sp1))
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                            VALUES (?, ?, 'child', datetime('now'))
+                        """, (sp1, ch_id))
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO person_connections (person_id, related_person_id, relation_type, created_at)
+                            VALUES (?, ?, 'parent', datetime('now'))
+                        """, (ch_id, sp1))
 
         conn.commit()
     return True
@@ -525,10 +588,12 @@ def generate_gedcom_export(root_rel_person_id: int = None, category_filter: str 
                 fam_by_couple[couple_key] = fam_obj
 
     for c in connections:
-        parent_id, child_id, rel = c["person_id"], c["related_person_id"], c["relation_type"]
-        if parent_id not in filtered_persons or child_id not in filtered_persons:
+        p1, p2, rel = c["person_id"], c["related_person_id"], c["relation_type"]
+        if p1 not in filtered_persons or p2 not in filtered_persons:
             continue
-        if rel == "parent":
+        # In person_connections, when rel == 'child', p1 is parent and p2 is child
+        if rel == "child":
+            parent_id, child_id = p1, p2
             placed = False
             for couple_key, fam_obj in fam_by_couple.items():
                 if parent_id in couple_key:
