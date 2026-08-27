@@ -1,5 +1,12 @@
 # WABS Changelog
 
+## v1.2.1
+
+### 🐞 Bug Fixes & Refinements
+*   **Drive Connection Utilities & Fast Disconnected Root Exclusion:** Added reusable path and drive verification utilities (`get_connected_backup_locations`, `is_path_connected`) in `paths.py`. During post-index face thumbnail pre-caching (`STATE["status"] = "Caching face thumbnails..."`), WABS checks mounted drives and connected backup roots in bulk once in $O(1)$ time, instantly skipping people whose photos reside on disconnected external backup drives (e.g. `M:\`) in memory without executing slow per-file disk existence checks across millions of database records.
+*   **Offline / Disconnected Drive Face Thumbnail Error Handling:** Added accessibility checks and handled `(FileNotFoundError, OSError, PermissionError)` in `get_person_thumbnail` and background face cache warming. If an image is missing or a drive is disconnected mid-operation, WABS logs an informative single-line warning instead of dumping multi-page exception tracebacks into the application log, gracefully serving standard placeholder previews.
+*   **Virtual Folder Orphan Cleanup Lock Contention Fix:** Removed destructive `cleanup_orphans()` SQL `DELETE` write queries from the read-only `GET /virtual-folders` and `POST /virtual-folders` endpoints. Orphan cleanup is now strictly executed on mutating deletion endpoints (`DELETE /virtual-folders/{folder_id}`), preventing `sqlite3.OperationalError: database is locked` errors during background indexer and scanner operations.
+
 ## v1.2.0
 
 ### 🚀 Major New Features & Enhancements

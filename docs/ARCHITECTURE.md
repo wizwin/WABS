@@ -113,7 +113,7 @@ Two SQLAlchemy models back the feature:
 | `VirtualFolder` | `virtual_folders` | `id`, `name`, `parent_id` (self-referential FK), `is_dynamic` (0/1), `query` (saved search string), `created_at`, `metadata_json` |
 | `VirtualFolderFile` | `virtual_folder_files` | `id`, `virtual_folder_id` (FK → `virtual_folders.id`), `file_id` (FK → `files.id`) |
 
-`parent_id` is a nullable self-referential foreign key that enables an arbitrarily deep folder tree. Orphan cleanup runs on every `GET /virtual-folders` call via `cleanup_orphans()`, which deletes associations pointing to non-existent folders and child folders pointing to non-existent parents — keeping the tree consistent without requiring cascaded deletes at the DB level.
+`parent_id` is a nullable self-referential foreign key that enables an arbitrarily deep folder tree. Orphan cleanup runs during folder deletion mutations via `cleanup_orphans()`, which deletes associations pointing to non-existent folders and child folders pointing to non-existent parents — keeping the tree consistent without requiring cascaded deletes at the DB level.
 
 #### 10.2 File Membership: Manual vs Dynamic
 

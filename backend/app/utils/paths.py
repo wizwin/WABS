@@ -69,4 +69,53 @@ def check_models_exist(scan_type: str):
             msg += "The temporary application folder contents may have been deleted. Please restart the application."
         else:
             msg += "Ensure these files are present in the backend folder."
-        raise HTTPException(status_code=400, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+def get_connected_backup_locations() -> tuple[set[str], set[str]]:
+    """
+    Returns a tuple of (connected_roots, mounted_drives) in lowercase.
+    - connected_roots: set of normalized absolute directory paths from backup_locations that currently exist on disk.
+    - mounted_drives: set of mounted drive prefixes (e.g. {'c:', 'd:'}) that are currently accessible.
+    """
+    import os
+    cfg = load_config()
+    backup_locations = cfg.get("backup_locations", [])
+    
+    connected_roots = set()
+    for loc in backup_locations:
+        try:
+            p = Path(loc)
+            if p.exists():
+                connected_roots.add(str(p.resolve()).lower())
+        except Exception:
+            pass
+
+    mounted_drives = set()
+    for d in "abcdefghijklmnopqrstuvwxyz":
+        try:
+            if os.path.exists(f"{d}:\\"):
+                mounted_drives.add(f"{d}:")
+        except Exception:
+            pass
+
+    return connected_roots, mounted_drives
+
+def is_path_connected(path_str: str, connected_roots: set[str] = None, mounted_drives: set[str] = None) -> bool:
+    """
+    Fast in-memory check to verify if a path belongs to an online drive and connected backup root.
+    """
+    if not path_str:
+        return False
+    path_lower = str(path_str).lower()
+    
+    # 1. Check drive letter if Windows drive prefix
+    if len(path_lower) >= 2 and path_lower[1] == ':':
+        drive_prefix = path_lower[:2]
+        if mounted_drives is not None and drive_prefix not in mounted_drives:
+            return False
+            
+    # 2. Check against connected backup roots if specified
+    if connected_roots:
+        return any(path_lower.startswith(r) for r in connected_roots)
+        
+    return True

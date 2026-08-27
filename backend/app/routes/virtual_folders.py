@@ -244,7 +244,6 @@ def get_virtual_folders():
     # GET /virtual-folders/{id}/count — only called when the VirtualFolders page is visible.
     # Subfolder count is cheap (a single COUNT query) and is still computed here.
     with SessionLocal() as s:
-        cleanup_orphans(s)
         folders = s.query(VirtualFolder).all()
         result = []
         for f in folders:
@@ -283,7 +282,6 @@ def get_virtual_folder_count(folder_id: int):
 def create_virtual_folder(folder: VirtualFolderCreate):
     name_clean = validate_folder_name(folder.name)
     with SessionLocal() as s:
-        cleanup_orphans(s)
         new_folder = VirtualFolder(
             name=name_clean,
             parent_id=folder.parent_id,

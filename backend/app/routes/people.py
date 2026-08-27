@@ -363,15 +363,25 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
         file_path = _resolve_path(Path(file_item.path))
         import logging
         if enable_logging:
-            logging.debug(f"[DEBUG-THUMB] get_person_thumbnail person_id={person_id} file_id={file_id} path={file_path} exists={file_path.exists()}")
+            logging.debug(f"[DEBUG-THUMB] get_person_thumbnail person_id={person_id} file_id={file_id} path={file_path} exists={file_path.exists() if file_path else False}")
+        
+        # If the file is inaccessible (e.g. external drive disconnected or file moved), fallback immediately without noisy error logs
+        if file_path is None or not file_path.exists():
+            if enable_logging:
+                logging.debug(f"Source image file not accessible for person {person_id} (file {file_id}): {file_path}")
+            return preview(file_id, theme)
         
         import numpy as np
+        img = None
         try:
             with open(file_path, 'rb') as f:
                 img_array = np.frombuffer(f.read(), np.uint8)
             img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        except (FileNotFoundError, OSError):
+            img = None
         except Exception as read_err:
-            logging.exception(f"Failed to read image bytes for face thumbnail of person {person_id} (file {file_id})")
+            if enable_logging:
+                logging.warning(f"Failed to read image bytes for face thumbnail of person {person_id} (file {file_id}): {read_err}")
             img = None
         
         if img is not None:
@@ -400,8 +410,11 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
                     if pil_img.mode != 'RGB':
                         pil_img = pil_img.convert('RGB')
                     img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            except (FileNotFoundError, OSError):
+                img = None
             except Exception as e:
-                logging.exception(f"Pillow face thumbnail fallback failed for {file_path.name}")
+                if enable_logging:
+                    logging.warning(f"Pillow face thumbnail fallback failed for {file_path.name}: {e}")
                 
         if img is None:
             return preview(file_id, theme)
@@ -501,8 +514,12 @@ def get_person_thumbnail(person_id: int, theme: str = "dark"):
                 if enable_logging:
                     logging.debug(f"[DEBUG-THUMB] crop conditions not met for person {person_id}: best_face_align={best_face_align is not None} best_sim={best_sim}")
 
+    except (FileNotFoundError, OSError, PermissionError) as e:
+        import logging
+        logging.warning(f"File or device became inaccessible while generating face thumbnail for person {person_id}: {e}")
     except Exception as e:
-        logging.exception(f"Failed to generate face thumbnail for person {person_id}")
+        import logging
+        logging.warning(f"Failed to generate face thumbnail for person {person_id}: {e}")
 
     # Fallback to the full image thumbnail if face crop fails
     return preview(file_id, theme)

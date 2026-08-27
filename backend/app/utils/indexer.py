@@ -2041,10 +2041,7 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
             if run_face and not (STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped):
                 try:
                     from backend.app.config import get_thumbnail_dir
-                    from backend.app.utils.paths import get_ai_db_path
-                    
-                    # Update status so the user knows exactly what WABS is doing
-                    STATE["status"] = "Caching face thumbnails..."
+                    from backend.app.utils.paths import get_ai_db_path, get_connected_backup_locations, is_path_connected
                     
                     thumb_dir = get_thumbnail_dir("faces")
                     ai_db_path = get_ai_db_path()
@@ -2052,27 +2049,61 @@ def _process_unified_scanners(run_index: bool = False, run_face: bool = False, r
                     if ai_db_path.exists():
                         from backend.app.routes.people import get_person_thumbnail
                         
+                        # 1. Determine which backup locations / drive roots are currently connected
+                        connected_roots, mounted_drives = get_connected_backup_locations()
+
                         with sqlite3.connect(str(ai_db_path), timeout=15) as conn:
                             cursor = conn.cursor()
-                            cursor.execute("SELECT id FROM people")
-                            p_ids = [row[0] for row in cursor.fetchall()]
+                            cursor.execute("SELECT id, thumbnail_file_id FROM people")
+                            people_rows = cursor.fetchall()
                             
-                        # Optimization: List directory once to avoid 60K slow exists() disk checks
+                            # For people without explicit thumbnail_file_id, get their representative face file_id
+                            cursor.execute("SELECT person_id, file_id FROM faces WHERE embedding_json != '[]' GROUP BY person_id")
+                            face_file_map = dict(cursor.fetchall())
+                            
+                        # Optimization: List directory once to avoid slow exists() disk checks
                         existing_files = set(os.listdir(str(thumb_dir))) if thumb_dir.exists() else set()
+                        
+                        # Filter to only people who are missing thumbnails
+                        missing_people = []
+                        missing_file_ids = set()
+                        for p_id, thumb_fid in people_rows:
+                            if f"person_{p_id}.jpg" not in existing_files:
+                                fid = thumb_fid or face_file_map.get(p_id)
+                                if fid:
+                                    missing_people.append((p_id, fid))
+                                    missing_file_ids.add(fid)
+
+                        if missing_people:
+                            STATE["status"] = "Caching face thumbnails..."
+                            # Batch look up paths from main DB to check root drive connection in bulk
+                            with SessionLocal() as s:
+                                file_paths = dict(s.query(FileIndex.id, FileIndex.path).filter(FileIndex.id.in_(missing_file_ids)).all())
                             
-                        for p_id in p_ids:
-                            # Graceful stop / shutdown check
-                            if shared_state.APP_SHUTTING_DOWN or STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped:
-                                break
+                            for p_id, fid in missing_people:
+                                # Graceful stop / shutdown check
+                                if shared_state.APP_SHUTTING_DOWN or STATE.get("face_scanner_stopped") or STATE.get("stopped") or app_state.combined_scanner_stopped:
+                                    break
                                 
-                            filename = f"person_{p_id}.jpg"
-                            if filename not in existing_files:
+                                raw_path = file_paths.get(fid)
+                                if not raw_path:
+                                    continue
+                                
+                                # Fast in-memory check to exclude disconnected drives/backup roots
+                                if not is_path_connected(raw_path, connected_roots, mounted_drives):
+                                    continue
+                                        
                                 try:
                                     get_person_thumbnail(p_id)
+                                except (FileNotFoundError, OSError, PermissionError) as e:
+                                    import logging
+                                    logging.warning(f"Drive or media became inaccessible while caching face thumbnail for person {p_id}: {e}")
                                 except Exception as ex:
-                                    print(f"Failed to pre-generate face thumbnail for person {p_id}: {ex}")
+                                    import logging
+                                    logging.warning(f"Failed to pre-generate face thumbnail for person {p_id}: {ex}")
                 except Exception as e:
-                    print(f"Error in pre-generating face thumbnails: {e}")
+                    import logging
+                    logging.warning(f"Error in pre-generating face thumbnails: {e}")
 
             # Prevent frontend UI progress bar from instantly disappearing before registering 100% completion
             if not (STATE.get("stopped") or app_state.combined_scanner_stopped):
