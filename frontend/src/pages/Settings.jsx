@@ -31,6 +31,12 @@ export default function Settings(props) {
   const [purgeInProgress, setPurgeInProgress] = useState(false);
 
   const handleRemoveLocation = (config, index) => {
+    const hasPath = config.backup_path && config.backup_path.trim() !== '';
+    if (!hasPath) {
+      // If it's a newly added row with no path configured, remove it immediately without prompting
+      executeRemoveLocation(config, index, false);
+      return;
+    }
     setPurgeConfirmModal({ config, index });
   };
 

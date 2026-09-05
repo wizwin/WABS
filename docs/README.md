@@ -50,8 +50,10 @@ The Settings page is divided into seven tabs to let you customize WABS's databas
 
 #### 1. General (System Settings)
 * **Who Am I? (WABS User Identity)**: Select your own profile from your named people list. WABS uses this identity to anchor your relationship tree ("Me") and establish relationships relative to you.
+* **Database Drive Availability & Offline Warning Banner**: If your database is stored on an external drive, NAS, or encrypted container that is unmounted when WABS opens, WABS starts in configuration mode and displays a clear warning banner. You can update the path and click **"Reconnect / Reload Database Now"** to reload your archive instantly without restarting the application.
 * **System Paths**:
-  * **Database Path**: The folder where the SQLite databases (`archive.db`, `ai_metadata.db`, and `relationships.db`) are saved.
+  * **Database Path**: The folder or `.db` file path where the SQLite databases (`archive.db`, `ai_metadata.db`, and `relationships.db`) are saved. You can select a folder and WABS will automatically manage the database files inside it.
+  * **Database is on a network, removable, or encrypted drive**: Check this if your database is hosted on a USB drive, NAS share, or encrypted container volume (e.g. VeraCrypt, BitLocker). This informs WABS to wait for the drive to mount on startup and operate with extended retry timeouts.
   * **Thumbnail Path**: The folder where generated preview thumbnails and cropped face images are cached.
   * **Global Excluded Folders**: A comma-separated list of folder names that WABS will skip in all directories (e.g. `node_modules, .git, venv, bin`).
 * **Data Safety**:
@@ -67,8 +69,12 @@ The Settings page is divided into seven tabs to let you customize WABS's databas
 #### 2. Backups (Storage & Backup Locations)
 Configure the physical drives, discs, or folder trees that you want to index.
 * **Add / Remove Location**: Manage multiple storage roots.
+  * **Instant Purge on Location Removal**: When removing a backup location, WABS presents a confirmation modal where you can choose:
+    * **Yes (Purge Database)**: Instantly deletes all catalog records, search entries, OCR text, and AI metadata for this path from the database in less than a second, immediately removing it from your tree view, search, and dashboard. *(Your actual physical files on disk/NAS are never touched or modified).*
+    * **No (Keep Database Entries)**: Removes the location from active settings while preserving its indexed records (useful if you are temporarily unmounting or planning to remap the path later).
+    * **Cancel**: Aborts the removal without making changes.
 * **Backup Path (Indexed Location)**: The source folder tree to index.
-* **Enable path remapping**: If you move your archive or run it on a new computer where the drive letter/mount point changes, enable this and select the **Mapped Backup Path (New Location)**. WABS will automatically map your indexed records without needing a full re-scan.
+* **Enable path remapping**: If you move your archive or run it on a new computer where the drive letter/mount point changes (e.g. from `D:\Backups` to `E:\Backups` or `\\NAS\Share` to `Z:\Share`), enable this and enter the **Mapped Backup Path (New Location)**. WABS will automatically map your indexed records without needing a full re-scan.
 * **Read-Only Mode**: Restrict files in this specific location from being moved or deleted.
 * **Excluded Folders**: Specify folder names to exclude *only* for this specific backup location.
 
