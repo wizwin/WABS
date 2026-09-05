@@ -9,7 +9,17 @@ def init_ai_database(ai_db_path="ai_metadata.db"):
     This keeps the main WABS database completely untouched.
     """
     p = Path(ai_db_path)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+    except (FileNotFoundError, OSError):
+        from backend.app.database import switch_to_standby_mode
+        switch_to_standby_mode(str(p))
+        standby_dir = Path(__file__).resolve().parent.parent.parent / "database"
+        p = standby_dir / "standby_ai.db"
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
     # Connect to the sidecar database (creates it if it doesn't exist)
     conn = sqlite3.connect(str(p))
     cursor = conn.cursor()

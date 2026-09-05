@@ -275,7 +275,21 @@ async def track_activity_and_cache(request: Request, call_next):
             path == "/directories"):         # Tree View directory list — loaded at startup
         shared_state.LAST_ACTIVITY_TIME = time.time()
 
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        err_str = str(exc).lower()
+        if "unable to open database file" in err_str or "the system cannot find the path specified" in err_str:
+            import logging
+            logging.getLogger("wabs.database").warning(f"[Database] Active storage disconnected mid-request ('{path}'). Safely transitioning to standby mode.")
+            from backend.app.database import switch_to_standby_mode
+            switch_to_standby_mode()
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Database storage disconnected. Application transitioned to configuration standby mode."}
+            )
+        raise exc
+
     if request.method == "GET" and response.status_code == 200:
         if path.endswith("/thumbnail") or "/preview/" in path:
             content_type = response.headers.get("content-type", "")

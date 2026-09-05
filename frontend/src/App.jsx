@@ -318,15 +318,8 @@ async function saveSettings(){
 
   if (wasOffline) {
     explorer.invalidateViewCache();
-    await Promise.allSettled([
-      explorer.loadFiles(0, false, 'all'),
-      explorer.loadDirectories(),
-      explorer.loadVirtualFolders(),
-      peopleState?.loadPeople ? peopleState.loadPeople() : Promise.resolve(),
-      tagsState?.loadTags ? tagsState.loadTags() : Promise.resolve(),
-      loadDashboard()
-    ]);
-    showToastMessage('Storage reconnected successfully. All archive data loaded.');
+    await loadDashboard();
+    showToastMessage('Storage reconnected successfully.');
     setPage('dashboard');
   } else {
     const hasBackup = settings.backup_configs && settings.backup_configs.some(c => c.backup_path && c.backup_path.trim() !== '');

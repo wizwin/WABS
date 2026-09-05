@@ -22,7 +22,18 @@ def init_relationships_database(rel_db_path: Path = None):
     else:
         rel_db_path = Path(rel_db_path)
         
-    rel_db_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        rel_db_path.parent.mkdir(parents=True, exist_ok=True)
+    except (OSError, Exception):
+        from backend.app.database import switch_to_standby_mode
+        switch_to_standby_mode(str(rel_db_path))
+        standby_dir = Path(__file__).resolve().parent.parent.parent / "database"
+        rel_db_path = standby_dir / "relationships.db"
+        try:
+            rel_db_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
     conn = sqlite3.connect(str(rel_db_path), timeout=30)
     cursor = conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL;")

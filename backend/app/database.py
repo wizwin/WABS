@@ -73,7 +73,7 @@ if drive_accessible:
 if not drive_accessible:
     DATABASE_OFFLINE = True
     OFFLINE_DB_PATH = str(db)
-    logger.critical(f"[Database] CRITICAL: Database at '{db}' cannot be loaded. Starting in configuration mode so paths can be set in Settings.")
+    logger.critical(f"[Database] [OFFLINE] Database at '{db}' cannot be loaded. Starting in configuration standby mode so paths can be reconfigured or reconnected in Settings.")
     standby_dir = Path(__file__).resolve().parent.parent.parent / "database"
     try:
         standby_dir.mkdir(parents=True, exist_ok=True)
@@ -81,6 +81,8 @@ if not drive_accessible:
         pass
     standby_db = standby_dir / "standby.db"
     engine_url = f"sqlite:///{standby_db.resolve()}"
+else:
+    logger.info(f"[Database] [ONLINE] Primary database successfully mounted at '{db.resolve()}'.")
 
 engine = create_engine(
     engine_url,
@@ -235,12 +237,51 @@ def init_db(target_engine=None):
             END;
         """))
         
-        conn.execute(text("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS files_fts_vocab USING fts5vocab('files_fts', 'row');
-        """))
-
 # Initialize tables on import
 init_db(engine)
+
+def switch_to_standby_mode(missing_path: str = ""):
+    """
+    Safely switches the database engine to the local standby database if an active drive is unmounted mid-session.
+    """
+    global engine, SessionLocal, db, DATABASE_OFFLINE, OFFLINE_DB_PATH
+    if DATABASE_OFFLINE:
+        return
+    DATABASE_OFFLINE = True
+    OFFLINE_DB_PATH = missing_path or str(db)
+    logger.critical(f"[Database] [OFFLINE] Storage disconnected or unmounted at '{OFFLINE_DB_PATH}'. Switching to configuration standby mode.")
+    standby_dir = Path(__file__).resolve().parent.parent.parent / "database"
+    try:
+        standby_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    standby_db = standby_dir / "standby.db"
+    
+    if engine is not None:
+        try:
+            engine.dispose()
+        except Exception:
+            pass
+
+    standby_engine = create_engine(
+        f"sqlite:///{standby_db.resolve()}",
+        connect_args={"check_same_thread": False},
+        poolclass=NullPool
+    )
+
+    @event.listens_for(standby_engine, "connect")
+    def set_sqlite_pragma_standby(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA busy_timeout = 30000")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA temp_store=MEMORY")
+        cursor.close()
+
+    SessionLocal.configure(bind=standby_engine)
+    engine = standby_engine
+    init_db(engine)
+    logger.info(f"[Database] [STANDBY] Successfully transitioned to standby engine.")
 
 def reconnect_database(new_path: str):
     """
@@ -305,6 +346,6 @@ def reconnect_database(new_path: str):
         logger.warning(f"[Database] Sidecar database init: {e}")
 
     if is_existing:
-        logger.info(f"[Database] Successfully loaded existing database from: {target_p.resolve()}")
+        logger.info(f"[Database] [RECONNECT] Successfully reconnected to existing database at: {target_p.resolve()}")
     else:
-        logger.info(f"[Database] Successfully initialized new database at: {target_p.resolve()}")
+        logger.info(f"[Database] [RECONNECT] Successfully initialized new database at: {target_p.resolve()}")
