@@ -251,6 +251,12 @@ class PrintLogger:
 sys.stdout = PrintLogger(sys.stdout)
 sys.stderr = PrintLogger(sys.stderr)
 
+# Ensure root logging handlers use the PrintLogger wrapped stream
+import logging
+for h in logging.root.handlers:
+    if isinstance(h, logging.StreamHandler):
+        h.setStream(sys.stderr)
+
 @app.middleware("http")
 async def track_activity_and_cache(request: Request, call_next):
     path = request.url.path
@@ -340,10 +346,13 @@ async def security_auth_middleware(request: Request, call_next):
 
         if not token or not validate_session(token):
             client_ip = request.client.host if request.client else "127.0.0.1"
-            import logging
-            logging.getLogger("wabs.security").warning(
-                f"[Security] Blocked unauthenticated request to protected API: '{path}' from '{client_ip}'"
-            )
+            try:
+                import logging
+                logging.getLogger("wabs.security").warning(
+                    f"[Security] Blocked unauthenticated request to protected API: '{path}' from '{client_ip}'"
+                )
+            except Exception:
+                pass
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Authentication required. Application is locked."}
@@ -376,7 +385,10 @@ else:
 @app.on_event("startup")
 def startup_event():
     import logging
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stderr)
+    for h in logging.root.handlers:
+        if isinstance(h, logging.StreamHandler):
+            h.setStream(sys.stderr)
     __version__ = "Unknown"
     try:
         from backend.app.version import __version__

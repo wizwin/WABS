@@ -234,7 +234,9 @@ export function FolderTree({
     return root;
   }, [virtualFolders]);
 
-  // 3. Auto-expand folder tree during searches
+  const lastSearchQueryRef = useRef(null);
+
+  // 3. Auto-expand folder tree during searches and auto-select folder of first matching result
   useEffect(() => {
     if (isSearchActive && sortedFiles && sortedFiles.length > 0) {
       const newExpanded = {};
@@ -245,14 +247,46 @@ export function FolderTree({
         let acc = '';
         // Expand all parents of matching files
         for (let i = 0; i < parts.length - 1; i++) {
-          acc = i === 0 ? parts[i] : acc + '/' + parts[i];
+          acc = i === 0 ? (normalized.startsWith('/') ? '/' + parts[0] : parts[0]) : acc + '/' + parts[i];
           newExpanded[acc] = true;
           newExpanded[acc.toLowerCase()] = true;
         }
       });
-      setExpanded(newExpanded);
+      setExpanded(prev => ({ ...prev, ...newExpanded }));
+
+      if (isPhys && setActiveFolderPath) {
+        const queryChanged = lastSearchQueryRef.current !== query;
+        lastSearchQueryRef.current = query;
+
+        const normalizeDir = (filePath) => {
+          if (!filePath) return '';
+          const norm = filePath.replace(/\\/g, '/');
+          const lastSlash = norm.lastIndexOf('/');
+          return lastSlash !== -1 ? norm.substring(0, lastSlash).toLowerCase() : '';
+        };
+
+        const activeNorm = activeFolderPath ? activeFolderPath.replace(/\\/g, '/').toLowerCase() : '';
+        const hasActiveFolderInResults = activeNorm && sortedFiles.some(f => {
+          const fileDir = normalizeDir(f?.path);
+          return fileDir === activeNorm || fileDir.startsWith(activeNorm + '/');
+        });
+
+        if (queryChanged || !hasActiveFolderInResults) {
+          const firstFile = sortedFiles[0];
+          if (firstFile && firstFile.path) {
+            const normPath = firstFile.path.replace(/\\/g, '/');
+            const lastSlash = normPath.lastIndexOf('/');
+            if (lastSlash !== -1) {
+              const folderPath = normPath.substring(0, lastSlash);
+              setActiveFolderPath(folderPath);
+            }
+          }
+        }
+      }
+    } else if (!isSearchActive) {
+      lastSearchQueryRef.current = null;
     }
-  }, [isSearchActive, sortedFiles]);
+  }, [isSearchActive, query, sortedFiles, isPhys, setActiveFolderPath]);
 
   // 4. Auto-expand tree to show the active physical folder path
   useEffect(() => {

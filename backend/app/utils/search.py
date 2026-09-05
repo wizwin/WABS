@@ -630,9 +630,7 @@ def _build_search_query(query, s, q_base=None):
                        "camera:", "resolution:", "aspect:", "fps:", "artist:", "album:", "genre:", "meta:"):
             if lower_token.startswith(prefix):
                 prefix_matched = True
-                val = token[len(prefix):]
-                if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
-                    val = val[1:-1]
+                val = token[len(prefix):].strip('"\'')
                     
                 # Lookahead for trailing comma or continuation (e.g. size:>100MB, <5GB or date:2020-2022, 2023-10-25)
                 while i < len(tokens):
@@ -698,10 +696,7 @@ def _build_search_query(query, s, q_base=None):
         if prefix_matched:
             continue
             
-        clean_word = token
-        if (clean_word.startswith('"') and clean_word.endswith('"')) or (clean_word.startswith("'") and clean_word.endswith("'")):
-            clean_word = clean_word[1:-1]
-            
+        clean_word = token.strip('"\'')
         if not clean_word:
             continue
             
@@ -717,12 +712,13 @@ def _build_search_query(query, s, q_base=None):
             
         param_name = f"filter_fts_{i}"
         term_lower = clean_word.lower()
+        clean_word_fts = clean_word.replace('"', '""')
         t_cond = or_(
             text_filter(FileIndex.filename, term_lower),
             text_filter(FileIndex.path, term_lower),
             text_filter(FileIndex.tags, term_lower),
             text_filter(FileIndex.metadata_json, term_lower),
-            text(f"files.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH :{param_name} UNION SELECT file_id FROM file_text_fts WHERE file_text_fts MATCH :{param_name})").bindparams(**{param_name: f'"{clean_word}" *'})
+            text(f"files.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH :{param_name} UNION SELECT file_id FROM file_text_fts WHERE file_text_fts MATCH :{param_name})").bindparams(**{param_name: f'"{clean_word_fts}" *'})
         )
         
         if sign == "-":

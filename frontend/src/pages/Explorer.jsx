@@ -249,6 +249,43 @@ export default function Explorer(props) {
     return subfoldersList.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   }, [directories, activeFolderPath, page, settings]);
 
+  const handleNavigateToBreadcrumb = (targetPath) => {
+    navigateToPhys(targetPath);
+    if (page === 'search' && setPendingLocatePath && sortedFiles && sortedFiles.length > 0) {
+      const normalizePath = (p) => {
+        if (!p) return '';
+        let norm = p.replace(/\\/g, '/').toLowerCase();
+        if (norm.endsWith('/') && norm.length > 1) {
+          norm = norm.slice(0, -1);
+        }
+        return norm;
+      };
+
+      const folderNorm = normalizePath(targetPath);
+      if (!folderNorm) return;
+      
+      let targetFile = sortedFiles.find(file => {
+        if (!file || !file.path) return false;
+        const fileNorm = normalizePath(file.path);
+        const lastSlashIdx = fileNorm.lastIndexOf('/');
+        const fileDir = lastSlashIdx === -1 ? '' : fileNorm.substring(0, lastSlashIdx);
+        return fileDir === folderNorm;
+      });
+
+      if (!targetFile) {
+        targetFile = sortedFiles.find(file => {
+          if (!file || !file.path) return false;
+          const fileNorm = normalizePath(file.path);
+          return fileNorm.startsWith(folderNorm + '/');
+        });
+      }
+
+      if (targetFile) {
+        setPendingLocatePath(targetFile.path);
+      }
+    }
+  };
+
   const renderPhysicalBreadcrumbs = () => {
     const backups = settings?.backup_configs || [{
       id: 'default',
@@ -286,7 +323,7 @@ export default function Explorer(props) {
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#94a3b8', flexWrap: 'wrap' }}>
           <span 
             style={{ cursor: 'pointer', color: '#38bdf8', fontWeight: 'bold' }} 
-            onClick={() => navigateToPhys(backupRootPath)}
+            onClick={() => handleNavigateToBreadcrumb(backupRootPath)}
           >
             {matchedBackup.name}
           </span>
@@ -304,7 +341,7 @@ export default function Explorer(props) {
                     cursor: isLast ? 'default' : 'pointer',
                     textDecoration: isLast ? 'none' : 'underline'
                   }}
-                  onClick={() => { if (!isLast) navigateToPhys(partPath); }}
+                  onClick={() => { if (!isLast) handleNavigateToBreadcrumb(partPath); }}
                 >
                   {part}
                 </span>
@@ -319,7 +356,7 @@ export default function Explorer(props) {
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#94a3b8', flexWrap: 'wrap' }}>
           <span 
             style={{ cursor: 'pointer', color: '#38bdf8', fontWeight: 'bold' }} 
-            onClick={() => navigateToPhys(null)}
+            onClick={() => handleNavigateToBreadcrumb(null)}
           >
             Backups
           </span>
@@ -337,7 +374,7 @@ export default function Explorer(props) {
                     cursor: isLast ? 'default' : 'pointer',
                     textDecoration: isLast ? 'none' : 'underline'
                   }}
-                  onClick={() => { if (!isLast) navigateToPhys(partPath); }}
+                  onClick={() => { if (!isLast) handleNavigateToBreadcrumb(partPath); }}
                 >
                   {part}
                 </span>

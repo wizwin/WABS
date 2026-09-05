@@ -9,7 +9,8 @@ import time
 import re
 import os
 import platform
-from sqlalchemy import func, text, Integer
+from sqlalchemy import func, text, Integer, or_
+from pydantic import BaseModel
 
 from backend.app.database import SessionLocal, FileIndex, VirtualFolder, VirtualFolderFile
 from backend.app.config import load_config, save_config, get_thumbnail_dir
@@ -242,7 +243,15 @@ def settings():
                 merge_defaults(config[key], default_value)
         return config
         
-    return merge_defaults(cfg, defaults)
+    res = merge_defaults(cfg, defaults)
+    try:
+        from backend.app.database import DATABASE_OFFLINE, OFFLINE_DB_PATH
+        res["database_offline"] = DATABASE_OFFLINE
+        res["offline_db_path"] = OFFLINE_DB_PATH
+    except Exception:
+        res["database_offline"] = False
+        res["offline_db_path"] = ""
+    return res
 
 @router.post("/settings", dependencies=[Depends(lock_data_operation)])
 def save(data:dict):
@@ -255,6 +264,32 @@ def save(data:dict):
                 data["photo_thumbnail_size_limit_mb"] = val
         except (ValueError, TypeError):
             data["photo_thumbnail_size_limit_mb"] = 0.1
+
+    current_cfg = load_config()
+    old_db_path = str(current_cfg.get("database_path") or "archive.db").strip()
+    new_db_path = str(data.get("database_path") or "").strip()
+
+    import backend.app.database as db_mod
+    target_connect_path = new_db_path or old_db_path
+    if (new_db_path and new_db_path != old_db_path) or db_mod.DATABASE_OFFLINE:
+        try:
+            db_mod.reconnect_database(target_connect_path)
+        except Exception as e:
+            import logging
+            logging.getLogger("wabs.database").critical(f"[Settings] Failed to connect to database at '{target_connect_path}': {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to connect to database at '{target_connect_path}': {str(e)}"
+            )
+
+    new_thumb_path = data.get("thumbnail_path")
+    if new_thumb_path:
+        try:
+            from backend.app.config import get_thumbnail_dir
+            get_thumbnail_dir()
+        except Exception as e:
+            import logging
+            logging.getLogger("wabs.database").warning(f"[Settings] Thumbnail directory setup warning: {e}")
 
     save_config(data)
     shared_state.LOGGING_ENABLED = data.get("enable_logging", False)
@@ -1151,6 +1186,108 @@ def purge_unknowns(payload: dict = Body(...)):
         logging.info(f"Purged {purged_count} small unknown profiles to reclaim space.")
         
     return {"status": "success", "purged_profiles": purged_count}
+
+class PurgeLocationRequest(BaseModel):
+    backup_path: str
+    mapped_path: str = ""
+
+@router.post("/system/purge-backup-location", dependencies=[Depends(lock_data_operation)])
+def purge_backup_location(req: PurgeLocationRequest):
+    """
+    Instantly purges all indexed database records, AI metadata, OCR text, and virtual folder
+    links for a specific backup location path that was removed from settings.
+    """
+    target_path = (req.backup_path or "").strip()
+    mapped_path = (req.mapped_path or "").strip()
+    if not target_path and not mapped_path:
+        raise HTTPException(status_code=400, detail="backup_path is required")
+
+    # Safety guard: Never allow purging entire filesystem roots or empty wildcards
+    unsafe_roots = {"", "/", "\\", ".", ".."}
+    if target_path in unsafe_roots and mapped_path in unsafe_roots:
+        raise HTTPException(status_code=400, detail="Invalid backup path: cannot purge root directory")
+
+    paths_to_check = [p for p in [target_path, mapped_path] if p and p not in unsafe_roots]
+    
+    deleted_count = 0
+    file_ids = []
+    with SessionLocal() as s:
+        conditions = []
+        for p in paths_to_check:
+            norm_bs = p.replace('/', '\\').rstrip('\\')
+            norm_fs = p.replace('\\', '/').rstrip('/')
+            
+            # Match children with slash separator and exact folder matches
+            conditions.append(FileIndex.path.like(f"{norm_bs}\\%"))
+            conditions.append(FileIndex.path.like(f"{norm_fs}/%"))
+            conditions.append(func.lower(FileIndex.path) == norm_bs.lower())
+            conditions.append(func.lower(FileIndex.path) == norm_fs.lower())
+            
+            # If drive letter like "Z:" or "Z:\"
+            if len(norm_bs) <= 3 and norm_bs.endswith(':'):
+                conditions.append(FileIndex.path.like(f"{norm_bs}%"))
+        
+        file_ids = [r[0] for r in s.query(FileIndex.id).filter(or_(*conditions)).all()]
+        
+        if file_ids:
+            deleted_count = len(file_ids)
+            for i in range(0, len(file_ids), 900):
+                chunk = file_ids[i:i + 900]
+                placeholders = ",".join(map(str, chunk))
+                s.query(FileIndex).filter(FileIndex.id.in_(chunk)).delete(synchronize_session=False)
+                s.execute(text(f"DELETE FROM processed_text WHERE file_id IN ({placeholders})"))
+                s.execute(text(f"DELETE FROM file_text_fts WHERE file_id IN ({placeholders})"))
+                s.execute(text(f"DELETE FROM virtual_folder_files WHERE file_id IN ({placeholders})"))
+            s.commit()
+
+    # Also clean AI database records if ai_metadata.db exists
+    ai_db_path = get_ai_db_path()
+    if ai_db_path.exists() and file_ids:
+        try:
+            with sqlite3.connect(ai_db_path, timeout=15) as conn:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                cursor = conn.cursor()
+                for i in range(0, len(file_ids), 900):
+                    chunk = file_ids[i:i + 900]
+                    placeholders = ",".join("?" * len(chunk))
+                    cursor.execute(f"DELETE FROM faces WHERE file_id IN ({placeholders})", chunk)
+                    cursor.execute(f"DELETE FROM processed_files WHERE file_id IN ({placeholders})", chunk)
+                    cursor.execute(f"DELETE FROM processed_objects WHERE file_id IN ({placeholders})", chunk)
+                conn.commit()
+
+                # Clean up empty people profiles
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='people'")
+                if cursor.fetchone():
+                    cursor.execute("""
+                        SELECT id, name FROM people 
+                        WHERE id NOT IN (SELECT DISTINCT person_id FROM faces)
+                    """)
+                    empty_people = cursor.fetchall()
+                    if empty_people:
+                        empty_pids = [r[0] for r in empty_people]
+                        for i in range(0, len(empty_pids), 900):
+                            chunk = empty_pids[i:i+900]
+                            placeholders = ",".join("?" * len(chunk))
+                            cursor.execute(f"DELETE FROM people WHERE id IN ({placeholders})", chunk)
+                            for pid in chunk:
+                                EXEMPLAR_CACHE.pop(pid, None)
+                        conn.commit()
+                        
+                        faces_thumb_dir = get_thumbnail_dir("faces")
+                        if faces_thumb_dir.exists():
+                            for r in empty_people:
+                                pid = r[0]
+                                thumb_path = faces_thumb_dir / f"person_{pid}.jpg"
+                                if thumb_path.exists():
+                                    try:
+                                        thumb_path.unlink()
+                                    except Exception:
+                                        pass
+        except Exception as e:
+            import logging
+            logging.warning(f"Error purging AI metadata for removed backup location: {e}")
+
+    return {"status": "success", "deleted_files_count": deleted_count}
 
 @router.get("/system/export-people", dependencies=[Depends(lock_data_operation)])
 def export_people():

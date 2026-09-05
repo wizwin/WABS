@@ -61,81 +61,83 @@ def files(category:str="all", offset:int=0, limit:int=50, sort_by:str="date", so
         cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
     cache_flag = "&tc=1" if cache_enabled else ""
 
-    def generate():
-        with SessionLocal() as s:
-            q = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
-            if folder:
-                if folder == "root":
-                    yield "[]"
-                    return
-                folder_normalized = folder.replace("\\", "/").lower()
-                folder_slash = folder_normalized if folder_normalized.endswith("/") else folder_normalized + "/"
-                normalized_path = func.replace(func.lower(FileIndex.path), '\\', '/')
-                q = q.filter(
-                    normalized_path.like(folder_slash + '%'),
-                    func.instr(func.substr(normalized_path, len(folder_slash) + 1), '/') == 0
+    items = []
+    with SessionLocal() as s:
+        q = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
+        if folder:
+            if folder == "root":
+                return Response(
+                    content="[]",
+                    media_type="application/json",
+                    headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"}
                 )
-            if category != "all":
-                if category.startswith("virtual_folder_"):
-                    try:
-                        folder_id = int(category.replace("virtual_folder_", ""))
-                        from backend.app.routes.virtual_folders import get_virtual_folder_file_ids
-                        folder_file_ids = get_virtual_folder_file_ids(s, folder_id)
-                        if not folder_file_ids:
-                            yield "[]"
-                            return
-                        q = q.filter(FileIndex.id.in_(folder_file_ids))
-                    except Exception:
-                        yield "[]"
-                        return
-                elif category == "other":
-                    q = q.filter(~FileIndex.category.in_(STANDARD_CATEGORIES))
-                elif category == "duplicates":
-                    dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
-                    q = q.filter(FileIndex.size.in_(dup_sizes))
-                    q = q.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
-                elif category == "searchable_documents":
-                    q = q.filter(FileIndex.category.in_(SEARCHABLE_DOCUMENT_CATEGORIES), text("files.id IN (SELECT file_id FROM processed_text)"))
-                elif category == "untagged":
-                    q = q.filter(FileIndex.category == 'photo', (FileIndex.tags.is_(None) | (FileIndex.tags == '') | (~FileIndex.tags.like('%object:%') & ~FileIndex.tags.like('%person:%') & ~FileIndex.tags.like('%ocr%'))))
+            folder_normalized = folder.replace("\\", "/").lower()
+            folder_slash = folder_normalized if folder_normalized.endswith("/") else folder_normalized + "/"
+            normalized_path = func.replace(func.lower(FileIndex.path), '\\', '/')
+            q = q.filter(
+                normalized_path.like(folder_slash + '%'),
+                func.instr(func.substr(normalized_path, len(folder_slash) + 1), '/') == 0
+            )
+        if category != "all":
+            if category.startswith("virtual_folder_"):
+                try:
+                    folder_id = int(category.replace("virtual_folder_", ""))
+                    from backend.app.routes.virtual_folders import get_virtual_folder_file_ids
+                    folder_file_ids = get_virtual_folder_file_ids(s, folder_id)
+                    if not folder_file_ids:
+                        return Response(
+                            content="[]",
+                            media_type="application/json",
+                            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"}
+                        )
+                    q = q.filter(FileIndex.id.in_(folder_file_ids))
+                except Exception:
+                    return Response(
+                        content="[]",
+                        media_type="application/json",
+                        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"}
+                    )
+            elif category == "other":
+                q = q.filter(~FileIndex.category.in_(STANDARD_CATEGORIES))
+            elif category == "duplicates":
+                dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
+                q = q.filter(FileIndex.size.in_(dup_sizes))
+                q = q.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
+            elif category == "searchable_documents":
+                q = q.filter(FileIndex.category.in_(SEARCHABLE_DOCUMENT_CATEGORIES), text("files.id IN (SELECT file_id FROM processed_text)"))
+            elif category == "untagged":
+                q = q.filter(FileIndex.category == 'photo', (FileIndex.tags.is_(None) | (FileIndex.tags == '') | (~FileIndex.tags.like('%object:%') & ~FileIndex.tags.like('%person:%') & ~FileIndex.tags.like('%ocr%'))))
+            else:
+                q = q.filter(FileIndex.category == category)
+                
+        if category != "duplicates":
+            if sort_by == "date":
+                order_expr = "coalesce(nullif(replace(substr(json_extract(metadata_json, '$.date'), 1, 19), ':', '-'), ''), nullif(modified, ''))"
+                if sort_order == "asc":
+                    q = q.order_by(text(f"CASE WHEN {order_expr} IS NULL OR {order_expr} = '' THEN 1 ELSE 0 END, {order_expr} ASC"), FileIndex.id.asc())
                 else:
-                    q = q.filter(FileIndex.category == category)
-                    
-            if category != "duplicates":
-                if sort_by == "date":
-                    order_expr = "coalesce(nullif(replace(substr(json_extract(metadata_json, '$.date'), 1, 19), ':', '-'), ''), nullif(modified, ''))"
-                    if sort_order == "asc":
-                        q = q.order_by(text(f"CASE WHEN {order_expr} IS NULL OR {order_expr} = '' THEN 1 ELSE 0 END, {order_expr} ASC"), FileIndex.id.asc())
-                    else:
-                        q = q.order_by(text(f"CASE WHEN {order_expr} IS NULL OR {order_expr} = '' THEN 1 ELSE 0 END, {order_expr} DESC"), FileIndex.id.desc())
-                elif sort_by == "size":
-                    if sort_order == "asc":
-                        q = q.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id.asc())
-                    else:
-                        q = q.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id.desc())
-                elif sort_by == "filename":
-                    if sort_order == "asc":
-                        q = q.order_by(FileIndex.filename.asc(), FileIndex.id.asc())
-                    else:
-                        q = q.order_by(FileIndex.filename.desc(), FileIndex.id.desc())
-                elif sort_by == "extension":
-                    if sort_order == "asc":
-                        q = q.order_by(FileIndex.extension.asc(), FileIndex.id.asc())
-                    else:
-                        q = q.order_by(FileIndex.extension.desc(), FileIndex.id.desc())
+                    q = q.order_by(text(f"CASE WHEN {order_expr} IS NULL OR {order_expr} = '' THEN 1 ELSE 0 END, {order_expr} DESC"), FileIndex.id.desc())
+            elif sort_by == "size":
+                if sort_order == "asc":
+                    q = q.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id.asc())
+                else:
+                    q = q.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id.desc())
+            elif sort_by == "filename":
+                if sort_order == "asc":
+                    q = q.order_by(FileIndex.filename.asc(), FileIndex.id.asc())
+                else:
+                    q = q.order_by(FileIndex.filename.desc(), FileIndex.id.desc())
+            elif sort_by == "extension":
+                if sort_order == "asc":
+                    q = q.order_by(FileIndex.extension.asc(), FileIndex.id.asc())
+                else:
+                    q = q.order_by(FileIndex.extension.desc(), FileIndex.id.desc())
 
-            yield "["
-            first = True
-            for r in q.offset(offset).limit(limit).yield_per(1000):
-                if shared_state.APP_SHUTTING_DOWN:
-                    break
-                if not first: yield ","
-                first = False
-                yield json.dumps(_build_item(r, cache_flag))
-            yield "]"
-            
-    return StreamingResponse(
-        generate(),
+        rows = q.offset(offset).limit(limit).all()
+        items = [_build_item(r, cache_flag) for r in rows]
+        
+    return Response(
+        content=json.dumps(items),
         media_type="application/json",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"}
     )

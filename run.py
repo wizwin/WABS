@@ -2,6 +2,12 @@ import multiprocessing
 import os
 import sys
 import glob
+
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
 # Restore original library paths to prevent PyInstaller conflicts with system GUI libraries
 if sys.platform != "win32" and getattr(sys, 'frozen', False) and not os.environ.get("WABS_REEXECUTED"):
     env = os.environ.copy()
@@ -28,11 +34,6 @@ import socket
 import uvicorn
 import asyncio
 from backend.app.main import app
-
-if sys.stdout is None:
-    sys.stdout = open(os.devnull, "w")
-if sys.stderr is None:
-    sys.stderr = open(os.devnull, "w")
 
 def get_local_ip():
     try:

@@ -537,42 +537,36 @@ def get_person_photos(person_id: int, offset: int = 0, limit: int = 50):
         cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
     cache_flag = "&tc=1" if str(cache_enabled).lower() in ("true", "1", "yes") else ""
 
-    def generate():
-        with sqlite3.connect(ai_db_path, timeout=15) as conn:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            cursor = conn.cursor()
-            try:
-                cursor.execute(
-                    "SELECT file_id FROM faces WHERE person_id = ? GROUP BY file_id ORDER BY file_id DESC LIMIT ? OFFSET ?", 
-                    (person_id, limit, offset)
-                )
-                file_ids = [r[0] for r in cursor.fetchall()]
-            except sqlite3.OperationalError as e:
-                if "no such table" not in str(e).lower():
-                    pass
-                file_ids = []
+    with sqlite3.connect(ai_db_path, timeout=15) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT file_id FROM faces WHERE person_id = ? GROUP BY file_id ORDER BY file_id DESC LIMIT ? OFFSET ?", 
+                (person_id, limit, offset)
+            )
+            file_ids = [r[0] for r in cursor.fetchall()]
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e).lower():
+                pass
+            file_ids = []
 
-        if not file_ids:
-            yield "[]"
-            return
+    if not file_ids:
+        return Response(content="[]", media_type="application/json")
 
-        with SessionLocal() as s:
-            yield "["
-            first = True
-            for i in range(0, len(file_ids), 900):
-                if shared_state.APP_SHUTTING_DOWN:
-                    break
-                chunk = file_ids[i:i + 900]
-                photos = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json).filter(FileIndex.id.in_(chunk)).all()
-                photo_dict = {p.id: _build_item(p, cache_flag) for p in photos}
-                for fid in chunk:
-                    if fid in photo_dict:
-                        if not first: yield ","
-                        first = False
-                        yield json.dumps(photo_dict[fid])
-            yield "]"
+    items = []
+    with SessionLocal() as s:
+        for i in range(0, len(file_ids), 900):
+            if shared_state.APP_SHUTTING_DOWN:
+                break
+            chunk = file_ids[i:i + 900]
+            photos = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json).filter(FileIndex.id.in_(chunk)).all()
+            photo_dict = {p.id: _build_item(p, cache_flag) for p in photos}
+            for fid in chunk:
+                if fid in photo_dict:
+                    items.append(photo_dict[fid])
 
-    return StreamingResponse(generate(), media_type="application/json")
+    return Response(content=json.dumps(items), media_type="application/json")
 
 @router.post("/people/{person_id}/set-thumbnail", dependencies=[Depends(lock_data_operation)])
 def set_person_thumbnail(person_id: int, payload: dict = Body(...)):

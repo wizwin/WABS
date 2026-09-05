@@ -23,7 +23,7 @@ def init_relationships_database(rel_db_path: Path = None):
         rel_db_path = Path(rel_db_path)
         
     rel_db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(rel_db_path))
+    conn = sqlite3.connect(str(rel_db_path), timeout=30)
     cursor = conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL;")
     

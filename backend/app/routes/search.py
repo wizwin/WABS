@@ -1,8 +1,8 @@
 import json
 from typing import Optional
 from fastapi import APIRouter
-from fastapi.responses import StreamingResponse
-from sqlalchemy import func, Integer, text
+from fastapi.responses import Response
+from sqlalchemy import func, Integer, text, or_
 
 from backend.app.database import SessionLocal, FileIndex
 from backend.app.config import load_config
@@ -46,90 +46,85 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50, sort_by
         cache_enabled = ui_prefs.get("enable_photo_thumbnail_cache", False)
     cache_flag = "&tc=1" if str(cache_enabled).lower() in ("true", "1", "yes") else ""
 
-    def generate():
-        from sqlalchemy import text
-        with SessionLocal() as s:
-            q_base = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
-            if category != "all":
-                if category == "other":
-                    standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
-                    q_base = q_base.filter(~FileIndex.category.in_(standard))
-                elif category == "duplicates":
-                    dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
-                    q_base = q_base.filter(FileIndex.size.in_(dup_sizes))
-                    q_base = q_base.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
-                elif category == "searchable_documents":
-                    q_base = q_base.filter(FileIndex.category.in_(['document', 'ebook', 'code']), text("files.id IN (SELECT file_id FROM processed_text)"))
-                elif category == "tagged_objects":
-                    q_base = q_base.filter(FileIndex.tags.like('%object:%'))
+    items = []
+    with SessionLocal() as s:
+        q_base = s.query(FileIndex.id, FileIndex.filename, FileIndex.path, FileIndex.category, FileIndex.size, FileIndex.modified, FileIndex.extension, FileIndex.tags, FileIndex.metadata_json)
+        if category != "all":
+            if category == "other":
+                standard = ['photo', 'video', 'audio', 'document', 'ebook', 'code', 'font', 'database', 'compressed', 'installer', 'binary']
+                q_base = q_base.filter(~FileIndex.category.in_(standard))
+            elif category == "duplicates":
+                dup_sizes = s.query(FileIndex.size).filter(FileIndex.size != '0', FileIndex.size.isnot(None)).group_by(FileIndex.size).having(func.count(FileIndex.id) > 1)
+                q_base = q_base.filter(FileIndex.size.in_(dup_sizes))
+                q_base = q_base.order_by(func.cast(FileIndex.size, Integer).desc(), FileIndex.id)
+            elif category == "searchable_documents":
+                q_base = q_base.filter(FileIndex.category.in_(['document', 'ebook', 'code']), text("files.id IN (SELECT file_id FROM processed_text)"))
+            elif category == "tagged_objects":
+                q_base = q_base.filter(FileIndex.tags.like('%object:%'))
+            else:
+                q_base = q_base.filter(FileIndex.category == category)
+
+        if category != "duplicates":
+            if sort_by == "date":
+                order_expr = "coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))"
+                if sort_order == "asc":
+                    q_base = q_base.order_by(text(f"{order_expr} ASC"), FileIndex.id)
                 else:
-                    q_base = q_base.filter(FileIndex.category == category)
+                    q_base = q_base.order_by(text(f"{order_expr} DESC"), FileIndex.id)
+            elif sort_by == "size":
+                if sort_order == "asc":
+                    q_base = q_base.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id)
+                else:
+                    q_base = q_base.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id)
+            elif sort_by == "filename":
+                if sort_order == "asc":
+                    q_base = q_base.order_by(FileIndex.filename.asc(), FileIndex.id)
+                else:
+                    q_base = q_base.order_by(FileIndex.filename.desc(), FileIndex.id)
+            elif sort_by == "extension":
+                if sort_order == "asc":
+                    q_base = q_base.order_by(FileIndex.extension.asc(), FileIndex.id)
+                else:
+                    q_base = q_base.order_by(FileIndex.extension.desc(), FileIndex.id)
 
-            if category != "duplicates":
-                if sort_by == "date":
-                    order_expr = "coalesce(replace(substr(json_extract(metadata_json, '$.date'), 1, 10), ':', '-'), substr(modified, 1, 10))"
-                    if sort_order == "asc":
-                        q_base = q_base.order_by(text(f"{order_expr} ASC"), FileIndex.id)
-                    else:
-                        q_base = q_base.order_by(text(f"{order_expr} DESC"), FileIndex.id)
-                elif sort_by == "size":
-                    if sort_order == "asc":
-                        q_base = q_base.order_by(text("CAST(size AS INTEGER) ASC"), FileIndex.id)
-                    else:
-                        q_base = q_base.order_by(text("CAST(size AS INTEGER) DESC"), FileIndex.id)
-                elif sort_by == "filename":
-                    if sort_order == "asc":
-                        q_base = q_base.order_by(FileIndex.filename.asc(), FileIndex.id)
-                    else:
-                        q_base = q_base.order_by(FileIndex.filename.desc(), FileIndex.id)
-                elif sort_by == "extension":
-                    if sort_order == "asc":
-                        q_base = q_base.order_by(FileIndex.extension.asc(), FileIndex.id)
-                    else:
-                        q_base = q_base.order_by(FileIndex.extension.desc(), FileIndex.id)
-
-            q_clean = query.strip()
-            if not q_clean:
-                yield "["
-                first = True
-                for r in q_base.offset(offset).limit(limit).yield_per(1000):
-                    if not first: yield ","
-                    first = False
-                    yield json.dumps(_build_item(r, cache_flag))
-                yield "]"
-                return
-
+        q_clean = query.strip()
+        if not q_clean:
+            rows = q_base.offset(offset).limit(limit).all()
+            items = [_build_item(r, cache_flag) for r in rows]
+        else:
             regex = _parse_regex_pattern(q_clean)
             if regex:
                 filtered = []
                 match_count = 0
-                yield "["
-                first = True
-                for r in q_base.yield_per(1000):
+                for r in q_base:
                     haystack = f"{r.filename or ''} {r.path or ''} {r.tags or ''} {r.metadata_json or ''}"
                     if regex.search(haystack):
                         if match_count >= offset:
-                            if not first: yield ","
-                            first = False
-                            yield json.dumps(_build_item(r, cache_flag))
-                            filtered.append(r)
+                            filtered.append(_build_item(r, cache_flag))
                         match_count += 1
                         if len(filtered) == limit:
                             break
-                yield "]"
-                return
+                items = filtered
+            else:
+                try:
+                    q = _build_search_query(q_clean, s, q_base)
+                    rows = q.offset(offset).limit(limit).all()
+                    items = [_build_item(r, cache_flag) for r in rows]
+                except Exception as e:
+                    import logging
+                    logging.getLogger("wabs.search").warning(f"[Search] Advanced/FTS search failed: {e}. Falling back to standard LIKE search.")
+                    term_pat = f"%{q_clean.strip('\"\'').lower()}%"
+                    fallback_cond = or_(
+                        func.lower(FileIndex.filename).like(term_pat),
+                        func.lower(FileIndex.tags).like(term_pat),
+                        func.lower(FileIndex.path).like(term_pat)
+                    )
+                    q_fb = q_base.filter(fallback_cond)
+                    rows = q_fb.offset(offset).limit(limit).all()
+                    items = [_build_item(r, cache_flag) for r in rows]
 
-            q = _build_search_query(q_clean, s, q_base)
-            yield "["
-            first = True
-            for r in q.offset(offset).limit(limit).yield_per(1000):
-                if not first: yield ","
-                first = False
-                yield json.dumps(_build_item(r, cache_flag))
-            yield "]"
-
-    return StreamingResponse(
-        generate(),
+    return Response(
+        content=json.dumps(items),
         media_type="application/json",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"}
     )
@@ -294,34 +289,37 @@ def search_suggestions(q: str = "", limit: int = 5):
     if "*" in lower_clean or ":" in lower_clean:
         return {"type": "none", "suggestions": [], "last_word": last_word}
         
-    with SessionLocal() as s:
-        results = s.execute(
-            text("SELECT term FROM files_fts_vocab WHERE term LIKE :prefix ORDER BY doc DESC LIMIT :limit"),
-            {"prefix": f"{lower_clean}%", "limit": limit}
-        ).scalars().all()
-        
-        if results:
-            suggestions = [f"{prefix}{r}" for r in results]
-            return {"type": "autocomplete", "suggestions": suggestions, "last_word": last_word}
-            
-        if len(lower_clean) >= 3:
-            all_terms = s.execute(
-                text("SELECT term FROM files_fts_vocab WHERE length(term) BETWEEN :min_l AND :max_l ORDER BY doc DESC LIMIT 1000"),
-                {"min_l": len(lower_clean)-2, "max_l": len(lower_clean)+2}
+    try:
+        with SessionLocal() as s:
+            results = s.execute(
+                text("SELECT term FROM files_fts_vocab WHERE term LIKE :prefix ORDER BY doc DESC LIMIT :limit"),
+                {"prefix": f"{lower_clean}%", "limit": limit}
             ).scalars().all()
             
-            close_matches = difflib.get_close_matches(lower_clean, all_terms, n=limit, cutoff=0.7)
-            
-            valid_matches = []
-            for m in close_matches:
-                if m == lower_clean:
-                    continue
-                if lower_clean.startswith(m) and len(lower_clean) - len(m) <= 3:
-                    continue
-                valid_matches.append(m)
+            if results:
+                suggestions = [f"{prefix}{r}" for r in results]
+                return {"type": "autocomplete", "suggestions": suggestions, "last_word": last_word}
                 
-            if valid_matches:
-                suggestions = [f"{prefix}{m}" for m in valid_matches]
-                return {"type": "did_you_mean", "suggestions": suggestions, "last_word": last_word}
+            if len(lower_clean) >= 3:
+                all_terms = s.execute(
+                    text("SELECT term FROM files_fts_vocab WHERE length(term) BETWEEN :min_l AND :max_l ORDER BY doc DESC LIMIT 1000"),
+                    {"min_l": len(lower_clean)-2, "max_l": len(lower_clean)+2}
+                ).scalars().all()
                 
+                close_matches = difflib.get_close_matches(lower_clean, all_terms, n=limit, cutoff=0.7)
+                
+                valid_matches = []
+                for m in close_matches:
+                    if m == lower_clean:
+                        continue
+                    if lower_clean.startswith(m) and len(lower_clean) - len(m) <= 3:
+                        continue
+                    valid_matches.append(m)
+                    
+                if valid_matches:
+                    suggestions = [f"{prefix}{m}" for m in valid_matches]
+                    return {"type": "did_you_mean", "suggestions": suggestions, "last_word": last_word}
+    except Exception as e:
+        pass
+                    
     return {"type": "none", "suggestions": [], "last_word": last_word}

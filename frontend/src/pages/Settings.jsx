@@ -23,8 +23,67 @@ export default function Settings(props) {
     exportVirtualFolders, importVirtualFolders, exportAllWabs, importAllWabs,
     setMeIdentity, sortedNamedPeopleDropdown, mePerson,
     exportRelationships, importRelationships,
-    checkAuthStatus, setAuthStatus, authStatus
+    checkAuthStatus, setAuthStatus, authStatus,
+    showToastMessage, loadDashboard, invalidateViewCache, loadDirectories, loadFiles, loadVirtualFolders, loadPeople, loadTags
   } = props;
+
+  const [purgeConfirmModal, setPurgeConfirmModal] = useState(null); // { config, index } | null
+  const [purgeInProgress, setPurgeInProgress] = useState(false);
+
+  const handleRemoveLocation = (config, index) => {
+    setPurgeConfirmModal({ config, index });
+  };
+
+  const executeRemoveLocation = async (config, index, shouldPurge) => {
+    const locationName = config.name || `Backup Location ${index + 1}`;
+    const hasPath = config.backup_path && config.backup_path.trim() !== '';
+    setPurgeInProgress(true);
+
+    const nextBackupConfigs = (settings.backup_configs || []).filter(c => c.id !== config.id);
+    const updatedSettings = { ...settings, backup_configs: nextBackupConfigs };
+    setSettings(updatedSettings);
+
+    try {
+      if (shouldPurge && hasPath) {
+        if (showToastMessage) showToastMessage(`Purging database entries for "${locationName}"...`);
+        const r = await axios.post(`${API}/system/purge-backup-location`, {
+          backup_path: config.backup_path,
+          mapped_path: config.mapped_backup_path || ''
+        });
+
+        await axios.post(`${API}/settings`, updatedSettings);
+        if (invalidateViewCache) invalidateViewCache();
+        
+        await Promise.allSettled([
+          loadFiles ? loadFiles(0, false, 'all') : Promise.resolve(),
+          loadDirectories ? loadDirectories() : Promise.resolve(),
+          loadVirtualFolders ? loadVirtualFolders() : Promise.resolve(),
+          loadPeople ? loadPeople() : Promise.resolve(),
+          loadTags ? loadTags() : Promise.resolve(),
+          loadDashboard ? loadDashboard() : Promise.resolve()
+        ]);
+
+        if (showToastMessage) {
+          showToastMessage(`Location removed and ${r.data.deleted_files_count ?? 0} indexed files purged.`);
+        }
+      } else {
+        await axios.post(`${API}/settings`, updatedSettings);
+        if (loadDirectories) loadDirectories();
+        if (loadDashboard) loadDashboard();
+        if (showToastMessage) {
+          showToastMessage(`Location "${locationName}" removed from settings.`);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to remove/purge location:', err);
+      if (showToastMessage) {
+        showToastMessage('Location removal encountered an issue.', { type: 'error' });
+      }
+    } finally {
+      setPurgeInProgress(false);
+      setPurgeConfirmModal(null);
+    }
+  };
 
   const [pinStatus, setPinStatus] = useState({ pin_enabled: false });
   const [pinModalMode, setPinModalMode] = useState(null); // 'set' | 'change' | 'disable' | null
@@ -241,9 +300,39 @@ export default function Settings(props) {
                     <span><strong>Note:</strong> Changing 'Me' re-anchors the tree root; existing relationship labels will not automatically invert.</span>
                 </div>
 
+                {settings.database_offline && (
+                    <div style={{
+                        padding: '14px 18px',
+                        background: '#7f1d1d',
+                        border: '1px solid #ef4444',
+                        borderRadius: '8px',
+                        marginBottom: '20px',
+                        color: '#ffffff'
+                    }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 'bold', fontSize: '15px', marginBottom: '6px' }}>
+                            <span>⚠️</span> Database Storage Drive Not Found
+                        </div>
+                        <div style={{ fontSize: '13px', lineHeight: '1.5', color: '#fee2e2' }}>
+                            Could not reach database at: <code style={{ background: '#450a0a', padding: '2px 6px', borderRadius: '4px', color: '#fca5a5' }}>{settings.offline_db_path || settings.database_path}</code>.<br />
+                            Please update the <strong>Database Path</strong> and <strong>Thumbnail Path</strong> below and click <strong>Save Settings</strong>.<br />
+                            • If you point to an existing database and cache, WABS will load your data.<br />
+                            • If you choose a new location, a fresh archive will be initialized.
+                        </div>
+                        <div style={{ marginTop: '12px' }}>
+                            <ActionButton 
+                                className="btn btn-primary" 
+                                style={{ padding: '6px 16px', fontSize: '13px', background: '#3b82f6', color: '#ffffff' }} 
+                                onClick={saveSettings}
+                            >
+                                Reconnect / Reload Database Now
+                            </ActionButton>
+                        </div>
+                    </div>
+                )}
+
                 <h3 style={{ margin: '0 0 16px 0' }}>System Paths</h3>
                 <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Database Path</p>
-                <div style={{display:'flex',gap:'10px', marginBottom: '14px'}}>
+                <div style={{display:'flex',gap:'10px', marginBottom: '8px'}}>
                 <input
                     className='setting'
                     style={{ marginBottom: 0 }}
@@ -255,6 +344,14 @@ export default function Settings(props) {
                 />
                 <ActionButton className="btn btn-secondary" onClick={()=>choosePath('database_path','directory')}>Select</ActionButton>
                 </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', color: '#cbd5e1', fontSize: '13px', cursor: 'pointer' }}>
+                    <input 
+                        type="checkbox"
+                        checked={settings.database_is_removable_or_network || false}
+                        onChange={(e) => setSettings(prev => ({ ...prev, database_is_removable_or_network: e.target.checked }))}
+                    />
+                    <span>Database is on a network, removable, or encrypted drive (wait for drive to mount on startup)</span>
+                </label>
                 <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#94a3b8' }}>Thumbnail Path</p>
                 <div style={{display:'flex',gap:'10px', marginBottom: '0'}}>
                 <input
@@ -976,11 +1073,7 @@ export default function Settings(props) {
                         placeholder="Name your backup location"
                     />
                     {(settings.backup_configs || []).length > 1 && (
-                        <ActionButton className="btn btn-secondary" style={{ background: '#ef4444', borderColor: '#b91c1c', color: 'white', padding: '4px 8px' }} onClick={() => {
-                        if (window.confirm(`Are you sure you want to remove "${config.name || `Backup Location ${index + 1}`}"?`)) {
-                            setSettings(prev => ({ ...prev, backup_configs: prev.backup_configs.filter(c => c.id !== config.id) }));
-                        }
-                        }}>Remove Location</ActionButton>
+                        <ActionButton className="btn btn-secondary" style={{ background: '#ef4444', borderColor: '#b91c1c', color: 'white', padding: '4px 8px' }} onClick={() => handleRemoveLocation(config, index)}>Remove Location</ActionButton>
                     )}
                     </div>
                     
@@ -1307,6 +1400,120 @@ export default function Settings(props) {
         </div>
         </div>
         }
+
+        {/* Purge & Remove Location Confirmation Modal */}
+        {purgeConfirmModal && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '20px'
+          }}>
+            <div style={{
+              background: '#1e293b',
+              border: '1px solid #334155',
+              borderRadius: '12px',
+              maxWidth: '560px',
+              width: '100%',
+              padding: '24px',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5)',
+              color: '#f8fafc'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                <div style={{
+                  background: 'rgba(239, 68, 68, 0.2)',
+                  color: '#ef4444',
+                  borderRadius: '10px',
+                  width: '40px',
+                  height: '40px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0
+                }}>
+                  <CleaningServicesIcon />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold' }}>Remove Backup Location</h3>
+                  <p style={{ margin: '2px 0 0 0', fontSize: '13px', color: '#94a3b8' }}>
+                    {purgeConfirmModal.config.name || `Backup Location ${purgeConfirmModal.index + 1}`}
+                  </p>
+                </div>
+              </div>
+
+              {purgeConfirmModal.config.backup_path && (
+                <div style={{
+                  background: '#0f172a',
+                  border: '1px solid #334155',
+                  borderRadius: '8px',
+                  padding: '10px 14px',
+                  marginBottom: '16px',
+                  fontFamily: 'monospace',
+                  fontSize: '12px',
+                  color: '#38bdf8',
+                  wordBreak: 'break-all'
+                }}>
+                  {purgeConfirmModal.config.backup_path}
+                </div>
+              )}
+
+              <p style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#cbd5e1', lineHeight: '1.5' }}>
+                Would you also like to immediately delete and purge all indexed entries and metadata for this location from the <strong>WABS database</strong>?
+              </p>
+
+              <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid #334155', borderRadius: '8px', padding: '12px', marginBottom: '20px', fontSize: '12px', color: '#94a3b8' }}>
+                <p style={{ margin: '0 0 6px 0', color: '#e2e8f0' }}>
+                  <span style={{ color: '#10b981', fontWeight: 'bold' }}>🔒 Your actual physical files on disk/NAS are NEVER touched or deleted.</span> This only affects WABS catalog entries.
+                </p>
+                <div style={{ height: '1px', background: '#334155', margin: '8px 0' }}></div>
+                <p style={{ margin: '0 0 6px 0' }}>
+                  <strong style={{ color: '#ef4444' }}>• Yes (Purge Database):</strong> Instantly removes all catalog entries for this path from the WABS database in &lt;1s so they no longer appear in search, tree view, or dashboard.
+                </p>
+                <p style={{ margin: 0 }}>
+                  <strong style={{ color: '#38bdf8' }}>• No (Keep Database Entries):</strong> Removes this location from active settings only (keeps index records for path remapping).
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', flexWrap: 'wrap' }}>
+                <ActionButton
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={purgeInProgress}
+                  onClick={() => setPurgeConfirmModal(null)}
+                  style={{ padding: '8px 16px', fontSize: '13px', background: '#334155', color: '#cbd5e1' }}
+                >
+                  Cancel
+                </ActionButton>
+                <ActionButton
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={purgeInProgress}
+                  onClick={() => executeRemoveLocation(purgeConfirmModal.config, purgeConfirmModal.index, false)}
+                  style={{ padding: '8px 16px', fontSize: '13px', background: '#0284c7', borderColor: '#0369a1', color: '#fff' }}
+                >
+                  {purgeInProgress ? 'Processing...' : 'No (Keep Database Entries)'}
+                </ActionButton>
+                <ActionButton
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={purgeInProgress}
+                  onClick={() => executeRemoveLocation(purgeConfirmModal.config, purgeConfirmModal.index, true)}
+                  style={{ padding: '8px 16px', fontSize: '13px', background: '#ef4444', borderColor: '#dc2626', color: '#fff' }}
+                >
+                  {purgeInProgress ? 'Purging...' : 'Yes (Purge Database)'}
+                </ActionButton>
+              </div>
+            </div>
+          </div>
+        )}
     </>
   );
 }

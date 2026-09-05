@@ -23,6 +23,7 @@ DEFAULT = {
     "animations_enabled": True,
     "backup_configs": [],
     "database_path": "./database/archive.db",
+    "database_is_removable_or_network": False,
     "details_width": 317,
     "disable_lazy_loading": False,
     "enable_logging": False,

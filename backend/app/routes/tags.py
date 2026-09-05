@@ -153,6 +153,14 @@ def delete_object_tag_globally(tag_name: str):
 @router.get("/tags/objects")
 def get_object_tags():
     with SessionLocal() as s:
+        try:
+            # Query the indexed FTS vocabulary for instantaneous lookup without scanning the files table
+            vocab_rows = s.execute(text("SELECT term FROM files_fts_vocab WHERE term LIKE 'object:%'")).fetchall()
+            if vocab_rows:
+                return sorted(list({r[0] for r in vocab_rows if r[0]}))
+        except Exception:
+            pass
+
         unique_tags = set()
         for r in s.query(FileIndex.tags).filter(FileIndex.tags.like('%object:%')).yield_per(1000):
             if shared_state.APP_SHUTTING_DOWN:

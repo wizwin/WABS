@@ -3,6 +3,18 @@ from pathlib import Path
 from backend.app.config import load_config
 
 def get_ai_db_path() -> Path:
+    try:
+        from backend.app.database import db, DATABASE_OFFLINE
+        if DATABASE_OFFLINE:
+            standby_dir = Path(__file__).resolve().parent.parent.parent / "database"
+            return standby_dir / "ai_metadata.db"
+        if db:
+            if db.parent.is_file():
+                return db.parent.parent / "ai_metadata.db"
+            return db.parent / "ai_metadata.db"
+    except Exception:
+        pass
+
     cfg = load_config()
     db_path = cfg.get("database_path")
     if not db_path:
@@ -21,6 +33,17 @@ def get_ai_db_path() -> Path:
     return p.parent / "ai_metadata.db"
 
 def get_relationships_db_path() -> Path:
+    try:
+        from backend.app.database import db, DATABASE_OFFLINE
+        if DATABASE_OFFLINE:
+            standby_dir = Path(__file__).resolve().parent.parent.parent / "database"
+            return standby_dir / "relationships.db"
+        if db:
+            if db.parent.is_file():
+                return db.parent.parent / "relationships.db"
+            return db.parent / "relationships.db"
+    except Exception:
+        pass
     ai_path = get_ai_db_path()
     return ai_path.parent / "relationships.db"
 

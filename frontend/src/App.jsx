@@ -245,45 +245,53 @@ const handleKeyDown = (e) => {
 };
 
 async function loadSettings(){
- const r=await axios.get(`${API}/settings`)
- let data = r.data;
- if (data.database_path && typeof data.database_path === 'string' && data.database_path.endsWith('.db')) {
-   const lastSlash = Math.max(data.database_path.lastIndexOf('/'), data.database_path.lastIndexOf('\\'));
-   if (lastSlash !== -1) {
-     setDbFilename(data.database_path.substring(lastSlash + 1));
-     data.database_path = data.database_path.substring(0, lastSlash);
-   } else {
-     setDbFilename(data.database_path);
-     data.database_path = '';
-   }
- }
- if (!data.backup_configs || data.backup_configs.length === 0) {
-   data.backup_configs = [{
-     id: 'default',
-     name: 'Default Backup Location',
-     backup_path: data.backup_path || '',
-     mapped_backup_path: data.mapped_backup_path || '',
-     path_mapping_enabled: data.path_mapping_enabled || false,
-     read_only_mode: data.read_only_mode !== false
-   }];
- }
- setSettings(data)
- if(data.show_sidebar !== undefined) setShowSidebar(data.show_sidebar)
-  if(r.data.show_timeline !== undefined) setShowTimeline(r.data.show_timeline)
-  if(r.data.show_tree_view !== undefined) setShowTreeView(r.data.show_tree_view)
-  if(r.data.show_details !== undefined) setShowDetails(r.data.show_details)
-  if(r.data.sidebar_width) setSidebarWidth(r.data.sidebar_width)
-  if(r.data.timeline_width) setTimelineWidth(r.data.timeline_width)
-  if(r.data.details_width) setDetailsWidth(r.data.details_width)
+ try {
+  const r=await axios.get(`${API}/settings`)
+  let data = r.data || {};
+  if (data.database_path && typeof data.database_path === 'string' && data.database_path.endsWith('.db')) {
+    const lastSlash = Math.max(data.database_path.lastIndexOf('/'), data.database_path.lastIndexOf('\\'));
+    if (lastSlash !== -1) {
+      setDbFilename(data.database_path.substring(lastSlash + 1));
+      data.database_path = data.database_path.substring(0, lastSlash);
+    } else {
+      setDbFilename(data.database_path);
+      data.database_path = '';
+    }
+  }
+  if (!data.backup_configs || data.backup_configs.length === 0) {
+    data.backup_configs = [{
+      id: 'default',
+      name: 'Default Backup Location',
+      backup_path: data.backup_path || '',
+      mapped_backup_path: data.mapped_backup_path || '',
+      path_mapping_enabled: data.path_mapping_enabled || false,
+      read_only_mode: data.read_only_mode !== false
+    }];
+  }
+  setSettings(data)
+  if (data.database_offline) {
+    setPage('settings');
+    setSettingsTab('general');
+  }
+  if(data.show_sidebar !== undefined) setShowSidebar(data.show_sidebar)
+  if(data.show_timeline !== undefined) setShowTimeline(data.show_timeline)
+  if(data.show_tree_view !== undefined) setShowTreeView(data.show_tree_view)
+  if(data.show_details !== undefined) setShowDetails(data.show_details)
+  if(data.sidebar_width) setSidebarWidth(data.sidebar_width)
+  if(data.timeline_width) setTimelineWidth(data.timeline_width)
+  if(data.details_width) setDetailsWidth(data.details_width)
   if(data.view_type !== undefined) setViewType(data.view_type)
 
- // Sync the saved AI scanning options directly from the backend configuration
- if (data.run_face_scan !== undefined || data.run_object_scan !== undefined || data.run_document_scan !== undefined) {
-   setCombinedOptions(prev => ({
-     face: data.run_face_scan ?? prev.face,
-     tag: data.run_object_scan ?? prev.tag,
-     document: data.run_document_scan ?? prev.document
-   }));
+  // Sync the saved AI scanning options directly from the backend configuration
+  if (data.run_face_scan !== undefined || data.run_object_scan !== undefined || data.run_document_scan !== undefined) {
+    setCombinedOptions(prev => ({
+      face: data.run_face_scan ?? prev.face,
+      tag: data.run_object_scan ?? prev.tag,
+      document: data.run_document_scan ?? prev.document
+    }));
+  }
+ } catch (err) {
+  console.error("Failed to load settings:", err);
  }
 }
 
@@ -294,30 +302,57 @@ async function saveSettings(){
    return;
  }
  window.wabs_action_in_progress = true;
- const payload = { ...settings };
- if (payload.database_path && typeof payload.database_path === 'string' && !payload.database_path.endsWith('.db')) {
-   const separator = payload.database_path.includes('\\') ? '\\' : '/';
-   const cleanPath = payload.database_path.replace(/[/\\]$/, '');
-   payload.database_path = cleanPath ? (cleanPath + separator + dbFilename) : dbFilename;
- }
- await axios.post(`${API}/settings`, payload)
- const hasBackup = settings.backup_configs && settings.backup_configs.some(c => c.backup_path && c.backup_path.trim() !== '');
- if (hasBackup) {
-   showToastMessage('Settings Saved');
- } else {
-   showToastMessage('Settings saved. Please configure a backup location.', {
-     label: 'Configure',
-     onClick: () => setSettingsTab('locations')
-   });
- }
- await loadDashboard();
- // After saving settings, reload content if on explorer or search page
-  if (page === 'explorer' || page === 'virtual_folder') {
-    await explorer.loadFiles(0, false, explorer.filterCategory);
-  } else if (page === 'search') {
-    await explorer.goToSearch(explorer.filterCategory);
+ try {
+  const payload = { ...settings };
+  if (payload.database_path && typeof payload.database_path === 'string' && !payload.database_path.endsWith('.db')) {
+    const separator = payload.database_path.includes('\\') ? '\\' : '/';
+    const cleanPath = payload.database_path.replace(/[/\\]$/, '');
+    payload.database_path = cleanPath ? (cleanPath + separator + dbFilename) : dbFilename;
   }
- window.wabs_action_in_progress = false;
+  const wasOffline = Boolean(settings.database_offline);
+  await axios.post(`${API}/settings`, payload);
+  if (wasOffline) {
+    setSettings(prev => ({ ...prev, database_offline: false, offline_db_path: '' }));
+  }
+  await loadSettings();
+
+  if (wasOffline) {
+    explorer.invalidateViewCache();
+    await Promise.allSettled([
+      explorer.loadFiles(0, false, 'all'),
+      explorer.loadDirectories(),
+      explorer.loadVirtualFolders(),
+      peopleState?.loadPeople ? peopleState.loadPeople() : Promise.resolve(),
+      tagsState?.loadTags ? tagsState.loadTags() : Promise.resolve(),
+      loadDashboard()
+    ]);
+    showToastMessage('Storage reconnected successfully. All archive data loaded.');
+    setPage('dashboard');
+  } else {
+    const hasBackup = settings.backup_configs && settings.backup_configs.some(c => c.backup_path && c.backup_path.trim() !== '');
+    if (hasBackup) {
+      showToastMessage('Settings Saved');
+    } else {
+      showToastMessage('Settings saved. Please configure a backup location.', {
+        label: 'Configure',
+        onClick: () => setSettingsTab('locations')
+      });
+    }
+    await loadDashboard();
+    // After saving settings, reload content if on explorer or search page
+    if (page === 'explorer' || page === 'virtual_folder') {
+      await explorer.loadFiles(0, false, explorer.filterCategory);
+    } else if (page === 'search') {
+      await explorer.goToSearch(explorer.filterCategory);
+    }
+  }
+ } catch (err) {
+  console.error("Failed to save settings:", err);
+  const detail = err?.response?.data?.detail || err.message || "Failed to connect to database";
+  alert(`Error Saving Settings / Connecting Database:\n\n${detail}`);
+ } finally {
+  window.wabs_action_in_progress = false;
+ }
 }
 
 async function choosePath(field, mode){
@@ -703,6 +738,7 @@ const handleUnlocked = () => {
   setIsLocked(false);
   lastUserActivityRef.current = Date.now();
   checkAuthStatus();
+  explorer.invalidateViewCache();
   explorer.loadFiles();
   explorer.loadDirectories();
   explorer.loadVirtualFolders();
