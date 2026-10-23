@@ -5,6 +5,7 @@ import AnalyticsIcon from '@mui/icons-material/Analytics';
 import MemoryIcon from '@mui/icons-material/Memory';
 import GavelIcon from '@mui/icons-material/Gavel';
 import GitHubIcon from '@mui/icons-material/GitHub';
+import SecurityIcon from '@mui/icons-material/Security';
 
 import { AppIcon } from '../components/ui/AppIcon';
 import { VERSION } from '../States';
@@ -88,6 +89,18 @@ export default function About(props) {
             <div>
             <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Source Code</h3>
             <p style={{color:'#94a3b8', margin: '4px 0 0 0', fontSize: '14px'}}>Available on <a href="https://github.com/wizwin/WABS" target="_blank" rel="noopener noreferrer" style={{color: '#3b82f6', textDecoration: 'none'}}>GitHub</a></p>
+            </div>
+        </div>
+
+        <div style={{height: '1px', background: '#1f2937', margin: '24px 0'}}></div>
+
+        <div style={{display: 'flex', alignItems: 'flex-start', gap: '16px'}}>
+            <div style={{background:'#3b82f61a', padding:'10px', borderRadius:'10px', color:'#3b82f6', display:'flex'}}><SecurityIcon /></div>
+            <div>
+            <h3 style={{margin: 0, color: '#e2e8f0', fontSize: '16px'}}>Data at Rest & Physical Security</h3>
+            <p style={{color:'#94a3b8', margin: '6px 0 0 0', fontSize: '13px', lineHeight: '1.6'}}>
+              For comprehensive Data at Rest (DAR) protection and physical disk security, we recommend storing your archives and WABS database on an encrypted drive or container volume, such as <strong style={{color: '#f8fafc'}}>BitLocker</strong> or <strong style={{color: '#f8fafc'}}>VeraCrypt</strong> on Windows (or LUKS on Linux / FileVault on macOS).
+            </p>
             </div>
         </div>
 

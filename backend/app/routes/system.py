@@ -351,9 +351,11 @@ def save(data:dict):
 
     import backend.app.database as db_mod
     target_connect_path = new_db_path or old_db_path
+    reconnected = False
     if (new_db_path and new_db_path != old_db_path) or db_mod.DATABASE_OFFLINE:
         try:
             db_mod.reconnect_database(target_connect_path)
+            reconnected = True
         except Exception as e:
             import logging
             logging.getLogger("wabs.database").critical(f"[Settings] Failed to connect to database at '{target_connect_path}': {e}")
@@ -371,7 +373,8 @@ def save(data:dict):
             import logging
             logging.getLogger("wabs.database").warning(f"[Settings] Thumbnail directory setup warning: {e}")
 
-    # Persist database-bound settings (backup_configs and me_name) into the active archive.db
+    # Persist database-bound settings into the active archive.db
+    # If this request just reconnected to an archive, protect existing archive settings from being overwritten by blank/offline client payloads
     try:
         from backend.app.database import set_db_setting
         if "backup_configs" in data and isinstance(data["backup_configs"], list):
@@ -381,18 +384,26 @@ def save(data:dict):
                 if isinstance(c, dict):
                     clean_c = {k: v for k, v in c.items() if k not in ("mapped_backup_path", "path_mapping_enabled")}
                     db_configs.append(clean_c)
-            set_db_setting("backup_configs", json.dumps(db_configs))
+            # If reconnecting, only update if the client actually provided configured backup paths
+            has_configured_paths = any(c.get("backup_path") for c in db_configs)
+            if has_configured_paths or not reconnected:
+                set_db_setting("backup_configs", json.dumps(db_configs))
         if "me_name" in data:
-            set_db_setting("me_name", str(data.get("me_name") or "").strip())
+            val = str(data.get("me_name") or "").strip()
+            if val or not reconnected:
+                set_db_setting("me_name", val)
         if "pinned_people" in data and isinstance(data["pinned_people"], list):
             import json
-            set_db_setting("pinned_people", json.dumps(data["pinned_people"]))
+            if len(data["pinned_people"]) > 0 or not reconnected:
+                set_db_setting("pinned_people", json.dumps(data["pinned_people"]))
         if "hidden_people" in data and isinstance(data["hidden_people"], list):
             import json
-            set_db_setting("hidden_people", json.dumps(data["hidden_people"]))
+            if len(data["hidden_people"]) > 0 or not reconnected:
+                set_db_setting("hidden_people", json.dumps(data["hidden_people"]))
         if "smart_searches" in data and isinstance(data["smart_searches"], list):
             import json
-            set_db_setting("smart_searches", json.dumps(data["smart_searches"]))
+            if len(data["smart_searches"]) > 0 or not reconnected:
+                set_db_setting("smart_searches", json.dumps(data["smart_searches"]))
     except Exception as e:
         import logging
         logging.getLogger("wabs.database").warning(f"[Settings] Error saving settings to archive.db: {e}")

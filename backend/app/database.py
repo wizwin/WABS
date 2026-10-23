@@ -193,6 +193,12 @@ def delete_db_setting(key: str):
         logger.warning(f"[Database] delete_db_setting('{key}') fallback: {e}")
         return False
 
+def clear_db_settings_cache():
+    """
+    Clears the in-memory settings cache when switching or reconnecting databases.
+    """
+    _LOCAL_SETTINGS_CACHE.clear()
+
 
 def init_db(target_engine=None):
     if target_engine is None:
@@ -408,6 +414,15 @@ def reconnect_database(new_path: str):
         init_relationships_database(sidecar_dir / "relationships.db")
     except Exception as e:
         logger.warning(f"[Database] Sidecar database init: {e}")
+
+    # Clear stale in-memory settings cache and invalidate security cache
+    clear_db_settings_cache()
+    try:
+        from backend.app.utils.security import invalidate_security_cache, revoke_all_sessions
+        invalidate_security_cache()
+        revoke_all_sessions()
+    except Exception as e:
+        logger.warning(f"[Database] Security cache reset on reconnect: {e}")
 
     if is_existing:
         logger.info(f"[Database] [RECONNECT] Successfully reconnected to existing database at: {target_p.resolve()}")

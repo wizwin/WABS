@@ -358,16 +358,36 @@ WABS supports powerful search operators to help you precisely filter your archiv
 * **`meta:`** Catch-all to search any arbitrary JSON metadata extracted during indexing (e.g., `meta:CompanyName:Microsoft` or `meta:gps.latitude:45.0`).
 * **Wildcards & Boolean:** Use `*` for partial matches (e.g., `*vacation*`, `*.mp3`), `+` to require terms (`+person:Alice`), `-` to exclude (`-tag:temp`). Multi-word phrases should be enclosed in quotes (`"John Doe"`, `"New York"`).
 
-### Configuring Local AI (Free & Offline)
-WABS supports using local LLMs (like LM Studio or Ollama) to automatically categorize unknown files securely on your own machine.
-1. Go to **Settings** and check **Enable AI Classification**.
-2. In the **AI Provider Base URL** field, enter your local runner's chat API endpoint:
-   * *LM Studio:* `http://127.0.0.1:1234/v1`
-   * *Ollama:* `http://127.0.0.1:11434/v1`
-3. In the **AI Model** field, configure your local model name:
-   * *LM Studio:* (configured in LM Studio UI)
-   * *Ollama:* `tinyllama` (or your preferred local model)
-4. You can leave the **OpenAI API Key** field completely empty!
+### Configuring AI Endpoints & LLM Providers
+
+WABS supports OpenAI-compatible chat endpoints, cloud providers (such as Google Gemini and OpenAI), and local offline models (like Ollama and LM Studio) for natural language search generation:
+
+1. Open **Settings** -> **AI & Vision** and toggle **Enable AI Classification**.
+2. Configure your provider credentials and endpoints:
+
+#### Example Configurations:
+
+* **Google Gemini (Cloud):**
+  * **Provider / Base URL:** `https://generativelanguage.googleapis.com/v1beta`
+  * **AI Model:** `gemini-3.1-flash-lite` (or other Gemini chat models)
+  * **API Key:** Enter your Gemini API key (encrypted on disk using hardware-bound encryption).
+
+* **Ollama (Local & Offline):**
+  * **Provider / Base URL:** `http://127.0.0.1:11434/v1`
+  * **AI Model:** `tinyllama` *(Note: smaller 1B models like TinyLlama are suitable for testing, but larger models like `llama3.2` or `qwen2.5` produce significantly better search query precision)*
+  * **API Key:** Leave empty.
+
+* **LM Studio (Local & Offline):**
+  * **Provider / Base URL:** `http://127.0.0.1:1234/v1`
+  * **AI Model:** Name of the model loaded in LM Studio.
+  * **API Key:** Leave empty.
+
+* **OpenAI (Cloud):**
+  * **Provider / Base URL:** `https://api.openai.com/v1` (or leave default)
+  * **AI Model:** `gpt-4o-mini`
+  * **API Key:** Enter your OpenAI API key.
+
+3. Click **Test AI Connection** in Settings to verify connectivity before saving.
 
 ## Notes & Limitations
 

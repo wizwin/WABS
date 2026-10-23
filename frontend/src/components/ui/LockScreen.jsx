@@ -20,13 +20,29 @@ export function LockScreen({ onUnlocked, initialStatus }) {
   const inputRef = useRef(null);
 
   useEffect(() => {
-    if (initialStatus) {
-      setIsTamperedMode(Boolean(initialStatus.is_tampered));
-      setIsSetupMode(!initialStatus.pin_enabled && !initialStatus.is_tampered);
-      if (initialStatus.lockout_remaining_seconds > 0) {
-        setLockoutRemaining(initialStatus.lockout_remaining_seconds);
+    const fetchFreshStatus = async () => {
+      try {
+        const res = await axios.get(`${API}/auth/status`);
+        if (res.data) {
+          setIsTamperedMode(Boolean(res.data.is_tampered));
+          setIsSetupMode(!res.data.pin_enabled && !res.data.is_tampered);
+          if (res.data.lockout_remaining_seconds > 0) {
+            setLockoutRemaining(res.data.lockout_remaining_seconds);
+          }
+          return;
+        }
+      } catch (e) {
+        console.warn("LockScreen auth status query failed:", e);
       }
-    }
+      if (initialStatus) {
+        setIsTamperedMode(Boolean(initialStatus.is_tampered));
+        setIsSetupMode(!initialStatus.pin_enabled && !initialStatus.is_tampered);
+        if (initialStatus.lockout_remaining_seconds > 0) {
+          setLockoutRemaining(initialStatus.lockout_remaining_seconds);
+        }
+      }
+    };
+    fetchFreshStatus();
   }, [initialStatus]);
 
   useEffect(() => {

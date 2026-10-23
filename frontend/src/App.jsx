@@ -314,6 +314,16 @@ async function saveSettings(){
   if (wasOffline) {
     setSettings(prev => ({ ...prev, database_offline: false, offline_db_path: '' }));
   }
+
+  if (wasOffline) {
+    const authData = await checkAuthStatus();
+    if (authData?.pin_enabled && !authData?.is_authenticated) {
+      setIsLocked(true);
+      showToastMessage('Storage reconnected. Master PIN verification required.');
+      return;
+    }
+  }
+
   await loadSettings();
 
   if (wasOffline) {

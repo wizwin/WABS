@@ -182,7 +182,9 @@ def get_people(min_unknown_photos: int = 1):
                         if r_name:
                             by_name[r_name.lower()] = info
 
-                    me_name_cfg = (cfg.get("me_name") or "").strip().lower()
+                    from backend.app.database import get_db_setting
+                    db_me = get_db_setting("me_name")
+                    me_name_cfg = (db_me or cfg.get("me_name") or "").strip().lower()
 
                     for person in results:
                         p_id = person["id"]
@@ -1765,8 +1767,10 @@ def get_me_identity():
     """
     Returns the currently configured Me profile.
     """
+    from backend.app.database import get_db_setting
     cfg = load_config()
-    me_name = (cfg.get("me_name") or "").strip()
+    db_me = get_db_setting("me_name")
+    me_name = (db_me or cfg.get("me_name") or "").strip()
     me_person = None
     
     if me_name:
