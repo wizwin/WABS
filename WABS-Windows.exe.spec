@@ -20,7 +20,7 @@ except ImportError:
 
 a = Analysis(
     ['run.py'],
-    pathex=[],
+    pathex=['.', 'backend'],
     binaries=[],
     datas=[('frontend/dist', 'frontend/dist'), ('backend/*.onnx', 'backend'), ('backend/*.txt', 'backend')] + rapidocr_datas,
     hiddenimports=[
