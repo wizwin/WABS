@@ -21,7 +21,6 @@ DEFAULT = {
     "ai_provider": "OpenAI",
     "allow_unverified_deletion": False,
     "animations_enabled": True,
-    "backup_configs": [],
     "database_path": "./database/archive.db",
     "database_is_removable_or_network": False,
     "details_width": 317,
@@ -30,13 +29,11 @@ DEFAULT = {
     "enable_photo_thumbnail_cache": True,
     "face_clustering_sensitivity": "medium",
     "face_sensitivity": "medium",
-    "hidden_people": [],
     "lazy_load_chunk_size": 50,
     "min_unknown_photos": 1,
     "object_sensitivity": "medium",
     "path_mapping_enabled": False,
     "photo_thumbnail_size_limit_mb": 5,
-    "pinned_people": [],
     "read_only_mode": True,
     "run_document_scan": False,
     "run_face_scan": False,
@@ -47,7 +44,6 @@ DEFAULT = {
     "show_timeline": True,
     "show_tree_view": True,
     "sidebar_width": 237,
-    "smart_searches": [],
     "document_scan_depth": "low",
     "text_extraction_limit": 300,
     "ocr_enabled": False,
@@ -179,6 +175,10 @@ def save_config(data):
     for k, v in data.items():
         if k != "ui_preferences":
             current[k] = v
+
+    # Remove database-bound personal curation keys from host config.yaml
+    for db_only_key in ["backup_configs", "pinned_people", "hidden_people", "smart_searches", "me_name"]:
+        current.pop(db_only_key, None)
 
     # Obfuscate the API key before writing it to the disk
     if "ai_api_key" in current:

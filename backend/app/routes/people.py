@@ -51,11 +51,23 @@ def _cosine_similarity(vec1, vec2):
     return float(np.dot(v1, v2) / (norm_1 * norm_2))
 
 def _sync_people_preferences(old_identifiers: list, new_identifier=None, action="rename"):
+    from backend.app.database import get_db_setting, set_db_setting
     cfg = load_config()
     modified = False
     
     for list_key in ["pinned_people", "hidden_people"]:
-        items = cfg.get(list_key)
+        # Check db_settings first, fallback to config
+        db_items_raw = get_db_setting(list_key)
+        source = "config"
+        if db_items_raw:
+            try:
+                items = json.loads(db_items_raw)
+                source = "db"
+            except Exception:
+                items = cfg.get(list_key)
+        else:
+            items = cfg.get(list_key)
+
         if not isinstance(items, list):
             continue
             
@@ -82,10 +94,12 @@ def _sync_people_preferences(old_identifiers: list, new_identifier=None, action=
                     if x not in unique_items:
                         unique_items.append(x)
                 cfg[list_key] = unique_items
+                set_db_setting(list_key, json.dumps(unique_items))
                 modified = True
         elif action == "delete":
             if has_old:
                 cfg[list_key] = new_items
+                set_db_setting(list_key, json.dumps(new_items))
                 modified = True
         elif action == "merge":
             if has_old:
@@ -96,6 +110,7 @@ def _sync_people_preferences(old_identifiers: list, new_identifier=None, action=
                     if x not in unique_items:
                         unique_items.append(x)
                 cfg[list_key] = unique_items
+                set_db_setting(list_key, json.dumps(unique_items))
                 modified = True
                 
     if modified:

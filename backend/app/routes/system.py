@@ -95,9 +95,17 @@ def stats():
                     cursor = conn.cursor()
                     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='faces'")
                     if cursor.fetchone():
-                        hidden_people = cfg.get("hidden_people")
-                        if hidden_people is None:
-                            hidden_people = cfg.get("ui_preferences", {}).get("hidden_people", [])
+                        from backend.app.database import get_db_setting
+                        raw_hidden = get_db_setting("hidden_people")
+                        if raw_hidden:
+                            try:
+                                hidden_people = json.loads(raw_hidden)
+                            except Exception:
+                                hidden_people = []
+                        else:
+                            hidden_people = cfg.get("hidden_people")
+                            if hidden_people is None:
+                                hidden_people = cfg.get("ui_preferences", {}).get("hidden_people", [])
                         if not isinstance(hidden_people, list):
                             hidden_people = []
                             
@@ -292,6 +300,28 @@ def settings():
         db_me = get_db_setting("me_name")
         if db_me:
             res["me_name"] = db_me
+
+        # Load database-bound curation: pinned_people, hidden_people, smart_searches
+        raw_pinned = get_db_setting("pinned_people")
+        if raw_pinned:
+            try:
+                res["pinned_people"] = json.loads(raw_pinned)
+            except Exception:
+                pass
+
+        raw_hidden = get_db_setting("hidden_people")
+        if raw_hidden:
+            try:
+                res["hidden_people"] = json.loads(raw_hidden)
+            except Exception:
+                pass
+
+        raw_searches = get_db_setting("smart_searches")
+        if raw_searches:
+            try:
+                res["smart_searches"] = json.loads(raw_searches)
+            except Exception:
+                pass
     except Exception:
         pass
     try:
@@ -354,6 +384,15 @@ def save(data:dict):
             set_db_setting("backup_configs", json.dumps(db_configs))
         if "me_name" in data:
             set_db_setting("me_name", str(data.get("me_name") or "").strip())
+        if "pinned_people" in data and isinstance(data["pinned_people"], list):
+            import json
+            set_db_setting("pinned_people", json.dumps(data["pinned_people"]))
+        if "hidden_people" in data and isinstance(data["hidden_people"], list):
+            import json
+            set_db_setting("hidden_people", json.dumps(data["hidden_people"]))
+        if "smart_searches" in data and isinstance(data["smart_searches"], list):
+            import json
+            set_db_setting("smart_searches", json.dumps(data["smart_searches"]))
     except Exception as e:
         import logging
         logging.getLogger("wabs.database").warning(f"[Settings] Error saving settings to archive.db: {e}")
