@@ -41,7 +41,7 @@ a = Analysis(
         'backend.app.routes.system',
         'backend.app.routes.tags',
         'backend.app.routes.virtual_folders',
-        'backend.app.utils.search',
+        'backend.app.utils.search_engine',
         'backend.app.utils.security',
         'backend.app.utils.indexer',
     ],

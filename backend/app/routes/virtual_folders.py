@@ -11,7 +11,7 @@ from pathlib import Path
 from backend.app.database import SessionLocal, FileIndex, VirtualFolder, VirtualFolderFile
 from backend.app.config import load_config
 from backend.app.utils.utils import _resolve_path
-from backend.app.utils.search import _build_search_query, _parse_regex_pattern
+from backend.app.utils.search_engine import _build_search_query, _parse_regex_pattern
 import backend.app.shared_state as shared_state
 from backend.app.constants import (
     STANDARD_CATEGORIES,

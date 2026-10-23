@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend.app.database import SessionLocal, FileIndex, Base, engine
-from backend.app.utils.search import _build_search_query, _tokenize_search_query
+from backend.app.utils.search_engine import _build_search_query, _tokenize_search_query
 from backend.app.routes.search import search_suggestions
 
 def setup_test_data(session):

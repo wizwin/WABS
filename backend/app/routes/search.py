@@ -6,7 +6,7 @@ from sqlalchemy import func, Integer, text, or_
 
 from backend.app.database import SessionLocal, FileIndex
 from backend.app.config import load_config
-from backend.app.utils.search import _build_search_query, _parse_regex_pattern
+from backend.app.utils.search_engine import _build_search_query, _parse_regex_pattern
 
 router = APIRouter()
 
