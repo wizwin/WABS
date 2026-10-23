@@ -3,6 +3,7 @@ from sqlalchemy import text
 import re
 import sqlite3
 import threading
+import time
 
 from backend.app.database import SessionLocal, FileIndex
 from pydantic import BaseModel
@@ -17,6 +18,15 @@ from backend.app.utils.validators import check_no_scanners_running, lock_data_op
 import backend.app.shared_state as shared_state
 
 router = APIRouter()
+
+# In-memory cache for fast dashboard & UI rendering of unique object tags
+_CACHED_OBJECT_TAGS = None
+_CACHED_TAGS_TIMESTAMP = 0.0
+
+def invalidate_object_tags_cache():
+    global _CACHED_OBJECT_TAGS, _CACHED_TAGS_TIMESTAMP
+    _CACHED_OBJECT_TAGS = None
+    _CACHED_TAGS_TIMESTAMP = 0.0
 
 class TagUpdateRequest(BaseModel):
     file_ids: list[int]
@@ -46,6 +56,7 @@ def add_tags(req: TagUpdateRequest):
                 s.bulk_update_mappings(FileIndex, mappings)
                 s.commit()
     
+    invalidate_object_tags_cache()
     log_operation(f"Manually added tags {req.tags} to {len(req.file_ids)} file(s)", user_logs_enabled=load_config().get("enable_logging"))
     return {"status": "success"}
 
@@ -152,24 +163,26 @@ def delete_object_tag_globally(tag_name: str):
 
 @router.get("/tags/objects")
 def get_object_tags():
-    with SessionLocal() as s:
-        try:
-            # Query the indexed FTS vocabulary for instantaneous lookup without scanning the files table
-            vocab_rows = s.execute(text("SELECT term FROM files_fts_vocab WHERE term LIKE 'object:%'")).fetchall()
-            if vocab_rows:
-                return sorted(list({r[0] for r in vocab_rows if r[0]}))
-        except Exception:
-            pass
+    global _CACHED_OBJECT_TAGS, _CACHED_TAGS_TIMESTAMP
+    now = time.time()
+    # Cache for 15 seconds to give instantaneous 0ms response on dashboard and UI transitions
+    if _CACHED_OBJECT_TAGS is not None and (now - _CACHED_TAGS_TIMESTAMP) < 15.0:
+        return _CACHED_OBJECT_TAGS
 
+    with SessionLocal() as s:
         unique_tags = set()
-        for r in s.query(FileIndex.tags).filter(FileIndex.tags.like('%object:%')).yield_per(1000):
+        rows = s.execute(text("SELECT tags FROM files WHERE tags LIKE '%object:%'")).fetchall()
+        for r in rows:
             if shared_state.APP_SHUTTING_DOWN:
                 break
             if r[0]:
                 for tag in parse_tags(r[0]):
                     if tag.startswith('object:'):
                         unique_tags.add(tag)
-        return sorted(list(unique_tags))
+        result = sorted(list(unique_tags))
+        _CACHED_OBJECT_TAGS = result
+        _CACHED_TAGS_TIMESTAMP = now
+        return result
 
 def export_tags_internal(s):
     files = s.query(FileIndex.path, FileIndex.tags).filter(FileIndex.tags != None, FileIndex.tags != '').yield_per(1000)

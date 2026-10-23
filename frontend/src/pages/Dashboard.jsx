@@ -65,7 +65,7 @@ export default function Dashboard(props) {
         <StatCard title="Duplicates" value={stats.duplicates || 0} icon={<FileCopyIcon />} color="#f43f5e" onClick={() => handleCategoryClick('duplicates')} />
         <StatCard title="Known People" value={stats.known_faces || 0} icon={<FaceIcon />} color="#10b981" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); setNamedPeoplePage(1); setNamedPersonSearchQuery(''); loadPeople(); }} />
         <StatCard title="Unknown People" value={stats.unknown_faces || 0} icon={<FaceIcon />} color="#94a3b8" onClick={() => { setPage('people'); setSelected(null); setUnknownPeoplePage(1); setNamedPersonSearchQuery(''); loadPeople(); setTimeout(() => document.getElementById('unknown-people-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 300); }} />
-        <StatCard title="Object Tags" value={objectTags.length || 0} icon={<CategoryIcon />} color="#38bdf8" onClick={() => { setPage('tags'); setSelected(null); setTagsPage(1); setTagSearchQuery(''); }} />
+        <StatCard title="Object Tags" value={objectTags.length || 0} icon={<CategoryIcon />} color="#38bdf8" onClick={() => { setPage('tags'); setSelected(null); setTagsPage(1); setTagSearchQuery(''); if (props.loadTags) props.loadTags(); }} />
         <StatCard title="Untagged Media" value={stats.untagged_media || 0} icon={<ImageIcon />} color="#f59e0b" onClick={() => handleCategoryClick('untagged')} />
         <StatCard title="Searchable Docs" value={stats.searchable_documents || 0} icon={<DescriptionIcon />} color="#ec4899" onClick={() => handleCategoryClick('searchable_documents')} />
         <StatCard title="Virtual Folders" value={stats.virtual_folders || 0} icon={<FolderIcon />} color="#a855f7" onClick={() => {

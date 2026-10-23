@@ -117,6 +117,9 @@ export default function Settings(props) {
   useEffect(() => {
     if (page === 'settings') {
       fetchPinStatus();
+      if (loadPeople && (!sortedNamedPeopleDropdown || sortedNamedPeopleDropdown.length === 0)) {
+        loadPeople();
+      }
     }
   }, [page, settingsTab]);
 

@@ -54,7 +54,7 @@ class DummyRequest:
 
 class TestSecurityLayer(unittest.TestCase):
     def setUp(self):
-        # Reset security config to disabled state before each test
+        # Reset security config and db_settings to disabled state before each test
         self.cfg = load_config()
         self.original_hash = self.cfg.get("security_pin_hash", "")
         self.original_salt = self.cfg.get("security_pin_salt", "")
@@ -64,6 +64,19 @@ class TestSecurityLayer(unittest.TestCase):
         self.cfg["security_pin_salt"] = ""
         self.cfg["allow_lan_access"] = False
         save_config(self.cfg)
+
+        from backend.app.database import delete_db_setting, get_db_setting
+        self.orig_db_hash = get_db_setting("security_pin_hash")
+        self.orig_db_salt = get_db_setting("security_pin_salt")
+        self.orig_db_flag = get_db_setting("pin_sealed_flag")
+        delete_db_setting("security_pin_hash")
+        delete_db_setting("security_pin_salt")
+        delete_db_setting("pin_sealed_flag")
+        delete_db_setting("recovery_pin_hash")
+        delete_db_setting("recovery_pin_salt")
+
+        from backend.app.utils.security import invalidate_security_cache
+        invalidate_security_cache()
         revoke_all_sessions()
         reset_failed_attempts("127.0.0.1")
         reset_failed_attempts("test-client")
@@ -74,6 +87,23 @@ class TestSecurityLayer(unittest.TestCase):
         self.cfg["security_pin_salt"] = self.original_salt
         self.cfg["allow_lan_access"] = self.original_lan
         save_config(self.cfg)
+
+        from backend.app.database import set_db_setting, delete_db_setting
+        from backend.app.utils.security import calculate_pin_signature, invalidate_security_cache
+        if self.orig_db_hash and self.orig_db_salt:
+            sig = calculate_pin_signature(self.orig_db_hash, self.orig_db_salt)
+            set_db_setting("security_pin_hash", self.orig_db_hash, sig)
+            set_db_setting("security_pin_salt", self.orig_db_salt)
+            set_db_setting("pin_sealed_flag", "1")
+            set_db_setting("recovery_pin_hash", self.orig_db_hash, sig)
+            set_db_setting("recovery_pin_salt", self.orig_db_salt)
+        else:
+            delete_db_setting("security_pin_hash")
+            delete_db_setting("security_pin_salt")
+            delete_db_setting("pin_sealed_flag")
+            delete_db_setting("recovery_pin_hash")
+            delete_db_setting("recovery_pin_salt")
+        invalidate_security_cache()
         revoke_all_sessions()
 
     def test_pin_hashing_and_verification(self):

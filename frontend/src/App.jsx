@@ -319,6 +319,8 @@ async function saveSettings(){
   if (wasOffline) {
     explorer.invalidateViewCache();
     await loadDashboard();
+    if (peopleState?.loadPeople) peopleState.loadPeople();
+    if (tagsState?.loadTags) tagsState.loadTags();
     showToastMessage('Storage reconnected successfully.');
     setPage('dashboard');
   } else {

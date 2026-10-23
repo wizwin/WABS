@@ -244,6 +244,56 @@ def settings():
         return config
         
     res = merge_defaults(cfg, defaults)
+    # Load canonical backup_configs and me_name directly from the active database
+    try:
+        from backend.app.database import get_db_setting, SessionLocal, FileIndex
+        raw_db_configs = get_db_setting("backup_configs")
+        if raw_db_configs:
+            try:
+                db_configs_list = json.loads(raw_db_configs)
+                if isinstance(db_configs_list, list) and len(db_configs_list) > 0:
+                    # Merge local path remappings from config.yaml into the database configs
+                    local_configs = cfg.get("backup_configs", [])
+                    local_map = {c.get("backup_path"): c for c in local_configs if isinstance(c, dict) and c.get("backup_path")}
+                    for item in db_configs_list:
+                        bp = item.get("backup_path")
+                        if bp in local_map:
+                            item["mapped_backup_path"] = local_map[bp].get("mapped_backup_path", item.get("mapped_backup_path", ""))
+                            item["path_mapping_enabled"] = local_map[bp].get("path_mapping_enabled", item.get("path_mapping_enabled", False))
+                    res["backup_configs"] = db_configs_list
+            except Exception:
+                pass
+        # If database has no backup_configs stored yet, infer original backup locations from indexed files
+        if not res.get("backup_configs") or len(res.get("backup_configs")) == 0:
+            try:
+                with SessionLocal() as s:
+                    rows = s.query(FileIndex.path).limit(100).all()
+                    discovered_roots = set()
+                    for (p,) in rows:
+                        if p:
+                            m = re.match(r"^([a-zA-Z]:[\/][^\/]+)", p)
+                            if m:
+                                discovered_roots.add(m.group(1).replace("/", "\\"))
+                    if discovered_roots:
+                        inferred_configs = []
+                        for i, root in enumerate(sorted(discovered_roots)):
+                            inferred_configs.append({
+                                "id": f"db_loc_{i+1}",
+                                "name": f"Archive Backup Location {i+1}",
+                                "backup_path": root,
+                                "mapped_backup_path": "",
+                                "path_mapping_enabled": False,
+                                "read_only_mode": True
+                            })
+                        res["backup_configs"] = inferred_configs
+            except Exception:
+                pass
+        # Load me_name from database if set
+        db_me = get_db_setting("me_name")
+        if db_me:
+            res["me_name"] = db_me
+    except Exception:
+        pass
     try:
         from backend.app.database import DATABASE_OFFLINE, OFFLINE_DB_PATH
         res["database_offline"] = DATABASE_OFFLINE
@@ -291,6 +341,22 @@ def save(data:dict):
             import logging
             logging.getLogger("wabs.database").warning(f"[Settings] Thumbnail directory setup warning: {e}")
 
+    # Persist database-bound settings (backup_configs and me_name) into the active archive.db
+    try:
+        from backend.app.database import set_db_setting
+        if "backup_configs" in data and isinstance(data["backup_configs"], list):
+            import json
+            db_configs = []
+            for c in data["backup_configs"]:
+                if isinstance(c, dict):
+                    clean_c = {k: v for k, v in c.items() if k not in ("mapped_backup_path", "path_mapping_enabled")}
+                    db_configs.append(clean_c)
+            set_db_setting("backup_configs", json.dumps(db_configs))
+        if "me_name" in data:
+            set_db_setting("me_name", str(data.get("me_name") or "").strip())
+    except Exception as e:
+        import logging
+        logging.getLogger("wabs.database").warning(f"[Settings] Error saving settings to archive.db: {e}")
     save_config(data)
     shared_state.LOGGING_ENABLED = data.get("enable_logging", False)
     

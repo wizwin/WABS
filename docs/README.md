@@ -19,9 +19,9 @@ WABS is a modern, 100% offline archival management system designed to help you o
 * **Combined Background Scanning:** Scan for files, faces, objects, and document text simultaneously to massively speed up index generation.
 * **Advanced JSON Search:** Native, high-speed metadata querying (FPS, Camera Model, ID3 Tags, etc.) powered by SQLite's JSON1 extension.
 * **Virtual Folders:** Create custom, cross-drive folder views that group any files from your archive regardless of where they physically live. Supports both manual curation and smart dynamic rules.
-* **Multi-Layer Security & Master PIN:** Protect personal archive data with a Master PIN/Password (PBKDF2-HMAC-SHA256), session tokens, brute-force rate-limiting, inactivity auto-lock, 127.0.0.1 localhost network isolation, CORS lockdown, and automated AI PII masking.
-* **Database Management:** Built-in tools to cleanly remove missing files, purge orphaned AI profiles, and vacuum the databases to reclaim disk space.
-* **Portable:** Move your backup drives around? WABS easily remaps your indexed files to new drive letters.
+* **Multi-Layer Security & Master PIN:** Protect personal archive data with a Master PIN/Password (PBKDF2-HMAC-SHA256) sealed directly inside the archive database with HMAC-SHA256 tamper detection, session tokens, brute-force rate-limiting, inactivity auto-lock, 127.0.0.1 localhost network isolation, CORS lockdown, and automated AI PII masking.
+* **Database Management & Settings Portability:** Built-in tools to cleanly remove missing files, purge orphaned AI profiles, and vacuum the databases to reclaim disk space. Database-bound settings (canonical backup paths, user identity, and Master PIN) are stored directly inside `archive.db`, allowing seamless access across multiple machines and network drives without losing archive configuration or bypassing security.
+* **Portable:** Move your backup drives around? WABS easily remaps your indexed files to new drive letters or mount points.
 
 ## Getting Started
 
@@ -120,7 +120,8 @@ Manage and build saved searches:
 
 #### 6. Security & Privacy
 Manage archive authentication, network exposure, and privacy guardrails:
-* **Master PIN / Password**: Set, change, or disable your archive PIN. When enabled, all data endpoints and UI views require authentication.
+* **Master PIN / Password & Database Tamper Sealing**: Set, change, or disable your archive PIN. Credentials are stored securely inside `archive.db` using PBKDF2-HMAC-SHA256 and sealed with a cryptographic HMAC-SHA256 signature. If external tampering or unauthorized deletion is detected, WABS enters Tamper Lockout mode; entering the original Master PIN verifies credentials and reseals the database.
+* **Database-Bound Settings vs. Local Preferences**: Canonical backup locations, primary user identity ("Me"), and Master PIN reside in `archive.db` so they accompany your archive across devices. Machine-local preferences (theme, LAN access, auto-lock timeouts, and local path remappings) reside in `config.yaml`.
 * **Local Network (LAN / Wi-Fi) Access**: Toggles between strict Localhost-only binding (`127.0.0.1`) and LAN network binding (`0.0.0.0`) for connecting from mobile devices on home Wi-Fi. *(Requires restarting WABS to rebind the network socket).*
 * **Inactivity Auto-Lock**: Automatically locks the user session after a configured duration of idle time (5m, 15m, 30m, 1h, Never).
 * **AI Privacy & PII Redaction**: Automatically sanitizes and redacts phone numbers, email addresses, and IP addresses before sending file classification queries to external AI models.

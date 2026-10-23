@@ -2,6 +2,7 @@ import os
 import time
 import secrets
 import hashlib
+import hmac
 import re
 import shutil
 import logging
@@ -149,13 +150,98 @@ def clean_expired_sessions():
     if expired:
         logger.info(f"[Security] Pruned {len(expired)} expired session token(s).")
 
+
+INTERNAL_HMAC_KEY = b"wabs_tamper_seal_key_2026_v1"
+
+def calculate_pin_signature(hash_hex: str, salt_hex: str) -> str:
+    """
+    Computes an HMAC-SHA256 signature over the PIN hash + salt to prevent external tampering.
+    """
+    if not hash_hex or not salt_hex:
+        return ""
+    payload = f"{hash_hex}:{salt_hex}".encode('utf-8')
+    return hmac.new(INTERNAL_HMAC_KEY, payload, hashlib.sha256).hexdigest()
+
+def verify_pin_signature(hash_hex: str, salt_hex: str, signature: str) -> bool:
+    """
+    Verifies that the stored PIN hash and salt have not been altered or forged externally.
+    """
+    if not hash_hex or not salt_hex or not signature:
+        return False
+    expected = calculate_pin_signature(hash_hex, salt_hex)
+    return secrets.compare_digest(expected, signature)
+
+def check_db_pin_tampered() -> bool:
+    """
+    Checks if the database was sealed with a master PIN, but the PIN credentials
+    were deleted, wiped, or tampered with externally.
+    """
+    try:
+        from backend.app.database import get_db_setting, get_db_setting_with_sig
+        flag = get_db_setting("pin_sealed_flag")
+        if flag == "1":
+            h_val, sig = get_db_setting_with_sig("security_pin_hash")
+            s_val = get_db_setting("security_pin_salt")
+            if not h_val or not s_val or not sig:
+                # Flag says PIN was sealed, but credentials are missing!
+                return True
+            if not verify_pin_signature(h_val, s_val, sig):
+                return True
+    except Exception:
+        pass
+    return False
+
+def reseal_db_pin(candidate_pin: str) -> bool:
+    """
+    Allows recovering/resealing a tampered database if the user enters the original Master PIN.
+    """
+    try:
+        from backend.app.database import get_db_setting, set_db_setting
+        flag = get_db_setting("pin_sealed_flag")
+        if flag != "1":
+            return False
+        
+        # In tamper recovery mode, verify candidate PIN against recovery reference if present
+        recovery_hash = get_db_setting("recovery_pin_hash")
+        recovery_salt = get_db_setting("recovery_pin_salt")
+        if recovery_hash and recovery_salt:
+            if not verify_pin(candidate_pin, recovery_hash, recovery_salt):
+                return False
+        
+        # Reseal the PIN credentials with fresh PBKDF2 hash and valid signature
+        h_hex, s_hex = hash_pin(candidate_pin)
+        sig = calculate_pin_signature(h_hex, s_hex)
+        set_db_setting("security_pin_hash", h_hex, sig)
+        set_db_setting("security_pin_salt", s_hex)
+        set_db_setting("pin_sealed_flag", "1")
+        invalidate_security_cache()
+        logger.info("[Security] Successfully verified original Master PIN and resealed database credentials.")
+        return True
+    except Exception as e:
+        logger.error(f"[Security] Failed to reseal database PIN: {e}")
+        return False
+
 def is_security_pin_enabled() -> bool:
     """
-    Returns True if a master PIN is set in config.
+    Returns True if a master PIN is set in the active database (db_settings) or config fallback.
     """
     global _PIN_ENABLED_CACHE
     if _PIN_ENABLED_CACHE is not None:
         return _PIN_ENABLED_CACHE
+    try:
+        from backend.app.database import get_db_setting, get_db_setting_with_sig
+        h_val, sig = get_db_setting_with_sig("security_pin_hash")
+        s_val = get_db_setting("security_pin_salt")
+        if h_val and s_val:
+            _PIN_ENABLED_CACHE = True
+            return True
+        # If pin_sealed_flag is 1, PIN was enabled (tampered/locked state counts as enabled)
+        if get_db_setting("pin_sealed_flag") == "1":
+            _PIN_ENABLED_CACHE = True
+            return True
+    except Exception:
+        pass
+
     try:
         cfg = load_config()
         _PIN_ENABLED_CACHE = bool(cfg.get("security_pin_hash") and cfg.get("security_pin_salt"))

@@ -1706,10 +1706,15 @@ def set_me_identity(body: dict = Body(...)):
     """
     name = (body.get("name") or "").strip()
     
-    # 1. Update config.yaml
+    # 1. Update config.yaml and archive.db
     cfg = load_config()
     cfg["me_name"] = name
     save_config(cfg)
+    try:
+        from backend.app.database import set_db_setting
+        set_db_setting("me_name", name)
+    except Exception:
+        pass
     
     # 2. Update relationships.db
     rel_db_path = get_relationships_db_path()

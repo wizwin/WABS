@@ -62,11 +62,8 @@ DEFAULT = {
     "thumbnail_size": 256,
     "auto_run_on_startup": False,
     "idle_unload_timeout_seconds": 1800,
-    "me_name": "",
     "people_category_filter": "all",
     "allow_lan_access": False,
-    "security_pin_hash": "",
-    "security_pin_salt": "",
     "auto_lock_minutes": 15,
     "ai_redact_personal_info": True,
     "clear_cache_on_exit": False

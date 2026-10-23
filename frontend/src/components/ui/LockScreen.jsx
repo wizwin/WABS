@@ -5,12 +5,14 @@ import SecurityIcon from '@mui/icons-material/Security';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import KeyIcon from '@mui/icons-material/Key';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { API, setSessionToken } from '../../States';
 
 export function LockScreen({ onUnlocked, initialStatus }) {
   const [pin, setPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [isSetupMode, setIsSetupMode] = useState(false);
+  const [isTamperedMode, setIsTamperedMode] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -19,7 +21,8 @@ export function LockScreen({ onUnlocked, initialStatus }) {
 
   useEffect(() => {
     if (initialStatus) {
-      setIsSetupMode(!initialStatus.pin_enabled);
+      setIsTamperedMode(Boolean(initialStatus.is_tampered));
+      setIsSetupMode(!initialStatus.pin_enabled && !initialStatus.is_tampered);
       if (initialStatus.lockout_remaining_seconds > 0) {
         setLockoutRemaining(initialStatus.lockout_remaining_seconds);
       }
@@ -44,7 +47,7 @@ export function LockScreen({ onUnlocked, initialStatus }) {
     if (inputRef.current) {
       inputRef.current.focus();
     }
-  }, [isSetupMode, lockoutRemaining]);
+  }, [isSetupMode, isTamperedMode, lockoutRemaining]);
 
   const handleLogin = async (e) => {
     if (e) e.preventDefault();
@@ -60,10 +63,12 @@ export function LockScreen({ onUnlocked, initialStatus }) {
     setError('');
 
     try {
-      const res = await axios.post(`${API}/auth/login`, { pin: cleanPin });
+      const endpoint = isTamperedMode ? `${API}/auth/reseal` : `${API}/auth/login`;
+      const res = await axios.post(endpoint, { pin: cleanPin });
       if (res.data && res.data.token) {
         setSessionToken(res.data.token, true);
         setPin('');
+        setIsTamperedMode(false);
         if (onUnlocked) onUnlocked();
       }
     } catch (err) {
@@ -77,6 +82,9 @@ export function LockScreen({ onUnlocked, initialStatus }) {
         } else {
           setLockoutRemaining(300);
         }
+        setError(detail);
+      } else if (status === 403 || detail.toLowerCase().includes('tamper')) {
+        setIsTamperedMode(true);
         setError(detail);
       } else {
         setError(detail);
@@ -149,7 +157,7 @@ export function LockScreen({ onUnlocked, initialStatus }) {
     }}>
       <div style={{
         backgroundColor: '#172033',
-        border: '1px solid #334155',
+        border: isTamperedMode ? '1px solid #ef4444' : '1px solid #334155',
         borderRadius: '16px',
         padding: '32px 28px',
         width: '100%',
@@ -164,21 +172,23 @@ export function LockScreen({ onUnlocked, initialStatus }) {
           height: '56px',
           borderRadius: '50%',
           backgroundColor: '#1e293b',
-          border: '1px solid #3b82f6',
+          border: isTamperedMode ? '1px solid #ef4444' : '1px solid #3b82f6',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           margin: '0 auto 16px auto',
-          color: '#38bdf8'
+          color: isTamperedMode ? '#ef4444' : '#38bdf8'
         }}>
-          {isSetupMode ? <SecurityIcon style={{ fontSize: '32px' }} /> : <LockOutlinedIcon style={{ fontSize: '32px' }} />}
+          {isTamperedMode ? <WarningAmberIcon style={{ fontSize: '32px' }} /> : isSetupMode ? <SecurityIcon style={{ fontSize: '32px' }} /> : <LockOutlinedIcon style={{ fontSize: '32px' }} />}
         </div>
 
         <h2 style={{ margin: '0 0 6px 0', fontSize: '20px', fontWeight: '600' }}>
-          {isSetupMode ? 'Set Security PIN' : 'WABS Archive Locked'}
+          {isTamperedMode ? 'Database Credentials Modified' : isSetupMode ? 'Set Security PIN' : 'WABS Archive Locked'}
         </h2>
         <p style={{ margin: '0 0 20px 0', fontSize: '13px', color: '#94a3b8', lineHeight: '1.4' }}>
-          {isSetupMode
+          {isTamperedMode
+            ? 'The security credentials for this database were deleted or altered externally. Enter the Original Master PIN to verify and reseal the archive.'
+            : isSetupMode
             ? 'Protect your personal archive with a 4 to 12 digit Master PIN.'
             : 'Enter your Master PIN (digits only) to unlock this session.'}
         </p>
@@ -223,7 +233,7 @@ export function LockScreen({ onUnlocked, initialStatus }) {
               maxLength={12}
               value={pin}
               onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
-              placeholder={isSetupMode ? 'Enter New PIN (digits only)' : 'Enter PIN (digits only)'}
+              placeholder={isTamperedMode ? 'Enter Original Master PIN' : isSetupMode ? 'Enter New PIN (digits only)' : 'Enter PIN (digits only)'}
               disabled={lockoutRemaining > 0 || loading}
               style={{
                 width: '100%',
@@ -249,14 +259,14 @@ export function LockScreen({ onUnlocked, initialStatus }) {
                 transform: 'translateY(-50%)',
                 background: 'none',
                 border: 'none',
-                color: '#64748b',
+                color: '#94a3b8',
                 cursor: 'pointer',
-                padding: '4px',
                 display: 'flex',
-                alignItems: 'center'
+                alignItems: 'center',
+                padding: '4px'
               }}
             >
-              {showPassword ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+              {showPassword ? <VisibilityOffIcon style={{ fontSize: '18px' }} /> : <VisibilityIcon style={{ fontSize: '18px' }} />}
             </button>
           </div>
 
@@ -273,7 +283,7 @@ export function LockScreen({ onUnlocked, initialStatus }) {
                 disabled={loading}
                 style={{
                   width: '100%',
-                  padding: '12px 14px',
+                  padding: '12px 42px 12px 14px',
                   backgroundColor: '#0f172a',
                   border: '1px solid #334155',
                   borderRadius: '8px',
@@ -288,32 +298,33 @@ export function LockScreen({ onUnlocked, initialStatus }) {
             </div>
           )}
 
-          {/* Quick Numpad for convenience */}
+          {/* Quick PIN Numpad */}
           <div style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(3, 1fr)',
             gap: '8px',
             marginBottom: '20px'
           }}>
-            {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => (
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((digit) => (
               <button
                 key={digit}
                 type="button"
-                onClick={() => handleNumpadClick(digit)}
+                onClick={() => handleNumpadClick(digit.toString())}
                 disabled={lockoutRemaining > 0 || loading}
                 style={{
-                  padding: '10px 0',
                   backgroundColor: '#1e293b',
                   border: '1px solid #334155',
-                  borderRadius: '8px',
                   color: '#f8fafc',
+                  borderRadius: '8px',
+                  padding: '12px 0',
                   fontSize: '16px',
                   fontWeight: '600',
-                  cursor: lockoutRemaining > 0 ? 'not-allowed' : 'pointer',
-                  transition: 'background 0.15s ease'
+                  cursor: (lockoutRemaining > 0 || loading) ? 'not-allowed' : 'pointer',
+                  transition: 'background-color 0.15s ease'
                 }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#334155'}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#1e293b'}
+                onMouseDown={(e) => { e.currentTarget.style.backgroundColor = '#334155'; }}
+                onMouseUp={(e) => { e.currentTarget.style.backgroundColor = '#1e293b'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#1e293b'; }}
               >
                 {digit}
               </button>
@@ -323,13 +334,14 @@ export function LockScreen({ onUnlocked, initialStatus }) {
               onClick={() => { setPin(''); setConfirmPin(''); }}
               disabled={lockoutRemaining > 0 || loading}
               style={{
-                padding: '10px 0',
                 backgroundColor: '#1e293b',
                 border: '1px solid #334155',
-                borderRadius: '8px',
                 color: '#94a3b8',
-                fontSize: '12px',
-                cursor: 'pointer'
+                borderRadius: '8px',
+                padding: '12px 0',
+                fontSize: '13px',
+                fontWeight: '500',
+                cursor: (lockoutRemaining > 0 || loading) ? 'not-allowed' : 'pointer'
               }}
             >
               Clear
@@ -339,15 +351,18 @@ export function LockScreen({ onUnlocked, initialStatus }) {
               onClick={() => handleNumpadClick('0')}
               disabled={lockoutRemaining > 0 || loading}
               style={{
-                padding: '10px 0',
                 backgroundColor: '#1e293b',
                 border: '1px solid #334155',
-                borderRadius: '8px',
                 color: '#f8fafc',
+                borderRadius: '8px',
+                padding: '12px 0',
                 fontSize: '16px',
                 fontWeight: '600',
-                cursor: lockoutRemaining > 0 ? 'not-allowed' : 'pointer'
+                cursor: (lockoutRemaining > 0 || loading) ? 'not-allowed' : 'pointer'
               }}
+              onMouseDown={(e) => { e.currentTarget.style.backgroundColor = '#334155'; }}
+              onMouseUp={(e) => { e.currentTarget.style.backgroundColor = '#1e293b'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#1e293b'; }}
             >
               0
             </button>
@@ -356,13 +371,14 @@ export function LockScreen({ onUnlocked, initialStatus }) {
               onClick={handleBackspace}
               disabled={lockoutRemaining > 0 || loading}
               style={{
-                padding: '10px 0',
                 backgroundColor: '#1e293b',
                 border: '1px solid #334155',
-                borderRadius: '8px',
                 color: '#94a3b8',
-                fontSize: '12px',
-                cursor: 'pointer'
+                borderRadius: '8px',
+                padding: '12px 0',
+                fontSize: '15px',
+                fontWeight: '500',
+                cursor: (lockoutRemaining > 0 || loading) ? 'not-allowed' : 'pointer'
               }}
             >
               ⌫
@@ -371,22 +387,27 @@ export function LockScreen({ onUnlocked, initialStatus }) {
 
           <button
             type="submit"
-            disabled={lockoutRemaining > 0 || loading || !pin.trim()}
+            disabled={lockoutRemaining > 0 || loading || !pin}
             style={{
               width: '100%',
-              padding: '12px',
-              backgroundColor: '#3b82f6',
+              backgroundColor: isTamperedMode ? '#ef4444' : '#0284c7',
+              borderColor: isTamperedMode ? '#dc2626' : '#0369a1',
+              color: '#ffffff',
               border: 'none',
               borderRadius: '8px',
-              color: '#ffffff',
-              fontSize: '15px',
+              padding: '12px 16px',
+              fontSize: '14px',
               fontWeight: '600',
-              cursor: (lockoutRemaining > 0 || loading || !pin.trim()) ? 'not-allowed' : 'pointer',
-              opacity: (lockoutRemaining > 0 || loading || !pin.trim()) ? 0.6 : 1,
-              transition: 'all 0.2s ease'
+              cursor: (lockoutRemaining > 0 || loading || !pin) ? 'not-allowed' : 'pointer',
+              opacity: (lockoutRemaining > 0 || loading || !pin) ? 0.6 : 1,
+              transition: 'background-color 0.2s ease',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px'
             }}
           >
-            {loading ? 'Verifying...' : isSetupMode ? 'Enable Security PIN' : 'Unlock Archive'}
+            {loading ? 'Verifying...' : isTamperedMode ? 'Verify & Reseal Database' : isSetupMode ? 'Enable Security PIN' : 'Unlock Archive'}
           </button>
         </form>
       </div>

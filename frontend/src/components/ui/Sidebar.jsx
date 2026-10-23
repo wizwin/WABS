@@ -104,6 +104,7 @@ export function Sidebar({
             explorer.setCurrentVirtualFolder(null);
             tagsState.setTagsPage(1);
             tagsState.setTagSearchQuery('');
+            if (tagsState.loadTags) tagsState.loadTags();
           }}>
             <CategoryIcon fontSize="small" /> Tags
           </ActionButton>

@@ -133,6 +133,67 @@ class VirtualFolderFile(Base):
     virtual_folder_id = Column(Integer, ForeignKey("virtual_folders.id", ondelete="CASCADE"), nullable=False)
     file_id = Column(Integer, ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
 
+class DBSetting(Base):
+    __tablename__ = "db_settings"
+    key = Column(String, primary_key=True)
+    value = Column(String)
+    signature = Column(String)
+
+_LOCAL_SETTINGS_CACHE = {}
+
+def get_db_setting(key: str, default=None):
+    try:
+        with SessionLocal() as s:
+            row = s.query(DBSetting).filter(DBSetting.key == key).first()
+            if row and row.value is not None:
+                return row.value
+    except Exception:
+        pass
+    return _LOCAL_SETTINGS_CACHE.get(key, default)
+
+def get_db_setting_with_sig(key: str):
+    try:
+        with SessionLocal() as s:
+            row = s.query(DBSetting).filter(DBSetting.key == key).first()
+            if row:
+                return row.value, row.signature
+    except Exception:
+        pass
+    cached = _LOCAL_SETTINGS_CACHE.get(key)
+    cached_sig = _LOCAL_SETTINGS_CACHE.get(f"{key}__sig")
+    return cached, cached_sig
+
+def set_db_setting(key: str, value: str, signature: str = ""):
+    _LOCAL_SETTINGS_CACHE[key] = value
+    if signature:
+        _LOCAL_SETTINGS_CACHE[f"{key}__sig"] = signature
+    try:
+        with SessionLocal() as s:
+            row = s.query(DBSetting).filter(DBSetting.key == key).first()
+            if row:
+                row.value = value
+                row.signature = signature
+            else:
+                s.add(DBSetting(key=key, value=value, signature=signature))
+            s.commit()
+            return True
+    except Exception as e:
+        logger.warning(f"[Database] set_db_setting('{key}') fallback: {e}")
+        return False
+
+def delete_db_setting(key: str):
+    _LOCAL_SETTINGS_CACHE.pop(key, None)
+    _LOCAL_SETTINGS_CACHE.pop(f"{key}__sig", None)
+    try:
+        with SessionLocal() as s:
+            s.query(DBSetting).filter(DBSetting.key == key).delete()
+            s.commit()
+            return True
+    except Exception as e:
+        logger.warning(f"[Database] delete_db_setting('{key}') fallback: {e}")
+        return False
+
+
 def init_db(target_engine=None):
     if target_engine is None:
         global engine
@@ -238,7 +299,10 @@ def init_db(target_engine=None):
         """))
         
 # Initialize tables on import
-init_db(engine)
+try:
+    init_db(engine)
+except Exception as e:
+    logger.warning('Initial init_db skipped: ' + str(e))
 
 def switch_to_standby_mode(missing_path: str = ""):
     """

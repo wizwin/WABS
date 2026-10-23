@@ -339,12 +339,15 @@ To protect sensitive personal archives (messages, documents, face embeddings, an
   ```
   This restricts cross-origin `fetch()` / `XMLHttpRequest` calls strictly to local browser contexts while blocking arbitrary external web tabs from querying WABS in the background.
 
-#### 12.3 Cryptographic PIN Derivation & Storage (`security.py`)
+#### 12.3 Cryptographic PIN Derivation, Database Sealing & Storage (`security.py`, `database.py`)
 
 * **Algorithm**: `PBKDF2-HMAC-SHA256` with **100,000 iterations** and a cryptographically secure 16-byte random salt (`secrets.token_bytes(16)`).
 * **Numeric Format Enforcement**: PINs are strictly constrained to numeric digits (`0-9`, 4 to 12 digits). Non-digit characters are stripped on the frontend and rejected with HTTP 400 on the backend.
 * **Constant-Time Comparison**: PIN verification utilizes `secrets.compare_digest` to prevent timing attacks.
-* **Storage**: Salt and derived hash are hex-encoded and stored in `config.yaml` (`security_pin_salt`, `security_pin_hash`). The plain-text PIN is never stored on disk or cached in memory.
+* **Database-Bound Storage (`db_settings` table)**: Salt and derived hash are hex-encoded and stored directly inside `archive.db` under the `db_settings` table (`security_pin_salt`, `security_pin_hash`). Local `config.yaml` no longer contains Master PIN credentials, guaranteeing that moving the database or sharing it across workstations retains the exact same Master PIN protection without configuration drift. The plain-text PIN is never stored on disk or cached in memory.
+* **HMAC-SHA256 Tamper Sealing**: Every PIN configuration is cryptographically signed with an HMAC-SHA256 signature calculated over the PBKDF2 hash, salt, and tamper detection flags.
+* **External Tamper Detection & Tamper Lockout**: If an unauthorized party opens `archive.db` in an external SQLite editor and modifies, blanks, or deletes the PIN credentials, WABS detects tampering immediately (`check_db_pin_tampered()`), transitions to Tamper Lockout mode, and blocks access to files, media, and archive data.
+* **One-Click Resealing via Original Master PIN (`POST /auth/reseal`)**: When tampering is detected, the Lock Screen alerts the user (*"Database Credentials Modified"*) and prompts for the **Original Master PIN**. Entering the correct original Master PIN validates against recovery credentials, regenerates a valid cryptographic seal, and unlocks the archive without data loss.
 
 #### 12.4 Session Token Management & Strict Revocation Lifecycle
 
@@ -405,6 +408,45 @@ A dedicated 5-stage test suite validates the security architecture:
   - **Windows**: BitLocker Drive Encryption / VeraCrypt volume
   - **Linux**: LUKS (Linux Unified Key Setup) / `dm-crypt`
   - **macOS**: FileVault full-disk encryption
+
+#### 12.12 Database-Bound Settings vs. Host-Local Preferences Architecture
+
+To support multi-workstation environments, external storage media, and shared SMB/NAS volumes without losing configuration or requiring manual re-entry:
+
+```
+┌────────────────────────────────────────────────────────┐
+│                   archive.db                           │
+│             (Shared / Portable Database)               │
+├────────────────────────────────────────────────────────┤
+│ • Canonical Backup Locations (`backup_configs`)        │
+│ • Primary User Identity (`me_name`)                    │
+│ • Master PIN Hash & Salt (`security_pin_hash/salt`)    │
+│ • Cryptographic Tamper Signature (`signature`)         │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+           Loaded by multiple client workstations
+                           │
+       ┌───────────────────┴───────────────────┐
+       ▼                                       ▼
+┌─────────────────────────────┐ ┌─────────────────────────────┐
+│ Client Workstation 1        │ │ Client Workstation 2        │
+│ (`config.yaml`)             │ │ (`config.yaml`)             │
+├─────────────────────────────┤ ├─────────────────────────────┤
+│ • Local Mapped Paths        │ │ • Local Mapped Paths        │
+│ • Theme & View Preferences  │ │ • Theme & View Preferences  │
+│ • LAN Network Binding       │ │ • LAN Network Binding       │
+│ • Inactivity Auto-Lock Mins │ │ • Inactivity Auto-Lock Mins │
+│ • Hardware-Bound AI Key     │ │ • Hardware-Bound AI Key     │
+└─────────────────────────────┘ └─────────────────────────────┘
+```
+
+* **Portable Database Settings (`archive.db` -> `db_settings`)**:
+  - `backup_configs`: Canonical backup roots and original folder hierarchies indexed in the archive. If an archive without explicit backup configs is loaded, WABS infers the root source paths from indexed files in $O(1)$ time.
+  - `me_name`: Canonical user identity anchoring the relationship and kinship tree.
+  - `security_pin_hash` & `security_pin_salt`: Master PIN credentials protecting the archive.
+* **Host-Local Preferences (`config.yaml`)**:
+  - `mapped_backup_path`: Local drive letter and mount path translations for when storage drives mount to different drive letters across different workstations.
+  - Machine-specific hardware configurations, local UI theme, window state, LAN binding, and auto-lock durations.
 
 ---
 

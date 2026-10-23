@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from backend.app.config import load_config, save_config
+from backend.app.database import get_db_setting, get_db_setting_with_sig, set_db_setting, delete_db_setting
 from backend.app.utils.security import (
     hash_pin,
     verify_pin,
@@ -17,6 +18,10 @@ from backend.app.utils.security import (
     is_security_pin_enabled,
     invalidate_security_cache,
     clear_thumbnail_cache,
+    calculate_pin_signature,
+    verify_pin_signature,
+    check_db_pin_tampered,
+    reseal_db_pin,
     MAX_FAILED_ATTEMPTS
 )
 
@@ -43,6 +48,45 @@ def extract_token(request: Request) -> Optional[str]:
         token = request.query_params.get("token") or request.query_params.get("session_token")
     return token
 
+def _get_stored_pin_credentials():
+    """
+    Retrieves stored hash and salt from the active archive.db (db_settings table),
+    falling back to config.yaml if needed during transition.
+    """
+    h_val, sig = get_db_setting_with_sig("security_pin_hash")
+    s_val = get_db_setting("security_pin_salt")
+    if h_val and s_val:
+        return h_val, s_val, sig
+    cfg = load_config()
+    return cfg.get("security_pin_hash", ""), cfg.get("security_pin_salt", ""), ""
+
+def _store_pin_credentials(h_hex: str, s_hex: str):
+    """
+    Stores PIN hash and salt in archive.db (db_settings table) with HMAC anti-tamper signature.
+    """
+    sig = calculate_pin_signature(h_hex, s_hex) if h_hex and s_hex else ""
+    if h_hex and s_hex:
+        set_db_setting("security_pin_hash", h_hex, sig)
+        set_db_setting("security_pin_salt", s_hex)
+        set_db_setting("pin_sealed_flag", "1")
+        # Keep an encrypted/hashed recovery reference to verify master PIN if externally tampered
+        set_db_setting("recovery_pin_hash", h_hex, sig)
+        set_db_setting("recovery_pin_salt", s_hex)
+    else:
+        delete_db_setting("security_pin_hash")
+        delete_db_setting("security_pin_salt")
+        delete_db_setting("pin_sealed_flag")
+        delete_db_setting("recovery_pin_hash")
+        delete_db_setting("recovery_pin_salt")
+    
+    # Ensure config.yaml does not store the PIN
+    cfg = load_config()
+    if "security_pin_hash" in cfg or "security_pin_salt" in cfg:
+        cfg.pop("security_pin_hash", None)
+        cfg.pop("security_pin_salt", None)
+        save_config(cfg)
+    invalidate_security_cache()
+
 class PinSetupRequest(BaseModel):
     pin: str
 
@@ -56,15 +100,22 @@ class PinChangeRequest(BaseModel):
 class PinDisableRequest(BaseModel):
     current_pin: str
 
+class ResealRequest(BaseModel):
+    pin: str
+
 @router.get("/status")
 def get_auth_status(request: Request):
     client_ip = get_client_ip(request)
     is_locked, remaining_seconds = check_lockout(client_ip)
+    is_tampered = check_db_pin_tampered()
     pin_enabled = is_security_pin_enabled()
     
     token = extract_token(request)
     is_auth = False
-    if not pin_enabled:
+    if is_tampered:
+        # Tampered state: access is strictly blocked until resealed with original master PIN
+        is_auth = False
+    elif not pin_enabled:
         # If PIN protection is not configured, user is automatically authenticated
         is_auth = True
     elif token and validate_session(token):
@@ -75,6 +126,7 @@ def get_auth_status(request: Request):
         "pin_enabled": pin_enabled,
         "is_authenticated": is_auth,
         "is_locked_out": is_locked,
+        "is_tampered": is_tampered,
         "lockout_remaining_seconds": remaining_seconds,
         "auto_lock_minutes": cfg.get("auto_lock_minutes", 15),
         "allow_lan_access": cfg.get("allow_lan_access", False),
@@ -94,13 +146,9 @@ def setup_pin(payload: PinSetupRequest, request: Request, response: Response = N
         raise HTTPException(status_code=400, detail="PIN must be between 4 and 12 digits (numbers only).")
 
     h_hex, s_hex = hash_pin(pin)
-    cfg = load_config()
-    cfg["security_pin_hash"] = h_hex
-    cfg["security_pin_salt"] = s_hex
-    save_config(cfg)
-    invalidate_security_cache()
+    _store_pin_credentials(h_hex, s_hex)
 
-    logger.info(f"[Auth] Master PIN successfully initialized and enabled from '{client_ip}'.")
+    logger.info(f"[Auth] Master PIN successfully initialized and enabled in archive.db from '{client_ip}'.")
     # Automatically issue session token upon successful setup
     token = create_session(client_ip)
     if response:
@@ -118,6 +166,14 @@ def login_pin(payload: PinLoginRequest, request: Request, response: Response = N
             detail=f"Too many failed attempts. Please try again in {remaining_seconds} seconds."
         )
 
+    # Check if database has been tampered with externally
+    if check_db_pin_tampered():
+        logger.critical(f"[Auth] Access denied for '{client_ip}': Database security PIN was tampered with or removed externally.")
+        raise HTTPException(
+            status_code=403,
+            detail="Database security credentials were modified or removed externally. Please enter the original Master PIN to verify and reseal the database."
+        )
+
     if not is_security_pin_enabled():
         token = create_session(client_ip)
         if response:
@@ -128,9 +184,7 @@ def login_pin(payload: PinLoginRequest, request: Request, response: Response = N
     if not pin_candidate.isdigit():
         raise HTTPException(status_code=400, detail="PIN must contain digits only.")
 
-    cfg = load_config()
-    stored_hash = cfg.get("security_pin_hash", "")
-    stored_salt = cfg.get("security_pin_salt", "")
+    stored_hash, stored_salt, stored_sig = _get_stored_pin_credentials()
 
     if verify_pin(pin_candidate, stored_hash, stored_salt):
         reset_failed_attempts(client_ip)
@@ -151,6 +205,31 @@ def login_pin(payload: PinLoginRequest, request: Request, response: Response = N
         logger.warning(f"[Auth] Master PIN verification failed for '{client_ip}'.")
         raise HTTPException(status_code=401, detail="Incorrect PIN. Please try again.")
 
+@router.post("/reseal")
+def reseal_database(payload: ResealRequest, request: Request, response: Response = None):
+    """
+    Reseals a tampered database if the user enters the original Master PIN.
+    """
+    client_ip = get_client_ip(request)
+    pin = payload.pin.strip()
+    if not pin.isdigit():
+        raise HTTPException(status_code=400, detail="PIN must contain digits only.")
+
+    if not check_db_pin_tampered():
+        raise HTTPException(status_code=400, detail="Database is not in tampered state.")
+
+    success = reseal_db_pin(pin)
+    if success:
+        reset_failed_attempts(client_ip)
+        token = create_session(client_ip)
+        if response:
+            response.set_cookie(key="wabs_session_token", value=token, max_age=14 * 86400, path="/", samesite="lax")
+        logger.info(f"[Auth] Database successfully verified and resealed by '{client_ip}'.")
+        return {"status": "success", "message": "Original Master PIN verified. Database resealed successfully.", "token": token}
+    else:
+        record_failed_attempt(client_ip)
+        raise HTTPException(status_code=401, detail="Incorrect Master PIN. Could not reseal database.")
+
 @router.post("/logout")
 def logout(request: Request, response: Response = None):
     client_ip = get_client_ip(request)
@@ -168,9 +247,7 @@ def change_pin(payload: PinChangeRequest, request: Request, response: Response =
     if not is_security_pin_enabled():
         raise HTTPException(status_code=400, detail="Security PIN is not enabled.")
 
-    cfg = load_config()
-    stored_hash = cfg.get("security_pin_hash", "")
-    stored_salt = cfg.get("security_pin_salt", "")
+    stored_hash, stored_salt, _ = _get_stored_pin_credentials()
 
     if not verify_pin(payload.current_pin.strip(), stored_hash, stored_salt):
         logger.warning(f"[Auth] PIN change rejected: incorrect current PIN from '{client_ip}'.")
@@ -181,17 +258,14 @@ def change_pin(payload: PinChangeRequest, request: Request, response: Response =
         raise HTTPException(status_code=400, detail="New PIN must be between 4 and 12 digits (numbers only).")
 
     h_hex, s_hex = hash_pin(new_pin)
-    cfg["security_pin_hash"] = h_hex
-    cfg["security_pin_salt"] = s_hex
-    save_config(cfg)
-    invalidate_security_cache()
+    _store_pin_credentials(h_hex, s_hex)
 
     # Invalidate old sessions and issue new session token
     revoke_all_sessions()
     token = create_session(client_ip)
     if response:
         response.set_cookie(key="wabs_session_token", value=token, max_age=14 * 86400, path="/", samesite="lax")
-    logger.info(f"[Auth] Master PIN updated by '{client_ip}'. All existing sessions revoked.")
+    logger.info(f"[Auth] Master PIN updated by '{client_ip}' in archive.db. All existing sessions revoked.")
     return {"status": "success", "message": "PIN updated successfully.", "token": token}
 
 @router.post("/disable-pin")
@@ -202,18 +276,13 @@ def disable_pin(payload: PinDisableRequest, request: Request, response: Response
             response.delete_cookie(key="wabs_session_token", path="/")
         return {"status": "success", "message": "PIN is already disabled."}
 
-    cfg = load_config()
-    stored_hash = cfg.get("security_pin_hash", "")
-    stored_salt = cfg.get("security_pin_salt", "")
+    stored_hash, stored_salt, _ = _get_stored_pin_credentials()
 
     if not verify_pin(payload.current_pin.strip(), stored_hash, stored_salt):
         logger.warning(f"[Auth] PIN disable rejected: incorrect PIN from '{client_ip}'.")
         raise HTTPException(status_code=401, detail="Current PIN is incorrect.")
 
-    cfg["security_pin_hash"] = ""
-    cfg["security_pin_salt"] = ""
-    save_config(cfg)
-    invalidate_security_cache()
+    _store_pin_credentials("", "")
 
     revoke_all_sessions()
     if response:

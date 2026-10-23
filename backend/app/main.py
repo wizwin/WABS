@@ -341,8 +341,15 @@ async def security_auth_middleware(request: Request, call_next):
 
     path = request.url.path
 
+    # Exempt static preview/thumbnail image requests so browser <img> tags render smoothly
+    is_media_image = (
+        (path.startswith("/people/") and path.endswith("/thumbnail")) or
+        path.startswith("/preview/") or
+        path.startswith("/thumbnail/")
+    )
+
     # Only enforce token authentication on protected API endpoints when PIN is active
-    is_protected_api = any(
+    is_protected_api = (not is_media_image) and any(
         path == prefix or path.startswith(prefix + "/") or path.startswith(prefix + "?")
         for prefix in PROTECTED_API_PREFIXES
     )
