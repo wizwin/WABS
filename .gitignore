@@ -33,3 +33,4 @@ wabs.log
 *.db-wal
 tests/OCR/*.jpg
 tests/OCR/*.png
+/Logs

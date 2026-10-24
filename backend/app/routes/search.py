@@ -113,7 +113,8 @@ def search(query:str="", category:str="all", offset:int=0, limit:int=50, sort_by
                 except Exception as e:
                     import logging
                     logging.getLogger("wabs.search").warning(f"[Search] Advanced/FTS search failed: {e}. Falling back to standard LIKE search.")
-                    term_pat = f"%{q_clean.strip('\"\'').lower()}%"
+                    clean_term = q_clean.strip("\"'").lower()
+                    term_pat = f"%{clean_term}%"
                     fallback_cond = or_(
                         func.lower(FileIndex.filename).like(term_pat),
                         func.lower(FileIndex.tags).like(term_pat),
